@@ -1,0 +1,27 @@
+'use client';
+import ListView from '@/components/ListView';
+
+/* Customers - list. Columns declared here, not fetched from a registry. */
+
+const CONFIG = {
+  title: "Customers",
+  basePath: '/admin/contact/',
+  slugPath: "customer",
+  endpoint: '/api/customer',
+  scope: ["business"],
+  formMode: "tabs",
+  actionPosition: "left",
+  actionVariant: "dropdown",
+  columns: [
+    { k: "businessName", t: "Business Name" },
+    { k: "contactId", t: "Contact ID" },
+    { k: "firstName", t: "Name" },
+    { k: "billingMobile", t: "Mobile" },
+    { k: "billingEmail", t: "Email" },
+    { k: "billingAddressLine1", t: "Address" },
+  ],
+};
+
+export default function CustomerListPage() {
+  return <ListView cfg={CONFIG} />;
+}
