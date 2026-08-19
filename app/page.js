@@ -1031,7 +1031,7 @@ function Footer() {
 
         <div className="flex flex-col items-center justify-between gap-3 border-t border-slate-800 py-6 sm:flex-row">
           <p className="text-xs text-slate-500">
-            © 2024 GROO ERP. All rights reserved.
+            © 2026 GROO ERP. All rights reserved.
           </p>
           <p className="flex items-center gap-1 text-xs text-slate-500">
             Made with <Heart className="h-3 w-3 fill-red-500 text-red-500" />{" "}

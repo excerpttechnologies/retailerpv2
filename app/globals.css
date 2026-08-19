@@ -170,3 +170,9 @@
 .tot-tbl { border-collapse: collapse; min-width: 460px; font-size: 13px; }
 .tot-tbl td { border: 1px solid #dbe1ea; padding: 6px 10px; }
 .tot-tbl td:first-child { text-align: right; color: #4a5568; }
+
+.sb-sub-link {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
