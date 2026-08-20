@@ -474,7 +474,7 @@ function Hero() {
         >
           <div className="absolute h-64 w-64 rounded-full bg-gradient-to-br from-indigo-200/50 to-blue-200/50 blur-3xl md:h-96 md:w-96" />
           <motion.img
-            src="/images/1hero-graphic.png"
+            src="/images/hero-graphic.png"
             alt="GROO ERP dashboard preview with sales, inventory and reports"
             className="relative w-full max-w-[600px] select-none drop-shadow-2xl"
             draggable={false}

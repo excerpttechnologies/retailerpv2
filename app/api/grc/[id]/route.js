@@ -44,10 +44,15 @@
 import dbConnect from '@/lib/db';
 import Grc from '@/models/Grc';
 import { BarcodeLabel } from '@/lib/barcodeLabel';
+import { requireSession } from '@/lib/session';
+import { validate } from '@/lib/validate';
+import { FORM } from '@/app/admin/transaction/purchase/grc/form';
 
 const json = (data, status = 200) => Response.json(data, { status });
 
 export async function GET(_req, { params }) {
+  const session = await requireSession();
+  if (!session) return json({ error: 'Unauthorized' }, 401);
   await dbConnect();
   const { id } = params;
 
@@ -63,6 +68,8 @@ export async function GET(_req, { params }) {
 }
 
 export async function DELETE(_req, { params }) {
+  const session = await requireSession();
+  if (!session) return json({ error: 'Unauthorized' }, 401);
   await dbConnect();
   const { id } = params;
 
@@ -72,4 +79,17 @@ export async function DELETE(_req, { params }) {
   ]);
 
   return json({ ok: true });
+}
+
+export async function PUT(req, { params }) {
+  const session = await requireSession();
+  if (!session) return json({ error: 'Unauthorized' }, 401);
+  await dbConnect();
+  const body = await req.json();
+  const fields = (FORM.cards || []).flatMap((card) => card.type === 'fields' ? card.fields || [] : []);
+  const { errors, doc, ok } = validate(fields, body.data || {});
+  if (!ok) return json({ errors }, 422);
+  const updated = await Grc.findByIdAndUpdate(params.id, doc, { new: true, runValidators: true }).lean();
+  if (!updated) return json({ error: 'GRC not found' }, 404);
+  return json({ ok: true, id: String(updated._id) });
 }

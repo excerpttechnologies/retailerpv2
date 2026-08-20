@@ -1,29 +1,15 @@
+
+
 'use client';
-import FormView from '@/components/FormView';
-import { FIELDS } from './fields';
+import BarcodeSettingsView from '@/components/BarcodeSettingsView';
 
-/* Barcode Settings - one record per scope. This file IS the page. */
+/* Barcode Settings - /admin/setting/barcodesetting
 
-const CONFIG = {
-  title: "Barcode Settings",
-  basePath: '/admin/setting/',
-  slugPath: "barcodesetting",
-  endpoint: '/api/barcode-setting',
-  scope: ["business","finYear"],
-  columns: [
-    { k: "type", t: "Type" },
-    { k: "subType", t: "Sub Type" },
-    { k: "prefix", t: "Prefix" },
-    { k: "suffix", t: "Suffix" },
-    { k: "startNumber", t: "Start Number" },
-    { k: "sampleBarcode", t: "Sample Barcode" },
-    { k: "effectiveDate", t: "Effective Date", f: "date" },
-    { k: "expiryDate", t: "Expiry Date", f: "date" },
-    { k: "finYear", t: "Financial Year" },
-  ],
-  fields: FIELDS,
-};
+   The list, the Add overlay and the Edit dialog all live in one view, which
+   is how the deployed screen behaves: Add and Edit open over the list rather
+   than navigating to their own routes. That is why this page has no add/ or
+   [id]/ folder beside it, unlike the other masters. */
 
 export default function BarcodesettingPage() {
-  return <FormView cfg={CONFIG} />;
+  return <BarcodeSettingsView />;
 }

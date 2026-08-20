@@ -61,6 +61,8 @@
   .pill { @apply inline-block rounded px-2.5 py-[3px] text-xs; }
   .pill-green { @apply bg-okgreenbg text-okgreen; }
   .pill-grey { @apply bg-pillgrey text-[#5b6880]; }
+  .pill-blue { @apply bg-[#e8f1fd] text-brand-link; }
+  .pill-red { @apply bg-[#fdeaea] text-danger; }
 
   .act-btn {
     @apply inline-flex h-6 w-[26px] items-center justify-center rounded border-0

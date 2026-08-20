@@ -242,17 +242,56 @@ export async function POST(req) {
 
   await dbConnect();
   const body = await req.json();
-  const { rows, business, location, finYear, totals, supplierId, vendorDocNo, grcDate } = body || {};
+  const { rows, business, location, finYear, totals, supplierId, vendorDocNo, grcDate, grcId } = body || {};
 
   if (!Array.isArray(rows) || rows.length === 0) {
     return json({ error: 'No rows to save' }, 400);
   }
 
+  const totalQuantity = rows.reduce((sum, row) => sum + (parseFloat(row.qty) || 0), 0);
+  const netAmount = rows.reduce((sum, row) => {
+    const price = parseFloat(row.offerPrice || row.retailPrice) || 0;
+    return sum + price * (parseFloat(row.qty) || 0);
+  }, 0);
+  const discountAmount = rows.reduce((sum, row) => {
+    const rate = parseFloat(row.finalNet || row.purRate) || 0;
+    const discount = parseFloat(row.disc) || 0;
+    return sum + (rate * discount) / 100 * (parseFloat(row.qty) || 0);
+  }, 0);
+  const gst = rows.reduce((sum, row) => sum + (parseFloat(row.gst) || 0), 0);
+
+  if (grcId) {
+    if (!isValidObjectId(grcId)) return json({ error: 'Invalid grcId' }, 400);
+    const existing = await Grc.findById(grcId);
+    if (!existing) return json({ error: 'GRC not found' }, 404);
+
+    await BarcodeLabel.deleteMany({ grcId: String(grcId) });
+    const docs = rows.map((r) => ({
+      grcId: String(grcId),
+      groupId: r.groupId || '', oldBarcode: r.oldBarcode || '', itemCode: r.itemCode || '',
+      batchUnique: r.batchUnique || '', billSlNo: r.billSlNo || '', seq: r.seq || '', dummy: r.dummy || '',
+      supplierDescription: r.supplierDescription || '', qty: r.qty || '', uom: r.uom || '', hsn: r.hsn || '',
+      purRate: r.purRate || '', disc: r.disc || '', finalNet: r.finalNet || '', gst: r.gst || '',
+      printDescription: r.printDescription || '', retailPrice: r.retailPrice || '', disc2: r.disc2 || '',
+      offerPrice: r.offerPrice || '', wspPrice: r.wspPrice || '', dpPrice: r.dpPrice || '', fma: r.fma || '',
+      silkMark: r.silkMark || '', barcodeGenerated: r.barcodeGenerated || '',
+      businessId: business || '', locationId: location || '', finYear: finYear || '',
+    }));
+    const created = await BarcodeLabel.insertMany(docs);
+    await Grc.findByIdAndUpdate(grcId, {
+      totalQuantity,
+      gst,
+      netAmount,
+      taxable: netAmount - discountAmount,
+    });
+    return json({ ok: true, grcId: String(grcId), count: created.length });
+  }
+
   const grcPayload = {
     grcDate: grcDate || new Date(),
     vendorDocNo: vendorDocNo || '',
-    totalQuantity: totals?.count || 0,
-    gst: rows.reduce((s, r) => s + (parseFloat(r.gst) || 0), 0),
+    totalQuantity: totals?.count || totalQuantity,
+    gst,
     netAmount: totals?.value || 0,
     taxable: (totals?.value || 0) - (totals?.discAmount || 0),
   };
