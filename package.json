@@ -9,6 +9,7 @@
     "seed": "node scripts/seed.mjs"
   },
   "dependencies": {
+    "jsbarcode": "^3.12.3",
     "lucide-react": "^1.33.0",
     "mongoose": "8.9.5",
     "motion": "^13.1.0",
