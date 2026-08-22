@@ -2064,42 +2064,42 @@ export const NAV = [
   // },
  
  
-  // {
-  //   label: 'Transportation',
-  //   icon: LuTruck,
-  //   children: [
-  //     {
-  //       label: 'Transport Master',
-  //       icon: LuTruck,
-  //       href: '/admin/transport/transporter',
-  //     },
-  //     {
-  //       label: 'Delivery',
-  //       icon: LuPackageCheck,
-  //       href: '/admin/transport/delivery',
-  //     },
-  //     {
-  //       label: 'Vehicle Master',
-  //       icon: LuBus,
-  //       href: '/admin/transport/vehicle',
-  //     },
-  //     {
-  //       label: 'Driver Master',
-  //       icon: LuIdCard,
-  //       href: '/admin/transport/driver',
-  //     },
-  //     {
-  //       label: 'Route Master',
-  //       icon: LuRoute,
-  //       href: '/admin/transport/route',
-  //     },
-  //     {
-  //       label: 'Dispatch',
-  //       icon: LuSend,
-  //       href: '/admin/transport/dispatch',
-  //     },
-  //   ],
-  // },
+  {
+    label: 'Transportation',
+    icon: LuTruck,
+    children: [
+      {
+        label: 'Transport Master',
+        icon: LuTruck,
+        href: '/admin/transport/transporter',
+      },
+      {
+        label: 'Delivery',
+        icon: LuPackageCheck,
+        href: '/admin/transport/delivery',
+      },
+      {
+        label: 'Vehicle Master',
+        icon: LuBus,
+        href: '/admin/transport/vehicle',
+      },
+      {
+        label: 'Driver Master',
+        icon: LuIdCard,
+        href: '/admin/transport/driver',
+      },
+      {
+        label: 'Route Master',
+        icon: LuRoute,
+        href: '/admin/transport/route',
+      },
+      {
+        label: 'Dispatch',
+        icon: LuSend,
+        href: '/admin/transport/dispatch',
+      },
+    ],
+  },
  
   {
     label: 'Purchase',
