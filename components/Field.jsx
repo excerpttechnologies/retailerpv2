@@ -236,7 +236,7 @@ export default function Field({ f, value, error, onChange }) {
   switch (f.type) {
     case 'textarea':
       control = (
-        <textarea className="f-input f-textarea" value={value ?? ''} onChange={(e) => set(e.target.value)} />
+        <textarea className="f-input f-textarea" value={value ?? ''} readOnly={!!f.readOnly} onChange={(e) => set(e.target.value)} />
       );
       break;
 

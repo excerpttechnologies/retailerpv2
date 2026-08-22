@@ -1,8 +1,6 @@
 'use client';
 import { use } from 'react';
 import IcChallanForm from '@/components/IcChallanForm';
-// import { FIELDS, SHOW_INFO } from '../fields';
-
 import { FIELDS, SHOW_INFO } from '../../fields';
 
 /* Edit Inter Company Auto Purchases Return.

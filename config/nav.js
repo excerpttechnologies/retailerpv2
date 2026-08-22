@@ -2011,11 +2011,11 @@ export const NAV = [
         icon: LuBox,
         href: '/admin/inventory/item',
       },
-      {
-        label: 'Print Label',
-        icon: LuPrinter,
-        href: '/admin/inventory/barcode-print',
-      },
+      // {
+      //   label: 'Print Label',
+      //   icon: LuPrinter,
+      //   href: '/admin/inventory/barcode-print',
+      // },
       {
         label: 'Barcode Item',
         icon: LuScanBarcode,
@@ -2185,6 +2185,28 @@ export const NAV = [
         href: '/admin/transaction/intercompanysell/auto-purchases-return' },
       { label: 'Sales Return', icon: LuUndo2,
         href: '/admin/transaction/intercompanysell/salereturn' },
+    ],
+  },
+
+  {
+    label: 'Stock Transfers',
+    icon: LuShuffle,
+    children: [
+      {
+        label: 'Transfer Stock Packet',
+        icon: LuPackage,
+        href: '/admin/transaction/stocktransfers/transferstockpacket',
+      },
+      {
+        label: 'Transfer Stock Location',
+        icon: LuMapPin,
+        href: '/admin/transaction/stocktransfers/transferstocklocation',
+      },
+      {
+        label: 'Transfer Stock Received',
+        icon: LuPackageCheck,
+        href: '/admin/transaction/stocktransfers/transferstockreceived',
+      },
     ],
   },
  
