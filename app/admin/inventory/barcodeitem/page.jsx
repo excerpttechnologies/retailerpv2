@@ -206,6 +206,11 @@ const CONFIG = {
 
   columns: [
     {
+      k: "productImageUrl",
+      t: "Image",
+      f: "image"
+    },
+    {
       k: "barcodeNo",
       t: "Barcode No"
     },

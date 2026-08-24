@@ -1,14 +1,12 @@
 import { isValidObjectId } from 'mongoose';
 import dbConnect from '@/lib/db';
-import BarcodeItem from '@/models/BarcodeItem';
+import BarcodeItem, { LABEL_FIELD } from '@/models/BarcodeItem';
+import ProductImage from '@/models/ProductImage';
 import { requireSession } from '@/lib/session';
 import { resolveRefLabels } from '@/lib/refLabels';
 import { validate, escapeRegex } from '@/lib/validate';
-/* Barcode Item is a filter-only screen - it has no add form, so there are
-   no declared fields to validate against. */
-const FIELDS = [];
 
-/* /api/barcodeitem - list + create. */
+const FIELDS = [];
 
 const json = (d, s = 200) => Response.json(d, { status: s });
 const PER_PAGE = 10;
@@ -40,8 +38,33 @@ export async function GET(req) {
     .limit(perPage)
     .lean();
 
+  // Attach the staff-uploaded product photo (if any) for each row's barcode.
+  // ProductImage lives in the same MongoDB database, written by the mobile
+  // app backend when staff scan + upload a photo. Matched on
+  // barcodeGenerated === BarcodeItem[LABEL_FIELD] ("barcodeNo").
+  const barcodes = [...new Set(rows.map((r) => r[LABEL_FIELD]).filter(Boolean))];
+  const imageByBarcode = {};
+  if (barcodes.length) {
+    const images = await ProductImage.find({ barcodeGenerated: { $in: barcodes } })
+      .sort({ createdAt: -1 })
+      .lean();
+    // Images are newest-first, so the first one seen per barcode is the
+    // most recently uploaded - keep only that one.
+    for (const img of images) {
+      if (!imageByBarcode[img.barcodeGenerated]) {
+        imageByBarcode[img.barcodeGenerated] = img.imageUrl;
+      }
+    }
+  }
+
+  const rowsWithImages = rows.map((r) => ({
+    ...r,
+    _id: String(r._id),
+    productImageUrl: imageByBarcode[r[LABEL_FIELD]] || '',
+  }));
+
   return json({
-    rows: rows.map((r) => ({ ...r, _id: String(r._id) })),
+    rows: rowsWithImages,
     labels: await resolveRefLabels(rows),
     total,
     page,

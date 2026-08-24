@@ -1643,11 +1643,28 @@ export default function ListView({ cfg, slug }) {
       ) : (
         ""
       );
+
+      
     } else if (col.f === "dash") {
-      content = raw ? String(raw) : "\u2014";
+      } else if (col.f === "image") {
+      content = raw ? (
+        <img
+          src={raw}
+          alt=""
+          className="h-10 w-10 rounded object-cover border border-line"
+          onError={(e) => { e.currentTarget.style.display = "none"; }}
+        />
+      ) : (
+        <span className="text-cell">—</span>
+      );
     } else {
+      
       content = fmt(col.f, raw, state.labels);
     }
+  
+    
+
+    
  
     /* Optional inline label after the value - `badge` is a function on the
        column that receives the whole row, so it can key off any field, not
@@ -1676,6 +1693,7 @@ export default function ListView({ cfg, slug }) {
         const v = c.value ? c.value(r) : r[c.k];
         if (c.f === "pill") return String(v || "");
         if (c.f === "dash") return v ? String(v) : "";
+        if (c.f === "image") return v ? String(v) : "";
         if (c.f === "badges") return Array.isArray(v) ? v.join(", ") : String(v ?? "");
         return fmt(c.f, v, state.labels);
       }),
