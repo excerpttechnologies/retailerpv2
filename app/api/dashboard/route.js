@@ -4,6 +4,13 @@ import { requireSession } from '@/lib/session';
 import Grc from '@/models/Grc';
 import SalesInvoice from '@/models/SalesInvoice';
 import PosInvoice from '@/models/PosInvoice';
+import PosReturn from '@/models/PosReturn';
+import PurchaseInvoice from '@/models/PurchaseInvoice';
+import DebitNote from '@/models/DebitNote';
+import CreditNote from '@/models/CreditNote';
+import SalesReturn from '@/models/SalesReturn';
+import IcSalesInvoice from '@/models/IcSalesInvoice';
+import Voucher from '@/models/Voucher';
 import Ledger from '@/models/Ledger';
 import LedgerGroup from '@/models/LedgerGroup';
 import Business from '@/models/Business';
@@ -20,10 +27,27 @@ import Business from '@/models/Business';
                        rooted at EXPENSES
      Both charts     - sales invoices grouped by day (last 30) and by month
                        (financial year), split into two series by business
+     Purchase Due    - what suppliers are owed: purchase invoices less the
+                       debit notes raised against them
+     Invoice Due     - what customers and other branches owe: sales invoices
+                       + POS outstanding + inter company invoices, less credit
+                       notes, sales returns and POS returns
 
-   STATIC (source module not built):
-     Purchase Due / Invoice Due need payments and receipts, which live in the
-     Voucher / Cash Register modules.
+   ABOUT THE TWO "DUE" TILES
+     Now that the Voucher module posts settlements, these are real balances:
+     what was invoiced, less what has been returned AND less what has actually
+     been paid or received.
+
+       Purchase Due = purchase invoices - debit notes - payment vouchers
+       Invoice Due  = sales + POS outstanding + inter company
+                      - credit notes - returns - receipt vouchers
+
+     Contra vouchers are excluded on purpose: moving money between your own
+     bank and cash accounts settles nothing with a supplier or a customer.
+
+     Both are floored at zero. Over-paying a supplier is a debit balance in
+     their favour, not a negative payable, and a Due tile is not the place to
+     surface it - the party's ledger is.
 
    Scope is applied per collection: ledgers aren't FY-scoped, so applying a
    finYear filter to them matches nothing and silently reads zero.
@@ -31,7 +55,7 @@ import Business from '@/models/Business';
 
 const json = (d, s = 200) => Response.json(d, { status: s });
 
-const STATIC_TILES = { purchaseDue: 3299, invoiceDue: 3459 };
+const r2 = (n) => Number((Number(n) || 0).toFixed(2));
 
 function fyRange(finYear) {
   /* Indian FY: 1 April -> 31 March */
@@ -74,10 +98,52 @@ export async function GET(req) {
     return r.length ? r[0].total : 0;
   };
 
+  /* Credit Note and Sales Return carry no total on the header - only line
+     items - so their value has to come off the lines. $sum ignores anything
+     non-numeric, so a line saved without the field contributes nothing
+     rather than breaking the pipeline. */
+  const sumLines = async (Model, match, field = 'netAmount') => {
+    const r = await Model.aggregate([
+      { $match: match },
+      { $unwind: { path: '$items', preserveNullAndEmptyArrays: false } },
+      { $group: { _id: null, total: { $sum: { $ifNull: ['$items.' + field, 0] } } } },
+    ]);
+    return r.length ? r[0].total : 0;
+  };
+
   /* ---------------------------------------------------------------- tiles */
   const totalPurchaseCount = await Grc.countDocuments(txScope);
   const salesInvoiceTotal = await sum(SalesInvoice, txScope, 'netValue');
   const posTotal = await sum(PosInvoice, txScope, 'totalAmount');
+
+  /* ------------------------------------------------------------- due tiles */
+  const [
+    purchaseInvoiced, debitNoted,
+    posOutstanding, posReturned, icInvoiced, creditNoted, salesReturned,
+    paymentsMade, receiptsTaken,
+  ] = await Promise.all([
+    sum(PurchaseInvoice, txScope, 'totalPayable'),
+    sum(DebitNote, txScope, 'value'),
+    /* POS records what is still owed on the sale itself, so this one field
+       is the outstanding amount - not the whole ticket */
+    sum(PosInvoice, txScope, 'sellDue'),
+    sum(PosReturn, txScope, 'totalAmount'),
+    /* an inter company invoice is genuinely receivable from the destination
+       branch, so it belongs here the same way it does on Ledger Transaction */
+    sum(IcSalesInvoice, txScope, 'netValue'),
+    sumLines(CreditNote, txScope),
+    sumLines(SalesReturn, txScope),
+    /* settlement - what has actually been paid and received */
+    sum(Voucher, { ...txScope, type: 'Payment' }, 'totalAmount'),
+    sum(Voucher, { ...txScope, type: 'Receipt' }, 'totalAmount'),
+  ]);
+
+  const purchaseDue = Math.max(0, r2(purchaseInvoiced - debitNoted - paymentsMade));
+  const invoiceDue = Math.max(
+    0,
+    r2(salesInvoiceTotal + posOutstanding + icInvoiced
+      - creditNoted - salesReturned - posReturned - receiptsTaken)
+  );
 
   /* Expenses: walk the ledger-group tree down from any EXPENSES root */
   let expenses = 0;
@@ -147,8 +213,8 @@ export async function GET(req) {
     tiles: {
       totalPurchase: { value: totalPurchaseCount, dynamic: true, note: 'GRC count' },
       totalSales: { value: Number((salesInvoiceTotal + posTotal).toFixed(2)), dynamic: true },
-      purchaseDue: { value: STATIC_TILES.purchaseDue, dynamic: false },
-      invoiceDue: { value: STATIC_TILES.invoiceDue, dynamic: false },
+      purchaseDue: { value: purchaseDue, dynamic: true, note: 'less notes & payments' },
+      invoiceDue: { value: invoiceDue, dynamic: true, note: 'less returns & receipts' },
       expenses: { value: Number(expenses.toFixed(2)), dynamic: true },
     },
     last30: {

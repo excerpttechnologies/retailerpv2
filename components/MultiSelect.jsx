@@ -20,7 +20,11 @@ export default function MultiSelect({
 
   const selected = mode === 'multi'
     ? (Array.isArray(value) ? value : []).map((v) => options.find((o) => o.value === v) || { value: v, label: v })
-    : options.find((o) => o.value === value) || null;
+    /* fall back to the raw value the way the multi branch above already
+       does - otherwise a value that is not in the currently fetched option
+       page renders blank. The PIN code lookup fills City with a name the
+       /api/cities page may not contain yet. */
+    : options.find((o) => o.value === value) || (value ? { value, label: String(value) } : null);
 
   const shown = options.filter((o) => {
     if (term && !String(o.label).toLowerCase().includes(term.toLowerCase())) return false;

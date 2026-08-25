@@ -1,6 +1,6 @@
 'use client';
 import SingleFormView from '@/components/SingleFormView';
-import { FIELDS, SECTIONS } from './fields';
+import { SECTIONS } from './fields';
 
 /* Loyalty Point - one record per scope. This file IS the page. */
 

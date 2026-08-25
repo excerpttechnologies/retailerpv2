@@ -142,7 +142,17 @@ export default function TabbedFormView({ cfg, id, slug }) {
             )}
             {/* column count per section: the Customer page needs a 4-across
                 identity row above 6-across name and address rows */}
-            <div className={s.cols === 6 ? 'form-grid-6' : 'form-grid-4'}>
+            {/* `.form-grid` is already the 3-across variant, so cols: 3 needs
+                no new CSS. Written as literal class strings because Tailwind
+                scans source text - a built-up `xl:grid-cols-${n}` would never
+                be generated. */}
+            <div
+              className={
+                s.cols === 6 ? 'form-grid-6'
+                  : s.cols === 3 ? 'form-grid'
+                    : 'form-grid-4'
+              }
+            >
               {(s.fields || []).map((f) => (
                 <Field key={f.k} f={f} value={data[f.k]} error={errors[f.k]} onChange={set} />
               ))}

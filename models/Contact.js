@@ -70,6 +70,11 @@ const ContactSchema = new mongoose.Schema(
     orderAdvanceLimit: { type: Number, default: null },
     paymentWithinDays: { type: Number, default: null },
     paymentDateType: { type: String, default: '' },
+    /* Payment Setup on the Agent form asks for these two as dates rather than
+       for a "Payment Date Type" choice, matching the deployed screen. Supplier
+       and Customer still use paymentDateType, so all three keys coexist. */
+    entryDate: { type: Date, default: null },
+    documentDate: { type: Date, default: null },
     discountAllowWithinPercent: { type: Number, default: null },
     discountAllowInDays: { type: Number, default: null },
     purchaseTermsId: { type: mongoose.Schema.Types.ObjectId, ref: 'purchaseTerm', default: null },
@@ -99,6 +104,24 @@ const ContactSchema = new mongoose.Schema(
     allowProduction: { type: String, default: '' },
     allowToStockPoint: { type: String, default: '' },
     maximumOverDueDays: { type: Number, default: null },
+
+    /* Customer form only - the deployed Sales Details / Financial Details tabs.
+       Supplier and Agent have no equivalent, so these stay empty on those two.
+       See app/admin/contact/customer/README-CUSTOMER-FORM.md */
+    priceList: { type: String, default: 'ON RSP' },
+    saleDueDate: { type: Number, default: null },
+    interestChargedIfDelay: { type: Number, default: null },
+    graceDays: { type: Number, default: null },
+    invoiceCreditLimit: { type: Number, default: null },
+    overdues: { type: Number, default: null },
+    overduesDaysLock: { type: Number, default: null },
+    logisticsApplicable: { type: String, default: '' },
+    salesTermId: { type: mongoose.Schema.Types.ObjectId, ref: 'salesTerm', default: null },
+    transporterId: { type: mongoose.Schema.Types.ObjectId, ref: 'transporter', default: null },
+    remarks: { type: String, default: '' },
+    customerType: { type: String, default: '' },
+    salesLedgerId: { type: mongoose.Schema.Types.ObjectId, ref: 'ledger', default: null },
+    salesReturnLedgerId: { type: mongoose.Schema.Types.ObjectId, ref: 'ledger', default: null },
     /* supplier / agent / customer share this collection; stamped server-side */
     contactKind: { type: String, enum: ['Supplier', 'Agent', 'Customer'], index: true },
     contactId: { type: String, index: true },

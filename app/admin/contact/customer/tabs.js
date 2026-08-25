@@ -227,7 +227,13 @@ export const TABS = [
               "k": "billingZipCode",
               "label": "Zip Code",
               "ph": true,
-              "type": "text"
+              "type": "zip",
+              "fill": {
+                "city": "billingCity",
+                "state": "billingState",
+                "country": "billingCountry",
+                "district": "billingDistrict"
+              }
             },
             {
               "k": "billingMobile",
@@ -324,7 +330,13 @@ export const TABS = [
               "k": "shippingZipCode",
               "label": "Zip Code",
               "ph": true,
-              "type": "text"
+              "type": "zip",
+              "fill": {
+                "city": "shippingCity",
+                "state": "shippingState",
+                "country": "shippingCountry",
+                "district": "shippingDistrict"
+              }
             },
             {
               "k": "shippingMobile",
@@ -377,29 +389,27 @@ export const TABS = [
     {
       "key": "sales",
       "label": "Sales Details",
+      /* Rebuilt to match erp.orbiteerp.com/admin/contact/customer/add.
+         This tab used to be a copy of the Supplier "Purchase Details" tab -
+         Markup Price Calculation, Purchase Order Setup, Payment Setup and
+         Purchase Terms. None of those are on the deployed Customer screen;
+         a customer is sold to, not bought from. Supplier and Agent keep them. */
       "sections": [
         {
-          "title": "Price Calculation Setup",
+          "title": "Price Setup",
+          "cols": 3,
           "fields": [
             {
-              "k": "markupPriceCalculation",
-              "label": "Markup Price Calculation",
+              "k": "priceList",
+              "label": "Price List",
               "type": "select",
               "req": true,
-              "def": "Purchase Rate",
+              "def": "ON RSP",
               "opts": [
-                {
-                  "v": "Purchase Rate",
-                  "l": "Purchase Rate"
-                },
-                {
-                  "v": "MRP",
-                  "l": "MRP"
-                },
-                {
-                  "v": "Landing Cost",
-                  "l": "Landing Cost"
-                }
+                { "v": "ON RSP", "l": "ON RSP" },
+                { "v": "ON WSP", "l": "ON WSP" },
+                { "v": "ON DP", "l": "ON DP" },
+                { "v": "ON MRP", "l": "ON MRP" }
               ]
             },
             {
@@ -408,61 +418,26 @@ export const TABS = [
               "type": "select",
               "placeholder": "--Select--",
               "opts": [
-                {
-                  "v": "Amount",
-                  "l": "Amount"
-                },
-                {
-                  "v": "Percentage",
-                  "l": "Percentage"
-                }
+                { "v": "Percentage", "l": "Percentage" },
+                { "v": "Amount", "l": "Amount" }
               ]
             },
             {
               "k": "discount",
               "label": "Discount",
               "type": "number"
-            },
-            {
-              "k": "markUpOnCostRsp",
-              "label": "Mark Up on Cost RSP",
-              "type": "number"
-            },
-            {
-              "k": "rspRoundOff",
-              "label": "RSP Round Off",
-              "type": "number"
-            },
-            {
-              "k": "markUpOnCostWsp",
-              "label": "Mark Up on Cost WSP",
-              "type": "number"
-            },
-            {
-              "k": "wspRoundOff",
-              "label": "WSP Round Off",
-              "type": "number"
-            },
-            {
-              "k": "markUpOnCostDp",
-              "label": "Mark Up on Cost DP",
-              "type": "number"
-            },
-            {
-              "k": "dpRoundOff",
-              "label": "Dp Round Off",
-              "type": "number"
             }
           ]
         },
         {
           "title": "Agent Setup",
+          "cols": 3,
           "fields": [
             {
               "k": "agentId",
               "label": "Agent Name",
               "type": "ref",
-              "ref": "supplier",
+              "ref": "agent",
               "placeholder": "Select Supplier"
             },
             {
@@ -479,93 +454,60 @@ export const TABS = [
           ]
         },
         {
-          "title": "Purchase Order Setup",
+          "title": "Credit Setup",
+          "cols": 3,
+          /* placeholder-only on the deployed screen - no labels above these */
           "fields": [
-            {
-              "k": "orderDeliveryEstimatedDays",
-              "label": "Order Delivery Estimated(Days)",
-              "type": "number"
-            },
-            {
-              "k": "orderAcceptedDelaysDays",
-              "label": "Order Accepted Delays(Days)",
-              "type": "number"
-            },
-            {
-              "k": "orderAdvanceLimit",
-              "label": "Order Advance Limit",
-              "type": "number"
-            }
-          ]
-        },
-        {
-          "title": "Payment Setup",
-          "fields": [
-            {
-              "k": "paymentWithinDays",
-              "label": "Payment within (Days)",
-              "type": "number"
-            },
-            {
-              "k": "paymentDateType",
-              "label": "Payment Date Type",
-              "type": "select",
-              "placeholder": "--Select--",
-              "opts": [
-                {
-                  "v": "Invoice Date",
-                  "l": "Invoice Date"
-                },
-                {
-                  "v": "GRC Date",
-                  "l": "GRC Date"
-                },
-                {
-                  "v": "Month End",
-                  "l": "Month End"
-                }
-              ]
-            },
-            {
-              "k": "discountAllowWithinPercent",
-              "label": "Discount Allow Within %",
-              "type": "number"
-            },
-            {
-              "k": "discountAllowInDays",
-              "label": "In Days",
-              "type": "number"
-            }
+            { "k": "saleDueDate", "label": "Sale Due Date", "ph": true, "type": "number" },
+            { "k": "interestChargedIfDelay", "label": "Interest Charged if Delay", "ph": true, "type": "number" },
+            { "k": "graceDays", "label": "Grace Days", "ph": true, "type": "number" },
+            { "k": "invoiceCreditLimit", "label": "Invoice Credit Limit", "ph": true, "type": "number" },
+            { "k": "overdues", "label": "Overdues", "ph": true, "type": "number" },
+            { "k": "overduesDaysLock", "label": "Overdues Days Lock", "ph": true, "type": "number" }
           ]
         },
         {
           "title": "Tax Other Setup",
+          "cols": 3,
           "fields": [
-            {
-              "k": "purchaseTermsId",
-              "label": "Purchase Terms",
-              "type": "ref",
-              "ref": "purchase/master/term"
-            },
             {
               "k": "logisticsTerms",
               "label": "Logistics Terms",
               "type": "select",
               "placeholder": "--Select--",
               "opts": [
-                {
-                  "v": "To Pay",
-                  "l": "To Pay"
-                },
-                {
-                  "v": "Paid",
-                  "l": "Paid"
-                },
-                {
-                  "v": "Self Pickup",
-                  "l": "Self Pickup"
-                }
+                { "v": "To Pay", "l": "To Pay" },
+                { "v": "Paid", "l": "Paid" },
+                { "v": "Self Pickup", "l": "Self Pickup" }
               ]
+            },
+            {
+              "k": "logisticsApplicable",
+              "label": "Logistics Applicable",
+              "type": "select",
+              "placeholder": "--Select--",
+              "opts": [
+                { "v": "Yes", "l": "Yes" },
+                { "v": "No", "l": "No" }
+              ]
+            },
+            {
+              "k": "salesTermId",
+              "label": "Sales Term",
+              "type": "ref",
+              "ref": "sales/master/term"
+            },
+            {
+              "k": "transporterId",
+              "label": "Transporter Name",
+              "type": "ref",
+              "ref": "transporter",
+              "placeholder": "--Select--"
+            },
+            {
+              "k": "remarks",
+              "label": "Remarks",
+              "type": "text"
             }
           ]
         }
@@ -574,25 +516,18 @@ export const TABS = [
     {
       "key": "financial",
       "label": "Financial Details",
+      /* Also rebuilt: the supplier wording ("Supplier Ledger Mapping",
+         "Puchase Ledger Mapping", "Supplier Bank Details") and the whole
+         TDS Setup section are not on the deployed Customer screen. */
       "sections": [
         {
-          "title": "Supplier Ledger Mapping",
+          "title": "Group Ledger Mapping",
+          "cols": 3,
           "fields": [
             {
-              "k": "supplierType",
-              "label": "Supplier Type",
-              "type": "select",
-              "placeholder": "--Select--",
-              "opts": [
-                {
-                  "v": "Sundry Creditors",
-                  "l": "Sundry Creditors"
-                },
-                {
-                  "v": "Sundry Debtors",
-                  "l": "Sundry Debtors"
-                }
-              ]
+              "k": "customerType",
+              "label": "Customer Type",
+              "type": "text"
             },
             {
               "k": "openingBalance",
@@ -604,158 +539,59 @@ export const TABS = [
           ]
         },
         {
-          "title": "Puchase Ledger Mapping",
+          "title": "Ledger Mapping",
+          "cols": 6,
           "fields": [
             {
-              "k": "purchasesLedgerId",
-              "label": "Purchases",
-              "hint": "(Group Mapping: Purchases Accounts)",
+              "k": "salesLedgerId",
+              "label": "Sales Ledger",
               "type": "ref",
-              "ref": "ledger"
+              "ref": "ledger",
+              "span": 3
             },
             {
-              "k": "purchasesReturnLedgerId",
-              "label": "Purchases Return",
-              "hint": "(Group Mapping: Purchases Return)",
+              "k": "salesReturnLedgerId",
+              "label": "Sales Return Ledger",
               "type": "ref",
-              "ref": "ledger"
-            },
-            {
-              "k": "consignmentPurchases",
-              "label": "Consignment Purchases",
-              "type": "select",
-              "placeholder": "--Select--",
-              "opts": [
-                {
-                  "v": "Yes",
-                  "l": "Yes"
-                },
-                {
-                  "v": "No",
-                  "l": "No"
-                }
-              ]
+              "ref": "ledger",
+              "span": 3
             }
           ]
         },
         {
           "title": "Company Reg. Details",
+          "cols": 4,
           "fields": [
-            {
-              "k": "pan",
-              "label": "PAN (ex: AAAAA1234A)",
-              "type": "text"
-            },
-            {
-              "k": "cin",
-              "label": "CIN",
-              "type": "text"
-            },
+            { "k": "pan", "label": "PAN (ex: AAAAA1234A)", "type": "text" },
+            { "k": "cin", "label": "CIN", "type": "text" },
             {
               "k": "gstType",
               "label": "GST Type",
               "type": "select",
               "placeholder": "--Select--",
               "opts": [
-                {
-                  "v": "Registered",
-                  "l": "Registered"
-                },
-                {
-                  "v": "Unregistered",
-                  "l": "Unregistered"
-                },
-                {
-                  "v": "Composition",
-                  "l": "Composition"
-                },
-                {
-                  "v": "SEZ",
-                  "l": "SEZ"
-                }
+                { "v": "Registered", "l": "Registered" },
+                { "v": "Unregistered", "l": "Unregistered" },
+                { "v": "Composition", "l": "Composition" },
+                { "v": "SEZ", "l": "SEZ" }
               ]
             },
-            {
-              "k": "gstRegDate",
-              "label": "Gst Reg. Date",
-              "type": "date"
-            },
-            {
-              "k": "ssiNo",
-              "label": "SSI No",
-              "type": "text"
-            },
-            {
-              "k": "ssiRegDate",
-              "label": "SSI Reg. Date",
-              "type": "date"
-            },
-            {
-              "k": "msmeNo",
-              "label": "MSME No",
-              "type": "text"
-            },
-            {
-              "k": "msmeRegDate",
-              "label": "MSME Reg. Date",
-              "type": "date"
-            }
+            { "k": "gstRegDate", "label": "Gst Reg. Date", "type": "date" },
+            { "k": "ssiNo", "label": "SSI No", "type": "text" },
+            { "k": "ssiRegDate", "label": "SSI Reg. Date", "type": "date" },
+            { "k": "msmeNo", "label": "MSME No", "type": "text" },
+            { "k": "msmeRegDate", "label": "MSME Reg. Date", "type": "date" }
           ]
         },
         {
-          "title": "TDS Setup",
+          "title": "Customer Bank Details",
+          "cols": 3,
           "fields": [
-            {
-              "k": "tdsLedgerId",
-              "label": "TDS Ledger",
-              "type": "ref",
-              "ref": "ledger"
-            },
-            {
-              "k": "tdsPercent",
-              "label": "TDS Percent (%)",
-              "type": "number"
-            },
-            {
-              "k": "tdsName",
-              "label": "TDS Name",
-              "type": "text"
-            },
-            {
-              "k": "tdsSection",
-              "label": "TDS Section",
-              "type": "text"
-            }
-          ]
-        },
-        {
-          "title": "Supplier Bank Details",
-          "fields": [
-            {
-              "k": "bankAccountName",
-              "label": "Supplier Name as Per Bank",
-              "type": "text"
-            },
-            {
-              "k": "bankName",
-              "label": "Bank Name",
-              "type": "text"
-            },
-            {
-              "k": "accountNo",
-              "label": "Account No.",
-              "type": "text"
-            },
-            {
-              "k": "ifsc",
-              "label": "IFSC",
-              "type": "text"
-            },
-            {
-              "k": "swiftCode",
-              "label": "Swift Code",
-              "type": "text"
-            }
+            { "k": "bankAccountName", "label": "Customer Name as Per Bank", "type": "text" },
+            { "k": "bankName", "label": "Bank Name", "type": "text" },
+            { "k": "accountNo", "label": "Account No.", "type": "text" },
+            { "k": "ifsc", "label": "IFSC", "type": "text" },
+            { "k": "swiftCode", "label": "Swift Code", "type": "text" }
           ]
         }
       ]

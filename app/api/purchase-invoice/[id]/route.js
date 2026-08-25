@@ -73,6 +73,7 @@
 import dbConnect from '@/lib/db';
 import PurchaseInvoice from '@/models/PurchaseInvoice';
 import { requireSession } from '@/lib/session';
+import { resolveRefLabels } from '@/lib/refLabels';
 import Grc from '@/models/Grc';
 import { validate } from '@/lib/validate';
 import { FORM } from '@/app/admin/transaction/purchase/invoice/form';
@@ -139,7 +140,12 @@ export async function GET(req, { params }) {
 
   const doc = await PurchaseInvoice.findById(id).lean();
   if (!doc) return json({ doc: null }, 404);
-  return json({ doc: { ...doc, _id: String(doc._id) } });
+  /* `labels` is additive - the edit form ignores it, the View dialog needs
+     it to show Vendor / Agent / Term / Group as names rather than ids */
+  return json({
+    doc: { ...doc, _id: String(doc._id) },
+    labels: await resolveRefLabels([doc]),
+  });
 }
 
 export async function PUT(req, { params }) {

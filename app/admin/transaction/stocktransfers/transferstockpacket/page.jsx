@@ -1,23 +1,12 @@
- 'use client';
+'use client';
+import StockTransferPacketList from '@/components/StockTransferPacketList';
 
-import ListView from '@/components/ListView';
+/* Transfer Stock Packets - list.
 
-const CONFIG = {
-  title: 'Transfer Stock Packet',
-  basePath: '/admin/transaction/stocktransfers/',
-  slugPath: 'transferstockpacket',
-  endpoint: '/api/stock-transfer-packet',
-  scope: ['business', 'location', 'finYear'],
-  addTitle: 'Transfer Stock Packet',
-  columns: [
-    { k: 'transferDate', t: 'Transfer Date', f: 'date' },
-    { k: 'transferFromLocationId', t: 'Transfer From', f: 'ref' },
-    { k: 'transferToLocationId', t: 'Transfer To', f: 'ref' },
-    { k: 'packetNo', t: 'Packet No' },
-    { k: 'createdAt', t: 'Created On', f: 'date' },
-  ],
-};
+   The row's View action opens a dialog rather than navigating, so this list
+   owns its own view instead of going through ListView - see the note at the
+   top of StockTransferPacketList. */
 
-export default function TransferStockPacketPage() {
-  return <ListView cfg={CONFIG} />;
+export default function StockTransferPacketListPage() {
+  return <StockTransferPacketList />;
 }

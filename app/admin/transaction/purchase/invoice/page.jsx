@@ -1,9 +1,20 @@
 'use client';
 import ListView from '@/components/ListView';
+import PurchaseInvoiceView from '@/components/PurchaseInvoiceView';
+import PurchaseInvoicePrintView from '@/components/PurchaseInvoicePrintView';
 
-/* Purchase Invoices - list. Columns declared here, not fetched from a registry. */
+/* Purchase Invoices - list. Columns declared here, not fetched from a registry.
+
+   ViewDialog makes the eye icon open a read-only dialog instead of pushing
+   the record route, which is the edit form. The pencil still edits. */
 
 const CONFIG = {
+  ViewDialog: PurchaseInvoiceView,
+  PrintDialog: PurchaseInvoicePrintView,
+  /* view · print · delete, matching the deployed row - there is no pencil
+     here. An invoice that has been raised is viewed or reprinted, not edited
+     in place; the edit route still exists for anyone who navigates to it. */
+  actionIcons: ['view', 'print', 'delete'],
   title: "Purchase Invoices",
   basePath: '/admin/',
   slugPath: "transaction/purchase/invoice",

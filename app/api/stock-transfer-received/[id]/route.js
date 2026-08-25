@@ -1,19 +1,16 @@
 import dbConnect from '@/lib/db';
 import StockTransferReceived from '@/models/StockTransferReceived';
+import StockTransferLocation from '@/models/StockTransferLocation';
 import { requireSession } from '@/lib/session';
-import { validate } from '@/lib/validate';
 
-const FIELDS = [
-  { k: 'packetId', label: 'Packet', type: 'ref' },
-  { k: 'locationIdFrom', label: 'Transfer From', type: 'ref' },
-  { k: 'locationIdTo', label: 'Transfer To', type: 'ref' },
-  { k: 'receivedNo', label: 'Received No', type: 'text' },
-  { k: 'receivedDate', label: 'Received Date', type: 'date' },
-  { k: 'sentQty', label: 'Sent Qty', type: 'number' },
-  { k: 'receivedQty', label: 'Received Qty', type: 'number' },
-  { k: 'pendingQty', label: 'Pending Qty', type: 'number' },
-  { k: 'items', label: 'Items', type: 'multiref' },
-];
+/* /api/stock-transfer-received/<id> - read one, reverse.
+
+   There is no PUT. A receipt is a record of something that happened; its
+   figures came from the transfer it accepted. To correct one, reverse it and
+   receive again.
+
+   DELETE reverses the whole accept: the receipt goes and the transfer returns
+   to the sender's Pending list. */
 
 const json = (d, s = 200) => Response.json(d, { status: s });
 
@@ -29,25 +26,6 @@ export async function GET(req, { params }) {
   return json({ doc: { ...doc, _id: String(doc._id) } });
 }
 
-export async function PUT(req, { params }) {
-  const session = await requireSession();
-  if (!session) return json({ error: 'Unauthorized' }, 401);
-
-  const { id } = await params;
-  const body = await req.json();
-  await dbConnect();
-
-  const { errors, doc, ok } = validate(FIELDS, body.data || {});
-  if (!ok) return json({ errors }, 422);
-
-  if (Array.isArray(body.data?.items)) doc.items = body.data.items;
-
-  const updated = await StockTransferReceived.findByIdAndUpdate(id, doc, { new: true, runValidators: true });
-  if (!updated) return json({ error: 'Not found' }, 404);
-
-  return json({ ok: true, id });
-}
-
 export async function DELETE(req, { params }) {
   const session = await requireSession();
   if (!session) return json({ error: 'Unauthorized' }, 401);
@@ -55,6 +33,20 @@ export async function DELETE(req, { params }) {
   const { id } = await params;
   await dbConnect();
 
+  const existing = await StockTransferReceived.findById(id).lean();
+  if (!existing) return json({ ok: true });
+
+  /* release first, then remove: if the delete failed after the release the
+     transfer would simply reappear as pending, which is recoverable - the
+     other order leaves a transfer pointing at a receipt that no longer
+     exists */
+  if (existing.stockTransferLocationId) {
+    await StockTransferLocation.updateMany(
+      { _id: existing.stockTransferLocationId },
+      { $set: { receivedId: null } }
+    );
+  }
   await StockTransferReceived.findByIdAndDelete(id);
+
   return json({ ok: true });
 }

@@ -2011,11 +2011,11 @@ export const NAV = [
         icon: LuBox,
         href: '/admin/inventory/item',
       },
-      // {
-      //   label: 'Print Label',
-      //   icon: LuPrinter,
-      //   href: '/admin/inventory/barcode-print',
-      // },
+      {
+        label: 'Print Label',
+        icon: LuPrinter,
+        href: '/admin/inventory/barcode-print',
+      },
       {
         label: 'Barcode Item',
         icon: LuScanBarcode,
@@ -2172,6 +2172,18 @@ export const NAV = [
   },
  
   {
+    label: 'Stock Transfers',
+    icon: LuShuffle,
+    children: [
+      { label: 'Transfer Stock Packet', icon: LuPackage,
+        href: '/admin/transaction/stocktransfers/transferstockpacket' },
+      { label: 'Transfer Stock Location', icon: LuMapPinned,
+        href: '/admin/transaction/stocktransfers/transferstocklocation' },
+      { label: 'Transfer Stock Received', icon: LuPackageCheck,
+        href: '/admin/transaction/stocktransfers/transferstockreceiveds' },
+    ],
+  },
+  {
     label: 'Inter Company Sell',
     icon: LuHouse,
     children: [
@@ -2185,28 +2197,6 @@ export const NAV = [
         href: '/admin/transaction/intercompanysell/auto-purchases-return' },
       { label: 'Sales Return', icon: LuUndo2,
         href: '/admin/transaction/intercompanysell/salereturn' },
-    ],
-  },
-
-  {
-    label: 'Stock Transfers',
-    icon: LuShuffle,
-    children: [
-      {
-        label: 'Transfer Stock Packet',
-        icon: LuPackage,
-        href: '/admin/transaction/stocktransfers/transferstockpacket',
-      },
-      {
-        label: 'Transfer Stock Location',
-        icon: LuMapPin,
-        href: '/admin/transaction/stocktransfers/transferstocklocation',
-      },
-      {
-        label: 'Transfer Stock Received',
-        icon: LuPackageCheck,
-        href: '/admin/transaction/stocktransfers/transferstockreceived',
-      },
     ],
   },
  
@@ -2296,11 +2286,30 @@ export const NAV = [
   // },
  
   {
+    label: 'Cash Register',
+    icon: LuCircleDollarSign,
+    children: [
+      { label: 'Cash Registers', icon: LuCircleDollarSign, href: '/admin/cashregister' },
+      { label: 'Open Register', icon: LuFileCheck, href: '/admin/cashregister/open' },
+    ],
+  },
+
+  {
+    label: 'Voucher',
+    icon: LuFileCheck,
+    children: [
+      { label: 'Receipt Vouchers', icon: LuBadgeIndianRupee, href: '/admin/voucher/receipt-vouchers' },
+      { label: 'Contra Vouchers', icon: LuShuffle, href: '/admin/voucher/contra-vouchers' },
+      { label: 'Payment Vouchers', icon: LuWalletCards, href: '/admin/voucher/payment-vouchers' },
+    ],
+  },
+
+  {
     label: 'Ledger Transaction',
     icon: LuBookMarked,
     href: '/admin/ledger-transaction',
   },
- 
+
   {
     label: 'Logout',
     icon: LuLogOut,

@@ -516,6 +516,41 @@ import { useOptions } from './useOptions';
 import { fmt, toCsv, toXlsHtml, download, printTable } from '@/lib/format';
 import { FIELDS, freightBreakdown, bookingDelayDays, delayTone } from '@/app/admin/transport/delivery/fields';
 import { FIELDS as TRANSPORTER_FIELDS } from '@/app/admin/transport/transporter/fields';
+import { TABS as SUPPLIER_TABS } from '@/app/admin/contact/supplier/tabs';
+
+/* ==========================================================================
+   Quick-add supplier.
+
+   The real supplier form is four tabs and ~85 fields - far too much for an
+   inline add while you are halfway through booking a consignment. This is
+   the short version: enough to create a usable supplier, and nothing else.
+   The full record can be completed later under Contacts.
+
+   The list is DERIVED from the supplier tabs rather than hand-copied, for
+   two reasons. /api/supplier validates against the whole tab set, so every
+   `req: true` field has to be here or the POST comes back 422 - deriving
+   means a newly-required field appears here automatically instead of
+   silently breaking this dialog. And the labels, options and defaults stay
+   whatever the real form says they are.
+   ========================================================================== */
+const SUPPLIER_ALL_FIELDS = SUPPLIER_TABS.flatMap(
+  (t) => (t.sections || []).flatMap((s) => s.fields || [])
+);
+
+const pick = (k) => SUPPLIER_ALL_FIELDS.find((f) => f.k === k);
+
+/* the ones worth asking for, in the order they read best. businessName is
+   not required by the API but it IS the label every supplier dropdown shows,
+   so leaving it out would create a supplier that appears blank everywhere. */
+const SUPPLIER_QUICK_FIELDS = (() => {
+  const preferred = ['typeId', 'businessName', 'firstName', 'billingMobile', 'gstNo']
+    .map(pick)
+    .filter(Boolean);
+  const seen = new Set(preferred.map((f) => f.k));
+  /* anything else the API insists on, appended so it can never 422 */
+  const required = SUPPLIER_ALL_FIELDS.filter((f) => f.req && !seen.has(f.k));
+  return [...preferred, ...required];
+})();
 
 /* ==========================================================================
    Delivery / LR Transactions.
@@ -582,8 +617,11 @@ function DeliveryDialog({ row, onClose, onSaved }) {
   const [flash, setFlash] = useState(null);
   const [saving, setSaving] = useState(false);
   const [addingTransporter, setAddingTransporter] = useState(false);
-  /* bumped after a transporter is created inline, to refetch the dropdown */
+  const [addingSupplier, setAddingSupplier] = useState(false);
+  /* bumped after one is created inline, to refetch that dropdown - useOptions
+     keys off the field, so remounting it is what forces the refresh */
   const [transporterNonce, setTransporterNonce] = useState(0);
+  const [supplierNonce, setSupplierNonce] = useState(0);
 
   const set = (k, v) => {
     setData((d) => ({ ...d, [k]: v }));
@@ -635,6 +673,23 @@ function DeliveryDialog({ row, onClose, onSaved }) {
           onSaved={() => {
             setAddingTransporter(false);
             setTransporterNonce((n) => n + 1);
+          }}
+        />
+      )}
+
+      {addingSupplier && (
+        <ModalForm
+          cfg={{
+            addTitle: 'Add Supplier',
+            endpoint: '/api/supplier',
+            fields: SUPPLIER_QUICK_FIELDS,
+            modalWide: true,
+          }}
+          slug="supplier"
+          onClose={() => setAddingSupplier(false)}
+          onSaved={() => {
+            setAddingSupplier(false);
+            setSupplierNonce((n) => n + 1);
           }}
         />
       )}
@@ -697,7 +752,26 @@ function DeliveryDialog({ row, onClose, onSaved }) {
 
             <Section title="Supplier / Parcel Info">
               <div className="grid grid-cols-1 gap-3">
-                {['supplierId', 'invPmNumber', 'parcelQty', 'value'].map((k) => (
+                {/* supplier gets the same inline-add treatment as transporter,
+                    so a new vendor does not cost you the half-filled form */}
+                <div>
+                  <Field
+                    key={'supplier-' + supplierNonce}
+                    f={field('supplierId')}
+                    value={data.supplierId}
+                    error={errors.supplierId}
+                    onChange={set}
+                  />
+                  <button
+                    type="button"
+                    className="btn btn-primary mt-2"
+                    onClick={() => setAddingSupplier(true)}
+                  >
+                    <Icon name="plus" size={13} /> Supplier
+                  </button>
+                </div>
+
+                {['invPmNumber', 'parcelQty', 'value'].map((k) => (
                   <Field key={k} f={field(k)} value={data[k]} error={errors[k]} onChange={set} />
                 ))}
               </div>

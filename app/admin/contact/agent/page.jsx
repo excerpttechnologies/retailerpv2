@@ -11,7 +11,16 @@ const CONFIG = {
   scope: ["business"],
   formMode: "tabs",
   columns: [
-    { k: "businessName", t: "Name" },
+    /* The Agent form does not ask for Business Name (the deployed one does not
+       either), so fall back to the person's name - otherwise every agent added
+       from this form shows a blank Name cell. */
+    {
+      k: "businessName",
+      t: "Name",
+      value: (r) =>
+        String(r.businessName || '').trim() ||
+        [r.firstName, r.lastName].map((s) => String(s || '').trim()).filter(Boolean).join(' '),
+    },
     { k: "contactId", t: "Contact ID" },
     { k: "billingMobile", t: "Mobile" },
     { k: "billingEmail", t: "Email" },

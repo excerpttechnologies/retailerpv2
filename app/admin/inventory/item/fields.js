@@ -37,7 +37,10 @@ export const FIELDS = [
     { k: "rsp", label: "RSP Price", type: "number" },
     { k: "wsp", label: "WSP Price", type: "number" },
     { k: "rspOfferPercent", label: "RSP Offer %", type: "number" },
-    { k: "image", label: "Image", type: "file" },
+    /* accept marks this as an image field: it is downscaled to maxDim and
+       compressed under maxKb in the browser, uploaded to /api/upload, and
+       Item.image stores the returned /api/files/... URL. */
+    { k: "image", label: "Image", type: "file", accept: "image/*", maxDim: 1600, maxKb: 600 },
     { k: "description", label: "Description", type: "text" },
     { k: "attributeAddonIds", label: "Attribute Addons", type: "multiref", ref: "attribute-addon" },
     { k: "itemType", label: "Item Type", type: "select", req: true, def: "Simple", opts: [{"v":"Simple","l":"Simple"},{"v":"Variant","l":"Variant"}] },

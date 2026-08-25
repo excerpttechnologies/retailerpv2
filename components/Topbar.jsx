@@ -1,5 +1,6 @@
 'use client';
 import Icon from './Icon';
+import NotificationBell from './NotificationBell';
 import { useScope, FIN_YEARS } from './ScopeContext';
 
 export default function Topbar({ onToggleSidebar }) {
@@ -45,12 +46,7 @@ export default function Topbar({ onToggleSidebar }) {
         </span>
       </div>
 
-      <span className="relative text-[#56637d]">
-        <Icon name="bell" size={22} />
-        <span className="absolute -right-1.5 -top-1.5 flex h-[17px] min-w-[17px] items-center justify-center rounded-full bg-[#e0342c] px-1 text-[10px] text-white">
-          0
-        </span>
-      </span>
+      <NotificationBell />
 
       <button type="button" onClick={onToggleSidebar} className="border-0 bg-transparent p-1 text-[#3c4a63]">
         <Icon name="burger" size={22} />

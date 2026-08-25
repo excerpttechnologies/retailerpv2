@@ -54,7 +54,9 @@ export async function GET(_req, { params }) {
   const session = await requireSession();
   if (!session) return json({ error: 'Unauthorized' }, 401);
   await dbConnect();
-  const { id } = params;
+  /* Next 15 hands `params` over as a Promise - destructuring it directly
+     yields undefined, so every lookup here silently missed. */
+  const { id } = await params;
 
   const grc = await Grc.findById(id).lean();
   if (!grc) return json({ error: 'GRC not found' }, 404);
@@ -71,7 +73,7 @@ export async function DELETE(_req, { params }) {
   const session = await requireSession();
   if (!session) return json({ error: 'Unauthorized' }, 401);
   await dbConnect();
-  const { id } = params;
+  const { id } = await params;
 
   await Promise.all([
     Grc.findByIdAndDelete(id),
@@ -85,11 +87,12 @@ export async function PUT(req, { params }) {
   const session = await requireSession();
   if (!session) return json({ error: 'Unauthorized' }, 401);
   await dbConnect();
+  const { id } = await params;
   const body = await req.json();
   const fields = (FORM.cards || []).flatMap((card) => card.type === 'fields' ? card.fields || [] : []);
   const { errors, doc, ok } = validate(fields, body.data || {});
   if (!ok) return json({ errors }, 422);
-  const updated = await Grc.findByIdAndUpdate(params.id, doc, { new: true, runValidators: true }).lean();
+  const updated = await Grc.findByIdAndUpdate(id, doc, { new: true, runValidators: true }).lean();
   if (!updated) return json({ error: 'GRC not found' }, 404);
   return json({ ok: true, id: String(updated._id) });
 }

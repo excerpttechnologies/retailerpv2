@@ -232,7 +232,13 @@ export const TABS = [
               "k": "billingZipCode",
               "label": "Zip Code",
               "ph": true,
-              "type": "text"
+              "type": "zip",
+              "fill": {
+                "city": "billingCity",
+                "state": "billingState",
+                "country": "billingCountry",
+                "district": "billingDistrict"
+              }
             },
             {
               "k": "billingMobile",
@@ -328,7 +334,13 @@ export const TABS = [
               "k": "shippingZipCode",
               "label": "Zip Code",
               "ph": true,
-              "type": "text"
+              "type": "zip",
+              "fill": {
+                "city": "shippingCity",
+                "state": "shippingState",
+                "country": "shippingCountry",
+                "district": "shippingDistrict"
+              }
             },
             {
               "k": "shippingMobile",

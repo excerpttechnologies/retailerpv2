@@ -8,83 +8,22 @@ export const TABS = [
       "sections": [
         {
           "title": "",
+          /* Six across, matching the deployed Basic Information tab: Type on
+             its own row, Short Name on its own row, then the six name fields
+             across. Business Type / GST NO / Contact Type (2) / Business Name /
+             Allow Login / User Name / Password are NOT on the deployed Agent
+             form - they belong to Supplier and Customer, which still carry
+             them. See app/admin/contact/agent/README-AGENT-FORM.md. */
+          "cols": 6,
           "fields": [
             {
               "k": "typeId",
               "label": "Type",
               "type": "ref",
-              "ref": "contact-type",
-              "req": true
-            },
-            {
-              "k": "businessType",
-              "label": "Business Type",
-              "type": "select",
+              /* narrowed to contactType: 'Agent' so the picker offers AGENTS
+                 only, not all ten contact types */
+              "ref": "contact-type-agent",
               "req": true,
-              "placeholder": "--Select--",
-              "opts": [
-                {
-                  "v": "Proprietorship",
-                  "l": "Proprietorship"
-                },
-                {
-                  "v": "Partnership",
-                  "l": "Partnership"
-                },
-                {
-                  "v": "Private Limited",
-                  "l": "Private Limited"
-                },
-                {
-                  "v": "Public Limited",
-                  "l": "Public Limited"
-                },
-                {
-                  "v": "LLP",
-                  "l": "LLP"
-                },
-                {
-                  "v": "HUF",
-                  "l": "HUF"
-                },
-                {
-                  "v": "Trust",
-                  "l": "Trust"
-                },
-                {
-                  "v": "Individual",
-                  "l": "Individual"
-                }
-              ]
-            },
-            {
-              "k": "gstNo",
-              "label": "GST NO",
-              "type": "text",
-              "placeholder": "ex: 22AAAAA0000A1Z5"
-            },
-            {
-              "k": "contactType2",
-              "label": "Contact Type (2)",
-              "type": "select",
-              "req": true,
-              "def": "Individual",
-              "opts": [
-                {
-                  "v": "Individual",
-                  "l": "Individual"
-                },
-                {
-                  "v": "Business",
-                  "l": "Business"
-                }
-              ]
-            },
-            {
-              "k": "businessName",
-              "label": "Business Name",
-              "ph": true,
-              "type": "text",
               "span": 2
             },
             {
@@ -92,9 +31,11 @@ export const TABS = [
               "label": "Short Name",
               "ph": true,
               "type": "text",
-              "span": 2
+              "row": true,
+              "span": 3
             },
             {
+              "row": true,
               "k": "prefix",
               "label": "Prefix",
               "type": "select",
@@ -166,43 +107,26 @@ export const TABS = [
                   "l": "Other"
                 }
               ]
-            },
-            {
-              "k": "allowLogin",
-              "label": "Allow Login",
-              "type": "checkbox"
-            },
-            {
-              "k": "userName",
-              "label": "User Name",
-              "ph": true,
-              "type": "text",
-              "span": 2
-            },
-            {
-              "k": "password",
-              "label": "Password",
-              "ph": true,
-              "type": "password"
             }
           ]
         },
         {
           "title": "Billing Details",
+          "cols": 6,
           "fields": [
             {
               "k": "billingAddressLine1",
               "label": "Address line 1",
               "ph": true,
               "type": "text",
-              "span": 2
+              "span": 3
             },
             {
               "k": "billingAddressLine2",
               "label": "Address line 2",
               "ph": true,
               "type": "text",
-              "span": 2
+              "span": 3
             },
             {
               "k": "billingCity",
@@ -232,7 +156,13 @@ export const TABS = [
               "k": "billingZipCode",
               "label": "Zip Code",
               "ph": true,
-              "type": "text"
+              "type": "zip",
+              "fill": {
+                "city": "billingCity",
+                "state": "billingState",
+                "country": "billingCountry",
+                "district": "billingDistrict"
+              }
             },
             {
               "k": "billingMobile",
@@ -281,6 +211,7 @@ export const TABS = [
         },
         {
           "title": "Shipping Details",
+          "cols": 6,
           "toggle": {
             "k": "sameAsBilling",
             "label": "Same as Billing Address"
@@ -291,14 +222,14 @@ export const TABS = [
               "label": "Address line 1",
               "ph": true,
               "type": "text",
-              "span": 2
+              "span": 3
             },
             {
               "k": "shippingAddressLine2",
               "label": "Address line 2",
               "ph": true,
               "type": "text",
-              "span": 2
+              "span": 3
             },
             {
               "k": "shippingCity",
@@ -328,7 +259,13 @@ export const TABS = [
               "k": "shippingZipCode",
               "label": "Zip Code",
               "ph": true,
-              "type": "text"
+              "type": "zip",
+              "fill": {
+                "city": "shippingCity",
+                "state": "shippingState",
+                "country": "shippingCountry",
+                "district": "shippingDistrict"
+              }
             },
             {
               "k": "shippingMobile",
@@ -385,48 +322,6 @@ export const TABS = [
           "title": "Price Calculation Setup",
           "fields": [
             {
-              "k": "markupPriceCalculation",
-              "label": "Markup Price Calculation",
-              "type": "select",
-              "req": true,
-              "def": "Purchase Rate",
-              "opts": [
-                {
-                  "v": "Purchase Rate",
-                  "l": "Purchase Rate"
-                },
-                {
-                  "v": "MRP",
-                  "l": "MRP"
-                },
-                {
-                  "v": "Landing Cost",
-                  "l": "Landing Cost"
-                }
-              ]
-            },
-            {
-              "k": "discountType",
-              "label": "Discount Type",
-              "type": "select",
-              "placeholder": "--Select--",
-              "opts": [
-                {
-                  "v": "Amount",
-                  "l": "Amount"
-                },
-                {
-                  "v": "Percentage",
-                  "l": "Percentage"
-                }
-              ]
-            },
-            {
-              "k": "discount",
-              "label": "Discount",
-              "type": "number"
-            },
-            {
               "k": "markUpOnCostRsp",
               "label": "Mark Up on Cost RSP",
               "type": "number"
@@ -459,29 +354,6 @@ export const TABS = [
           ]
         },
         {
-          "title": "Agent Setup",
-          "fields": [
-            {
-              "k": "agentId",
-              "label": "Agent Name",
-              "type": "ref",
-              "ref": "supplier",
-              "placeholder": "Select Supplier"
-            },
-            {
-              "k": "commissionPercent",
-              "label": "Commission %",
-              "type": "number"
-            },
-            {
-              "k": "paymentLedgerId",
-              "label": "Payment Ledger",
-              "type": "ref",
-              "ref": "ledger"
-            }
-          ]
-        },
-        {
           "title": "Purchase Order Setup",
           "fields": [
             {
@@ -510,24 +382,14 @@ export const TABS = [
               "type": "number"
             },
             {
-              "k": "paymentDateType",
-              "label": "Payment Date Type",
-              "type": "select",
-              "placeholder": "--Select--",
-              "opts": [
-                {
-                  "v": "Invoice Date",
-                  "l": "Invoice Date"
-                },
-                {
-                  "v": "GRC Date",
-                  "l": "GRC Date"
-                },
-                {
-                  "v": "Month End",
-                  "l": "Month End"
-                }
-              ]
+              "k": "entryDate",
+              "label": "Entry Date",
+              "type": "date"
+            },
+            {
+              "k": "documentDate",
+              "label": "Document Date",
+              "type": "date"
             },
             {
               "k": "discountAllowWithinPercent",
@@ -580,6 +442,7 @@ export const TABS = [
       "sections": [
         {
           "title": "Supplier Ledger Mapping",
+          "cols": 3,
           "fields": [
             {
               "k": "supplierType",
@@ -608,6 +471,7 @@ export const TABS = [
         },
         {
           "title": "Puchase Ledger Mapping",
+          "cols": 3,
           "fields": [
             {
               "k": "purchasesLedgerId",
@@ -732,11 +596,12 @@ export const TABS = [
           ]
         },
         {
-          "title": "Supplier Bank Details",
+          "title": "Agent Bank Details",
+          "cols": 3,
           "fields": [
             {
               "k": "bankAccountName",
-              "label": "Supplier Name as Per Bank",
+              "label": "Agent Name as Per Bank",
               "type": "text"
             },
             {

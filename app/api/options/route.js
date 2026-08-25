@@ -159,9 +159,19 @@ const REFS = {
   'sales/master/term':       { load: () => import('@/models/SalesTerm') },
  
   'contact-type':            { load: () => import('@/models/ContactType') },
-  supplier:                  { load: () => import('@/models/Contact'), kind: 'Supplier', label: 'businessName' },
-  agent:                     { load: () => import('@/models/Contact'), kind: 'Agent', label: 'businessName' },
-  customer:                  { load: () => import('@/models/Contact'), kind: 'Customer', label: 'businessName' },
+  /* The three contact forms each pick a type of their own kind - the Agent
+     form must not offer "RETAIL" or "Vendor for Goods". contactType is the
+     Customer/Supplier/Agent selector on the Contact Type master. */
+  'contact-type-agent':      { load: () => import('@/models/ContactType'), where: { contactType: 'Agent' } },
+  'contact-type-supplier':   { load: () => import('@/models/ContactType'), where: { contactType: 'Supplier' } },
+  'contact-type-customer':   { load: () => import('@/models/ContactType'), where: { contactType: 'Customer' } },
+  /* nameFallback: businessName is blank on a contact entered as a person -
+     the Agent form does not even ask for it - so fall back to the personal
+     name rather than showing "(untitled)" in every picker. This mirrors what
+     lib/refLabels.js resolveRefLabels already does for list columns. */
+  supplier:                  { load: () => import('@/models/Contact'), kind: 'Supplier', label: 'businessName', nameFallback: ['firstName', 'lastName'] },
+  agent:                     { load: () => import('@/models/Contact'), kind: 'Agent', label: 'businessName', nameFallback: ['firstName', 'lastName'] },
+  customer:                  { load: () => import('@/models/Contact'), kind: 'Customer', label: 'businessName', nameFallback: ['firstName', 'lastName'] },
  
   'product/filter':          { load: () => import('@/models/ProductFilter') },
   'product/group':           { load: () => import('@/models/ProductGroup') },
@@ -192,6 +202,21 @@ const REFS = {
     load: () => import('@/models/IcDeliveryChallan'),
     where: { $or: [{ icSalesInvoiceId: null }, { icSalesInvoiceId: { $exists: false } }] },
   },
+
+  /* Stock Transfers */
+  'stock-transfer-packet':   { load: () => import('@/models/StockTransferPacket') },
+  'stock-transfer-location': { load: () => import('@/models/StockTransferLocation') },
+  'stock-transfer-received': { load: () => import('@/models/StockTransferReceived') },
+  /* packets not yet consolidated into a stock transfer location */
+  'stock-transfer-packet-open': {
+    load: () => import('@/models/StockTransferPacket'),
+    where: {
+      $or: [
+        { stockTransferLocationId: null },
+        { stockTransferLocationId: { $exists: false } },
+      ],
+    },
+  },
 };
  
 export async function GET(req) {
@@ -221,7 +246,19 @@ export async function GET(req) {
   /* typing in the control narrows server-side - the old endpoint pulled up to
      2000 rows and filtered in the browser, which does not survive 56k customers */
   const q = (sp.get('q') || '').trim();
-  if (q) filter[label] = { $regex: escapeRegex(q), $options: 'i' };
+  if (q) {
+    const rx = { $regex: escapeRegex(q), $options: 'i' };
+    if (entry.nameFallback) {
+      /* search the fallback name fields too, or typing "DIRECT" finds nothing
+         for a contact whose businessName is empty. Wrapped in $and so it can't
+         collide with a ref that already uses $or in its own `where`. */
+      (filter.$and ||= []).push({
+        $or: [{ [label]: rx }, ...entry.nameFallback.map((f) => ({ [f]: rx }))],
+      });
+    } else {
+      filter[label] = rx;
+    }
+  }
  
   /* the default row sorts first, so it survives the 200-row cap */
   const sort = entry.defaultField
@@ -229,11 +266,22 @@ export async function GET(req) {
     : { [label]: 1 };
  
   const rows = await Model.find(filter).sort(sort).limit(200).lean();
- 
+
+  /* label, or the fallback name fields, or "(untitled)" - see nameFallback */
+  const textOf = (r) => {
+    const primary = String(r[label] ?? '').trim();
+    if (primary) return primary;
+    const alt = (entry.nameFallback || [])
+      .map((f) => String(r[f] ?? '').trim())
+      .filter(Boolean)
+      .join(' ');
+    return alt || '(untitled)';
+  };
+
   return json({
     options: rows.map((r) => ({
       value: String(r._id),
-      label: String(r[label] ?? '(untitled)'),
+      label: textOf(r),
       ...(entry.defaultField && r[entry.defaultField] ? { isDefault: true } : {}),
     })),
   });

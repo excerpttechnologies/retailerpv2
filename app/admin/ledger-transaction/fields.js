@@ -41,6 +41,11 @@ export const DOC_TYPES = [
   'POS',
   'POS Return',
   'Inter Company Sales Invoice',
+  /* the settlement side - these are ledger entries in their own right,
+     not documents that merely imply one. Contra is absent: it moves money
+     between the business's own accounts, so it has no party to sit against. */
+  'Receipt Voucher',
+  'Payment Voucher',
 ];
 
 export const DOC_TYPE_OPTS = DOC_TYPES.map((d) => ({ v: d, l: d }));

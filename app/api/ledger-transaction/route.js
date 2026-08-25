@@ -15,6 +15,7 @@ import SalesReturn from '@/models/SalesReturn';
 import PosInvoice from '@/models/PosInvoice';
 import PosReturn from '@/models/PosReturn';
 import IcSalesInvoice from '@/models/IcSalesInvoice';
+import Voucher from '@/models/Voucher';
 
 /* /api/ledger-transaction - one read-only list, no writes.
 
@@ -112,6 +113,44 @@ const SOURCES = [
     description: 'Inter Company Sales Invoice',
     amount: (d) => r2(d.netValue),
   },
+
+  /* The two settlement documents. Unlike everything above, these are not
+     documents that happen to imply a ledger entry - they ARE ledger entries,
+     which is why the amount is read straight off the voucher.
+
+     `where` narrows one Model to one docType; Voucher holds all three types
+     in one collection.
+
+     partyKind 'ledger' means the party IS the ledger, so the name is taken
+     from what the voucher copied down at save time rather than looked up -
+     no query, and a renamed ledger never rewrites an issued voucher.
+
+     Contra is deliberately absent: it moves money between the business's own
+     accounts, so there is no party for it to sit against. It would produce a
+     row with both name columns blank. Same reasoning that keeps GRC and
+     Delivery Challan out. */
+  {
+    docType: 'Receipt Voucher',
+    Model: Voucher,
+    where: { type: 'Receipt' },
+    party: 'partyLedgerId', partyKind: 'ledger',
+    date: 'voucherDate', number: 'voucherNo',
+    /* money in from a customer - they owe you less */
+    side: 'Cr',
+    description: 'Receipt from Customer',
+    amount: (d) => r2(d.totalAmount),
+  },
+  {
+    docType: 'Payment Voucher',
+    Model: Voucher,
+    where: { type: 'Payment' },
+    party: 'partyLedgerId', partyKind: 'ledger',
+    date: 'voucherDate', number: 'voucherNo',
+    /* money out to a supplier - you owe them less */
+    side: 'Dr',
+    description: 'Payment to Supplier',
+    amount: (d) => r2(d.totalAmount),
+  },
 ];
 
 /* Merging several collections means sorting in memory, so each source is
@@ -150,6 +189,8 @@ export async function GET(req) {
     if (business && isValidObjectId(business)) filter.businessId = business;
     if (location && isValidObjectId(location)) filter.locationId = location;
     if (finYear) filter.finYear = finYear;
+    /* a source can narrow its own collection - Voucher holds three types */
+    if (s.where) Object.assign(filter, s.where);
 
     if (wantNumber) {
       filter[s.number] = { $regex: escapeRegex(wantNumber), $options: 'i' };
@@ -173,6 +214,8 @@ export async function GET(req) {
   collected.forEach(({ s, rows }) => rows.forEach((d) => {
     const id = d[s.party];
     if (!id) return;
+    /* a voucher already carries its ledger's name - nothing to look up */
+    if (s.partyKind === 'ledger') return;
     (s.partyKind === 'business' ? businessIds : contactIds).add(String(id));
   }));
 
@@ -213,7 +256,12 @@ export async function GET(req) {
   /* ------------------------------------------------------------ flatten */
   let entries = [];
   collected.forEach(({ s, rows }) => rows.forEach((d) => {
-    const party = partyById.get(String(d[s.party])) || { contact: '', ledgerName: '' };
+    /* a voucher's party IS a ledger, and its name was copied onto the
+       voucher at save time - so it needs no resolution and shows the name
+       the voucher was raised against, not the ledger's current one */
+    const party = s.partyKind === 'ledger'
+      ? { contact: d.partyName || '', ledgerName: d.partyName || '' }
+      : (partyById.get(String(d[s.party])) || { contact: '', ledgerName: '' });
     entries.push({
       _id: String(d._id) + ':' + s.docType,
       date: d[s.date] || d.createdAt || null,

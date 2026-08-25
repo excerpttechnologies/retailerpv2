@@ -18,6 +18,13 @@ import { fmt, toCsv, toXlsHtml, download, printTable } from '@/lib/format';
    Note this reads the INBOX side: the rows in the pending card were created
    by a different branch, so they are fetched by destination rather than by
    the top-bar business. That is what the `inboxParam` is for.
+
+   Stock Transfers reuse this same shape, with one difference: they move
+   between LOCATIONS of one business rather than between businesses, so their
+   inbox is addressed by location. `inboxScope: 'location'` switches which
+   part of the scope is sent, and `inboxKeepScope` adds the business and
+   financial year alongside it - the inter company routes drop those on the
+   inbox branch, so they must not be sent there.
    ========================================================================== */
 
 function Panel({ spec, onAction, nonce }) {
@@ -29,16 +36,30 @@ function Panel({ spec, onAction, nonce }) {
   const [page, setPage] = useState(1);
   const [busy, setBusy] = useState(null);
 
+  /* which part of the scope addresses this inbox - business by default,
+     location for stock transfers */
+  const inboxValue = spec.inboxScope === 'location' ? scope.location : scope.business;
+
   const load = useCallback(async () => {
     if (!scope.business) { setLoading(false); return; }
+    /* a location-addressed inbox has nothing to ask for until the top bar has
+       resolved a location */
+    if (spec.inboxParam && spec.inboxScope === 'location' && !scope.location) {
+      setLoading(false);
+      return;
+    }
     setLoading(true);
 
     const qs = new URLSearchParams({ page: String(page), search });
     /* the pending card asks "addressed to me"; the actioned card is scoped
        normally, because those records belong to this branch */
     if (spec.inboxParam) {
-      qs.set(spec.inboxParam, scope.business);
+      qs.set(spec.inboxParam, inboxValue || '');
       if (spec.unconvertedParam) qs.set('unconverted', spec.unconvertedParam);
+      if (spec.inboxKeepScope) {
+        qs.set('business', scope.business || '');
+        qs.set('finYear', scope.finYear || '');
+      }
     } else {
       qs.set('business', scope.business || '');
       qs.set('location', scope.location || '');
@@ -55,7 +76,7 @@ function Panel({ spec, onAction, nonce }) {
     } finally {
       setLoading(false);
     }
-  }, [spec, page, search, scope.business, scope.location, scope.finYear]);
+  }, [spec, page, search, inboxValue, scope.business, scope.location, scope.finYear]);
 
   useEffect(() => { load(); }, [load, nonce]);
   useEffect(() => { setPage(1); }, [search, scope.business, scope.location, scope.finYear]);

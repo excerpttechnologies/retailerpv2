@@ -185,47 +185,6 @@ function Totals({ card, data, onChange }) {
   );
 }
 
-function TransferHeader({ card, data, errors, onChange }) {
-  const fromId = data.transferFromLocationId;
-  const toId = data.transferToLocationId;
-
-  useEffect(() => {
-    const locations = [
-      { id: fromId, gstn: 'transferFromLocationGstn', address: 'transferFromLocationAddress' },
-      { id: toId, gstn: 'transferToLocationGstn', address: 'transferToLocationAddress' },
-    ].filter((location) => location.id);
-
-    locations.forEach(({ id, gstn, address }) => {
-      fetch('/api/company-location/' + id)
-        .then((response) => response.json())
-        .then(({ doc }) => {
-          if (!doc) return;
-          const addressText = [doc.addressLine1, doc.addressLine2, doc.landmark, doc.city, doc.state, doc.zipCode]
-            .filter(Boolean)
-            .join(', ');
-          onChange(gstn, doc.gstin || '');
-          onChange(address, addressText);
-        })
-        .catch(() => {});
-    });
-  }, [fromId, toId]);
-
-  return (
-    <div className="grid gap-4 lg:grid-cols-3">
-      {(card.groups || []).map((group) => (
-        <fieldset key={group.title} className="min-w-0 rounded-md border border-[#2da9e8] px-3 pb-3 pt-1">
-          <legend className="px-2 text-lg font-medium text-ink">{group.title}</legend>
-          <div className="space-y-3">
-            {(group.fields || []).map((f) => (
-              <Field key={f.k} f={f} value={data[f.k]} error={errors[f.k]} onChange={onChange} />
-            ))}
-          </div>
-        </fieldset>
-      ))}
-    </div>
-  );
-}
-
 function SourceTable({ card, partyId, selected, onToggle }) {
   const [rows, setRows] = useState([]);
   const scope = useScope();
@@ -285,11 +244,7 @@ export default function TransactionFormView({ cfg, id, slug }) {
   const slugPath = cfg.slugPath || slug;
   const listUrl = (cfg.basePath || '/admin/') + slugPath;
   const allFields = useMemo(
-    () => cards.flatMap((c) => c.type === 'fields'
-      ? (c.fields || [])
-      : c.type === 'transferHeader'
-        ? (c.groups || []).flatMap((g) => g.fields || [])
-        : []),
+    () => cards.filter((c) => c.type === 'fields').flatMap((c) => c.fields || []),
     [cards]
   );
 
@@ -327,12 +282,6 @@ export default function TransactionFormView({ cfg, id, slug }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id, slugPath]);
 
-  useEffect(() => {
-    if (!id && scope.location && allFields.some((f) => f.k === 'transferFromLocationId')) {
-      setData((prev) => prev.transferFromLocationId ? prev : { ...prev, transferFromLocationId: scope.location });
-    }
-  }, [allFields, id, scope.location]);
-
   const set = (k, v) => { setData((d) => ({ ...d, [k]: v })); setErrors((e) => ({ ...e, [k]: undefined })); };
 
   async function submit() {
@@ -358,20 +307,6 @@ export default function TransactionFormView({ cfg, id, slug }) {
   return (
     <>
       {cards.map((card, i) => {
-        if (card.type === 'transferHeader') {
-          return (
-            <div className="card" key={i}>
-              {cfg.form.title && i === 0 && (
-                <div className="card-head"><span className="card-title">{cfg.form.title}</span></div>
-              )}
-              <div className="card-body">
-                {flash && i === 0 && <div className={'flash ' + (flash.type === 'err' ? 'flash-err' : 'flash-ok')}>{flash.msg}</div>}
-                <TransferHeader card={card} data={data} errors={errors} onChange={set} />
-              </div>
-            </div>
-          );
-        }
-
         if (card.type === 'fields') {
           return (
             <div className="card" key={i}>
