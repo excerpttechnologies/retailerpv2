@@ -5,16 +5,18 @@
 
 export const FIELDS = [
   /* TRANSACTION INFO */
-  { k: 'transactionDate', label: 'Transaction Date', type: 'date', req: true },
+  { k: 'transactionNo', label: 'Transaction No', type: 'text' },
+  { k: 'document', label: 'Upload Document / Image', type: 'file', accept: 'image/*,.pdf,.doc,.docx' },
+  { k: 'transactionDate', label: 'Transaction Date', type: 'date', displayFormat: 'DD/MM/YYYY', def: 'today', req: true },
   { k: 'transporterId', label: 'Transporter', type: 'ref', ref: 'transporter', req: true },
   { k: 'lrNumber', label: 'LR Number', type: 'text', req: true },
-  { k: 'bookingDate', label: 'Booking Date', type: 'date', req: true },
+  { k: 'bookingDate', label: 'Booking Date', type: 'date', displayFormat: 'DD/MM/YYYY', req: true },
 
   /* SUPPLIER / PARCEL INFO */
   { k: 'supplierId', label: 'Supplier Name', type: 'ref', ref: 'supplier', req: true },
   { k: 'invPmNumber', label: 'Inv / PM Number', type: 'text', req: true },
   { k: 'parcelQty', label: 'Parcel Qty', type: 'number', req: true },
-  { k: 'value', label: 'Value', type: 'number', req: true },
+  { k: 'value', label: 'Value', type: 'number' },
 
   /* FREIGHT DETAILS */
   { k: 'freightAmount', label: 'Freight Amount', type: 'number', req: true },

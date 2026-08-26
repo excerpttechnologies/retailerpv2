@@ -12,11 +12,7 @@ const CONFIG = {
   actionPosition: "left",
   actionVariant: "dropdown",
   /* second button in the card header, next to Refresh */
-  extraAction: {
-    label: 'Barcode Generation',
-    icon: 'barcode',
-    href: '/admin/inventory/barcode-generation',
-  },
+ 
   /* Action ▾ menu, matching the deployed GRC list */
  actionMenu: [
   { label: 'Edit', icon: 'pencil', to: (r) => '/admin/transaction/purchase/grc/' + r._id },
@@ -29,7 +25,14 @@ const CONFIG = {
     { k: "endDate", label: "End Date", type: "date" },
   ],
   columns: [
-    { k: "supplierId", t: "Vendor Name", f: "ref" },
+    {
+  k: "supplierId",
+  t: "Vendor Name",
+  value: (r) => r.supplierName,
+  f: "text",
+
+  badge: (r) => r.purchaseInvoiceId ? { label: "verified", tone: "verified" } : null,
+},
     { k: "grcNumber", t: "GRC NO" },
     { k: "grcDate", t: "GRC Date", f: "date" },
     { k: "logisticId", t: "Logistic No", f: "ref" },

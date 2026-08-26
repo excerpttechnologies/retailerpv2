@@ -25,7 +25,7 @@ export default function ModalForm({ cfg, slug, onClose, onSaved }) {
     setSaving(true);
     try {
       const payload = {
-        data,
+        data: cfg.prepareData ? cfg.prepareData(data) : data,
         business: scope.business, location: scope.location, finYear: scope.finYear,
       };
       const r = await fetch(cfg.endpoint, {
@@ -35,7 +35,7 @@ export default function ModalForm({ cfg, slug, onClose, onSaved }) {
       });
       const d = await r.json();
       if (r.status === 422) { setErrors(d.errors || {}); return; }
-      onSaved();
+      onSaved(d);
     } finally { setSaving(false); }
   }
 
@@ -58,7 +58,7 @@ export default function ModalForm({ cfg, slug, onClose, onSaved }) {
 
         <div className="px-4 py-4">
           <div className={'grid gap-x-4 gap-y-3 ' + (cfg.modalWide ? 'grid-cols-1 md:grid-cols-3' : 'grid-cols-2')}>
-            {(cfg.fields || []).map((f) => (
+            {(cfg.fields || []).filter((f) => !cfg.isFieldVisible || cfg.isFieldVisible(f, data)).map((f) => (
               <div key={f.k} className={f.span === 'all' && !cfg.modalWide ? 'col-span-2' : ''}>
                 <Field f={f} value={data[f.k]} error={errors[f.k]} onChange={set} />
               </div>

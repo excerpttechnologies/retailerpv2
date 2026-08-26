@@ -1676,13 +1676,36 @@ export default function ListView({ cfg, slug }) {
     return (
       <span className="inline-flex flex-wrap items-center gap-2">
         {content}
-        <span
-          className={
-            "pill " + (badge.tone === "green" ? "pill-green" : "pill-grey")
-          }
-        >
-          {badge.label}
-        </span>
+        {badge.tone === "verified" ? (
+          <svg
+            width="18"
+            height="18"
+            viewBox="0 0 100 100"
+            title="Verified"
+            style={{ display: "inline-block", flexShrink: 0, verticalAlign: "middle" }}
+          >
+            <path
+              fill="#42A5F5"
+              d="M50 2 L62 12 L78 5 L84 21 L99 25 L92 40 L99 55 L84 63 L85 80 L68 79 L60 95 L50 87 L35 95 L28 80 L12 81 L13 64 L2 55 L9 40 L2 25 L18 20 L23 5 L39 12 Z"
+            />
+            <path
+              d="M27 50 L42 65 L73 32"
+              fill="none"
+              stroke="#FFFFFF"
+              strokeWidth="11"
+              strokeLinecap="square"
+              strokeLinejoin="miter"
+            />
+          </svg>
+        ) : (
+          <span
+            className={
+              "pill " + (badge.tone === "green" ? "pill-green" : "pill-grey")
+            }
+          >
+            {badge.label}
+          </span>
+        )}
       </span>
     );
   };

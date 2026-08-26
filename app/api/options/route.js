@@ -191,6 +191,7 @@ const REFS = {
     load: () => import('@/models/Delivery'),
     where: { $or: [{ dispatchId: null }, { dispatchId: { $exists: false } }] },
   },
+  'delivery-available-grc':  { load: () => import('@/models/Delivery') },
  
   /* Inter Company Sell */
   'ic-delivery-challan':      { load: () => import('@/models/IcDeliveryChallan') },
@@ -269,6 +270,9 @@ export async function GET(req) {
 
   /* label, or the fallback name fields, or "(untitled)" - see nameFallback */
   const textOf = (r) => {
+    if (ref === 'uom') {
+      return [r[label], r.shortName].map((value) => String(value || '').trim()).filter(Boolean).join(' / ');
+    }
     const primary = String(r[label] ?? '').trim();
     if (primary) return primary;
     const alt = (entry.nameFallback || [])

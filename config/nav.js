@@ -335,16 +335,21 @@ export const NAV = [
     label: 'Purchase',
     icon: LuShoppingBasket,
     children: [
+       {
+        label: 'Goods Received',
+        icon: LuPackageCheck,
+        href: '/admin/transport/delivery',
+      },
       {
         label: 'Goods Receipt Challan',
         icon: LuFileCheck,
         href: '/admin/transaction/purchase/grc',
       },
-      {
-        label: 'Purchase Invoice',
-        icon: LuFileText,
-        href: '/admin/transaction/purchase/invoice',
-      },
+      // {
+      //   label: 'Purchase Invoice',
+      //   icon: LuFileText,
+      //   href: '/admin/transaction/purchase/invoice',
+      // },
       {
         label: 'Goods Return Note',
         icon: LuUndo2,
@@ -355,11 +360,7 @@ export const NAV = [
         icon: LuFileMinus,
         href: '/admin/transaction/purchase/debitnote',
       },
-      {
-        label: 'Goods Received',
-        icon: LuPackageCheck,
-        href: '/admin/transport/delivery',
-      },
+     
     ],
   },
  

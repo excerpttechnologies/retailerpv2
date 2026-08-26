@@ -203,6 +203,14 @@ export async function GET(req) {
   const sp = new URL(req.url).searchParams;
   await dbConnect();
 
+  if (sp.get('nextNumber') === '1') {
+    const businessId = sp.get('business');
+    return json({ transactionNo: await nextTransactionNo({
+      businessId: businessId && isValidObjectId(businessId) ? businessId : null,
+      finYear: sp.get('finYear') || '',
+    }) });
+  }
+
   const page = Math.max(1, Number(sp.get('page') || 1));
   const perPage = Math.min(500, Number(sp.get('perPage') || PER_PAGE));
 
@@ -275,9 +283,18 @@ export async function POST(req) {
   const totals = freightBreakdown(doc);
   DERIVED_FIELDS.forEach((f) => { doc[f.k] = totals[f.k]; });
 
-  doc.transactionNo = await nextTransactionNo({
-    businessId: doc.businessId, finYear: doc.finYear,
-  });
+  if (doc.transactionNo) {
+    const duplicate = await Delivery.exists({
+      transactionNo: doc.transactionNo,
+      ...(doc.businessId ? { businessId: doc.businessId } : {}),
+      ...(doc.finYear ? { finYear: doc.finYear } : {}),
+    });
+    if (duplicate) return json({ errors: { transactionNo: 'Transaction No already exists' } }, 422);
+  } else {
+    doc.transactionNo = await nextTransactionNo({
+      businessId: doc.businessId, finYear: doc.finYear,
+    });
+  }
 
   const created = await Delivery.create(doc);
   return json({ ok: true, id: String(created._id), transactionNo: created.transactionNo });

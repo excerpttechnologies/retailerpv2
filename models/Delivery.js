@@ -73,6 +73,7 @@ const DeliverySchema = new mongoose.Schema(
     finYear: { type: String, default: '', index: true },
 
     transactionNo: { type: String, default: '', index: true },
+   document: { type: String, default: '' },
     transactionDate: { type: Date, default: null },
     transporterId: { type: mongoose.Schema.Types.ObjectId, ref: 'transporter', default: null, index: true },
     lrNumber: { type: String, default: '' },

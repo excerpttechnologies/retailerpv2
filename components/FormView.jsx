@@ -1,5 +1,5 @@
 'use client';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import Icon from './Icon';
 import Field from './Field';
@@ -105,6 +105,9 @@ export default function FormView({ cfg, id, slug }) {
   const [errors, setErrors] = useState({});
   const [flash, setFlash] = useState(null);
   const [saving, setSaving] = useState(false);
+  const { options: uomOptions } = useOptions('uom');
+  const uniqueBarcodeTouched = useRef(false);
+  const uomDefaultApplied = useRef(false);
   const isEdit = Boolean(id);
 
   const slugPath = cfg.slugPath || slug;
@@ -131,6 +134,21 @@ export default function FormView({ cfg, id, slug }) {
   }, [id, slugPath]);
 
   const set = (k, v) => {
+    if (k === 'uniqueBarcode') uniqueBarcodeTouched.current = true;
+    if (k === 'uomId' && !isEdit && !uomDefaultApplied.current && !uniqueBarcodeTouched.current) {
+      const selected = uomOptions.find((option) => String(option.value) === String(v));
+      const uomName = String(selected?.label || '').toLowerCase();
+      if (/\b(piece|pcs?|pc)\b/.test(uomName)) {
+        setData((d) => ({ ...d, [k]: v, uniqueBarcode: 'Yes' }));
+        uomDefaultApplied.current = true;
+        return;
+      }
+      if (/\b(metre|meter|mtr|meters|metres)\b/.test(uomName)) {
+        setData((d) => ({ ...d, [k]: v, uniqueBarcode: 'No' }));
+        uomDefaultApplied.current = true;
+        return;
+      }
+    }
     setData((d) => ({ ...d, [k]: v }));
     setErrors((e) => (e[k] ? { ...e, [k]: undefined } : e));
   };

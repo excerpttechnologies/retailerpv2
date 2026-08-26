@@ -486,7 +486,7 @@ export default function Field({ f, value, error, onChange }) {
             <label key={o.v} className="f-radio">
               <input
                 type="radio"
-                name={f.k}
+                name={f.name || f.k}
                 checked={(value ?? '') === o.v}
                 onChange={() => set(o.v)}
               />
@@ -518,13 +518,32 @@ export default function Field({ f, value, error, onChange }) {
       break;
 
     case 'date':
-      control = (
-        <input
-          type="date" className="f-input"
-          value={value ? String(value).slice(0, 10) : ''}
-          onChange={(e) => set(e.target.value)}
-        />
-      );
+      if (f.displayFormat === 'DD/MM/YYYY') {
+        const iso = value ? String(value).slice(0, 10) : '';
+        const display = iso && /^\d{4}-\d{2}-\d{2}$/.test(iso)
+          ? iso.slice(8, 10) + '/' + iso.slice(5, 7) + '/' + iso.slice(0, 4)
+          : String(value || '');
+        control = (
+          <input
+            type="text" inputMode="numeric" className="f-input" placeholder="DD/MM/YYYY"
+            value={display}
+            onChange={(e) => {
+              const raw = e.target.value.replace(/[^\d]/g, '').slice(0, 8);
+              const shown = raw.length > 4 ? raw.slice(0, 2) + '/' + raw.slice(2, 4) + '/' + raw.slice(4) : raw;
+              const match = /^(\d{2})\/(\d{2})\/(\d{4})$/.exec(shown);
+              set(match ? match[3] + '-' + match[2] + '-' + match[1] : shown);
+            }}
+          />
+        );
+      } else {
+        control = (
+          <input
+            type="date" className="f-input"
+            value={value ? String(value).slice(0, 10) : ''}
+            onChange={(e) => set(e.target.value)}
+          />
+        );
+      }
       break;
 
     case 'number':

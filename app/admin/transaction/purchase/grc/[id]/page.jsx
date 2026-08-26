@@ -36,6 +36,7 @@ import { useParams, useRouter, useSearchParams } from 'next/navigation';
 import Field from '@/components/Field';
 import { FORM } from '../form';
 import { useScope } from '@/components/ScopeContext';
+import PurchaseInvoicePrintView from '@/components/PurchaseInvoicePrintView';
 
 const fields = FORM.cards.flatMap((card) => card.fields || []);
 const number = (value) => Number(value) || 0;
@@ -50,6 +51,9 @@ export default function EditTransactionPurchaseGrcPage() {
   const [tab, setTab] = useState(searchParams.get('tab') === 'summary' ? 'summary' : 'items');
   const [status, setStatus] = useState('');
   const [saving, setSaving] = useState(false);
+  const [invoiceId, setInvoiceId] = useState(null);
+  const [showInvoice, setShowInvoice] = useState(false);
+  const [invoiceStatus, setInvoiceStatus] = useState('');
 
   useEffect(() => {
     if (!id) return;
@@ -57,13 +61,14 @@ export default function EditTransactionPurchaseGrcPage() {
       .then((response) => response.json())
       .then((result) => {
         if (result.error) throw new Error(result.error);
-        const next = {};
+        const next = { ...result.grc };
         fields.forEach((field) => {
           const value = result.grc[field.k];
           next[field.k] = value == null ? '' : field.type === 'ref' ? String(value) : value;
         });
         setData(next);
         setRows(result.rows || []);
+        setInvoiceId(result.grc.purchaseInvoiceId || null);
       })
       .catch((error) => setStatus(error.message || 'Failed to load GRC'));
   }, [id]);
@@ -73,8 +78,8 @@ export default function EditTransactionPurchaseGrcPage() {
     const value = number(row.finalNet || row.purRate) * qty;
     result.quantity += qty;
     result.taxable += value;
-    result.gst += number(row.gst);
-    result.net += value + number(row.gst);
+    result.gst += value * (number(row.gst) / 100);
+    result.net += value + value * (number(row.gst) / 100);
     result.items[row.itemCode || ''] = result.items[row.itemCode || ''] || { qty: 0, value: 0 };
     result.items[row.itemCode || ''].qty += qty;
     result.items[row.itemCode || ''].value += value;
@@ -103,6 +108,27 @@ export default function EditTransactionPurchaseGrcPage() {
   const openBarcode = () => router.push(`/admin/transaction/purchase/grc/${id}/barcode-generation`);
   const set = (key, value) => setData((current) => ({ ...current, [key]: value }));
   const cell = (value) => value || '-';
+  const totalTaxable = Number(data.taxable) || summary.taxable;
+  const freightBeforeGst = Number(data.freightAmount) || 0;
+  const discountAmount = (totalTaxable * (Number(data.discountPercent) || 0)) / 100;
+  const roundOffDiscount = Number(data.roundOffDiscount) || 0;
+  const roundOff = Number(data.roundOff) || 0;
+  const netPurchasesValue = totalTaxable - discountAmount - roundOffDiscount
+    + summary.gst + freightBeforeGst + roundOff;
+
+  async function generatePurchaseInvoice() {
+    setInvoiceStatus('Generating...');
+    try {
+      const response = await fetch(`/api/purchase-grc/${id}`, { method: 'POST' });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok) { setInvoiceStatus(result.error || 'Could not generate invoice'); return; }
+      setInvoiceId(result.id);
+      setData((current) => ({ ...current, purchaseInvoiceId: result.id }));
+      setInvoiceStatus(result.existing ? 'Purchase Invoice already generated' : 'Purchase Invoice generated');
+    } catch {
+      setInvoiceStatus('Could not generate invoice');
+    }
+  }
 
   if (!data.grcNumber && !status) return <div className="p-6 text-sm text-slate-500">Loading...</div>;
 
@@ -148,6 +174,65 @@ export default function EditTransactionPurchaseGrcPage() {
           )}
         </div>
       </div>
+
+      <div className="card mt-4">
+        <div className="card-body p-0">
+          <table className="w-full border-collapse text-[13.5px]">
+            <tbody>
+              <tr className="border-b border-line bg-[#f4f5f6]">
+                <td className="w-[22%] border-r border-line py-2 pr-3 text-right text-brand-link">Taxable Value</td>
+                <td className="w-[22%] border-r border-line" />
+                <td className="w-[20%] border-r border-line" />
+                <td className="w-[18%] border-r border-line text-center text-brand-link">+</td>
+                <td className="py-2 pr-3 text-right text-brand-link">{totalTaxable.toFixed(2)}</td>
+              </tr>
+              <tr className="border-b border-line">
+                <td className="border-r border-line py-2 pr-3 text-right text-brand-link">Discount(%)</td>
+                <td className="border-r border-line" />
+                <td className="border-r border-line px-3 py-1"><input className="f-input h-8" type="number" value={data.discountPercent || ''} onChange={(e) => set('discountPercent', e.target.value)} /></td>
+                <td className="border-r border-line text-center text-brand-link">-</td>
+                <td className="py-2 pr-3 text-right text-brand-link">{discountAmount.toFixed(2)}</td>
+              </tr>
+              <tr className="border-b border-line bg-[#f4f5f6]">
+                <td className="border-r border-line py-2 pr-3 text-right text-brand-link">Round Off Discount(Amt)</td>
+                <td className="border-r border-line" />
+                <td className="border-r border-line px-3 py-1"><input className="f-input h-8" type="number" value={data.roundOffDiscount || ''} onChange={(e) => set('roundOffDiscount', e.target.value)} /></td>
+                <td className="border-r border-line text-center text-brand-link">-</td>
+                <td className="py-2 pr-3 text-right text-brand-link">{roundOffDiscount.toFixed(2)}</td>
+              </tr>
+              <tr className="border-b border-line">
+                <td colSpan={2} className="border-r border-line py-2 pr-3 text-right text-brand-link">CGST + SGST (2.50 + 2.50) %</td>
+                <td className="border-r border-line text-center text-brand-link">+</td>
+                <td className="border-r border-line" />
+                <td className="py-2 pr-3 text-right text-brand-link">{summary.gst.toFixed(2)}</td>
+              </tr>
+              <tr className="border-b border-line bg-[#f4f5f6]">
+                <td className="border-r border-line py-2 pr-3 text-right text-brand-link">Freight charges BEFORE GST (Amt)</td>
+                <td className="border-r border-line" />
+                <td className="border-r border-line px-3 py-1"><input className="f-input h-8 text-center" type="number" value={data.freightAmount || 0} onChange={(e) => set('freightAmount', e.target.value)} /></td>
+                <td className="border-r border-line text-center text-brand-link">+</td>
+                <td className="py-2 pr-3 text-right text-brand-link">{freightBeforeGst.toFixed(2)}</td>
+              </tr>
+              <tr className="border-b border-line">
+                <td colSpan={4} className="border-r border-line py-2 pr-3 text-right text-brand-link">Round Off</td>
+                <td className="py-2 pr-3 text-right text-brand-link">{roundOff.toFixed(2)}</td>
+              </tr>
+              <tr className="bg-[#f4f5f6]">
+                <td colSpan={4} className="border-r border-line py-2 pr-3 text-right font-semibold text-brand-link">Net Purchases Value</td>
+                <td className="py-2 pr-3 text-right font-semibold text-brand-link">{netPurchasesValue.toFixed(2)}</td>
+              </tr>
+            </tbody>
+          </table>
+          {invoiceStatus && <div className="px-4 pt-3 text-sm text-cell">{invoiceStatus}</div>}
+          <div className="flex flex-wrap justify-end gap-2 px-4 py-3">
+            <button type="button" className="btn bg-[#198754] text-white" onClick={generatePurchaseInvoice} disabled={Boolean(invoiceId)}>Generate Purchase Invoice</button>
+            {invoiceId && <button type="button" className="btn" onClick={() => setShowInvoice(true)}>View Purchase Invoice</button>}
+            {invoiceId && <button type="button" className="btn" onClick={() => { setShowInvoice(true); setTimeout(() => window.print(), 250); }}>Download Purchase Invoice</button>}
+            <button type="button" className="btn bg-[#10bddd] text-white" onClick={submit} disabled={saving}>{saving ? 'Saving...' : 'Submit GRC'}</button>
+          </div>
+        </div>
+      </div>
+      {showInvoice && invoiceId && <PurchaseInvoicePrintView id={invoiceId} onClose={() => setShowInvoice(false)} />}
     </div>
   );
 }

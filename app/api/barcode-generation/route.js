@@ -195,10 +195,12 @@ export async function GET(req) {
   const location = sp.get('location');
   const finYear = sp.get('finYear');
   const grcId = sp.get('grcId');
+  const supplier = sp.get('supplier');
   if (business) filter.businessId = business;
   if (location) filter.locationId = location;
   if (finYear) filter.finYear = finYear;
   if (grcId) filter.grcId = grcId;
+  if (supplier) filter.supplierId = supplier;
 
   const code = (sp.get('code') || '').trim();
   const name = (sp.get('name') || '').trim();
@@ -266,15 +268,17 @@ export async function POST(req) {
     if (!existing) return json({ error: 'GRC not found' }, 404);
 
     await BarcodeLabel.deleteMany({ grcId: String(grcId) });
+    const savedSupplierId = body.supplierId || String(existing.supplierId || '');
     const docs = rows.map((r) => ({
       grcId: String(grcId),
+      supplierId: savedSupplierId,
       groupId: r.groupId || '', oldBarcode: r.oldBarcode || '', itemCode: r.itemCode || '',
-      batchUnique: r.batchUnique || '', billSlNo: r.billSlNo || '', seq: r.seq || '', dummy: r.dummy || '',
+      batchUnique: r.batchUnique || r.mode || '', billSlNo: r.billSlNo || '', seq: r.seq || r.seqDummy || '', dummy: r.dummy || '',
       supplierDescription: r.supplierDescription || '', qty: r.qty || '', uom: r.uom || '', hsn: r.hsn || '',
       purRate: r.purRate || '', disc: r.disc || '', finalNet: r.finalNet || '', gst: r.gst || '',
       printDescription: r.printDescription || '', retailPrice: r.retailPrice || '', disc2: r.disc2 || '',
       offerPrice: r.offerPrice || '', wspPrice: r.wspPrice || '', dpPrice: r.dpPrice || '', fma: r.fma || '',
-      silkMark: r.silkMark || '', barcodeGenerated: r.barcodeGenerated || '',
+      silkMark: r.silkMark || '', barcodeGenerated: r.barcodeGenerated || r.barcodeNo || '',
       businessId: business || '', locationId: location || '', finYear: finYear || '',
     }));
     const created = await BarcodeLabel.insertMany(docs);
@@ -311,12 +315,13 @@ export async function POST(req) {
 
   const docs = rows.map((r) => ({
     grcId: String(grc._id),
+    supplierId: supplierId || String(grc.supplierId || ''),
     groupId: r.groupId || '',
     oldBarcode: r.oldBarcode || '',
     itemCode: r.itemCode || '',
-    batchUnique: r.batchUnique || '',
+    batchUnique: r.batchUnique || r.mode || '',
     billSlNo: r.billSlNo || '',
-    seq: r.seq || '',
+    seq: r.seq || r.seqDummy || '',
     dummy: r.dummy || '',
     supplierDescription: r.supplierDescription || '',
     qty: r.qty || '',
@@ -334,7 +339,7 @@ export async function POST(req) {
     dpPrice: r.dpPrice || '',
     fma: r.fma || '',
     silkMark: r.silkMark || '',
-    barcodeGenerated: r.barcodeGenerated || '',
+    barcodeGenerated: r.barcodeGenerated || r.barcodeNo || '',
     businessId: business || '',
     locationId: location || '',
     finYear: finYear || '',

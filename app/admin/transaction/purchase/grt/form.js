@@ -126,15 +126,7 @@ export const FORM = {
           }
         ]
       },
-      {
-        "type": "info",
-        "items": [
-          "<b>GRT Item Validation:</b> The item code must exist in the GRC (Goods Return Challan) item list.",
-          "<b>Customer Link Check:</b> The GRC (Goods Receipt Challan) must be associated with the selected customer.",
-          "<b>Stock Availability:</b> The item must be available in stock.",
-          "<b>Return Quantity Limit:</b> The return quantity cannot exceed the maximum allowable quantity."
-        ]
-      },
+     
       {
         "type": "scan"
       },

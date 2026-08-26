@@ -31,7 +31,7 @@ export default function GrcBarcodeGenerationPage() {
         </button>
         <div className="text-sm font-semibold">Barcode Generation - {data.grc.grcNumber}</div>
       </div>
-      <GCRBarcodeGeneration grcId={id} initialRows={data.rows} />
+      <GCRBarcodeGeneration grcId={id} initialRows={data.rows} editMode />
     </div>
   );
 }

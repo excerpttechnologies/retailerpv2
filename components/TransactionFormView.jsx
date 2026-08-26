@@ -4,6 +4,7 @@ import { useRouter } from 'next/navigation';
 import Icon from './Icon';
 import Field from './Field';
 import MultiSelect from './MultiSelect';
+import ModalForm from './ModalForm';
 import { useScope } from './ScopeContext';
 import { fmt } from '@/lib/format';
 
@@ -65,13 +66,13 @@ function ScanRow({ onFound }) {
   );
 }
 
-function SourceSelect({ card, supplierId, value, onChange }) {
+function SourceSelect({ card, supplierId, value, onChange, onSelect }) {
   const [options, setOptions] = useState([]);
   const scope = useScope();
 
   useEffect(() => {
     const qs = new URLSearchParams({
-      perPage: '200', unconverted: card.unconvertedBy || '',
+      perPage: '200', unconverted: card.unconvertedBy || '', availableLr: card.availableLr ? '1' : '',
       business: scope.business || '', location: scope.location || '', finYear: scope.finYear || '',
     });
     if (card.withSupplier && supplierId) qs.set('supplierId', supplierId);
@@ -79,7 +80,8 @@ function SourceSelect({ card, supplierId, value, onChange }) {
       .then((r) => r.json())
       .then((d) => setOptions((d.rows || []).map((r) => ({
         value: r._id,
-        label: r.grcNumber || r.grtNo || r._id,
+        label: card.sourceLabel ? (r[card.sourceLabel] || r._id) : (r.grcNumber || r.grtNo || r._id),
+        row: r,
       }))))
       .catch(() => setOptions([]));
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -92,7 +94,10 @@ function SourceSelect({ card, supplierId, value, onChange }) {
         mode={card.multi ? 'multi' : 'single'}
         options={options}
         value={card.multi ? (value || []) : (value || '')}
-        onChange={onChange}
+        onChange={(next) => {
+          onChange(next);
+          onSelect?.(options.find((option) => option.value === next)?.row);
+        }}
       />
     </div>
   );
@@ -247,6 +252,7 @@ export default function TransactionFormView({ cfg, id, slug }) {
     () => cards.filter((c) => c.type === 'fields').flatMap((c) => c.fields || []),
     [cards]
   );
+  const inlineSourceCard = cards.find((card) => card.type === 'source' && card.inlineAfter);
 
   const [data, setData] = useState(() => {
     const d = {};
@@ -255,12 +261,16 @@ export default function TransactionFormView({ cfg, id, slug }) {
     });
     return d;
   });
-  const [source, setSource] = useState(null);
+  const [source, setSource] = useState([]);
   const [items, setItems] = useState([]);
   const [tab, setTab] = useState((cards.find((c) => c.type === 'scanTabs')?.tabs || [{ k: '' }])[0].k);
   const [errors, setErrors] = useState({});
   const [flash, setFlash] = useState(null);
   const [saving, setSaving] = useState(false);
+  const [savedId, setSavedId] = useState(id || null);
+  const [quickAddOpen, setQuickAddOpen] = useState(false);
+  const [quickAddTarget, setQuickAddTarget] = useState(null);
+  const [quickAddNonce, setQuickAddNonce] = useState(0);
 
   useEffect(() => {
     if (!id) return;
@@ -300,7 +310,8 @@ export default function TransactionFormView({ cfg, id, slug }) {
       const d = await r.json();
       if (r.status === 422) { setErrors(d.errors || {}); setFlash({ type: 'err', msg: 'Please correct the highlighted fields.' }); return; }
       if (!r.ok) { setFlash({ type: 'err', msg: d.error || 'Save failed' }); return; }
-      router.push(listUrl);
+      if (cfg.afterSaveBarcode && d.id) setSavedId(d.id);
+      else router.push(listUrl);
     } finally { setSaving(false); }
   }
 
@@ -316,8 +327,35 @@ export default function TransactionFormView({ cfg, id, slug }) {
               <div className="card-body">
                 {flash && i === 0 && <div className={'flash ' + (flash.type === 'err' ? 'flash-err' : 'flash-ok')}>{flash.msg}</div>}
                 <div className="form-grid-4">
-                  {(card.fields || []).map((f) => (
-                    <Field key={f.k} f={f} value={data[f.k]} error={errors[f.k]} onChange={set} />
+                  {(card.fields || []).filter((f) => !f.visibleWhen || Object.entries(f.visibleWhen).every(([key, expected]) => data[key] === expected)).map((f) => (
+                    <div key={f.k}>
+                      <Field key={f.k + '-' + quickAddNonce} f={f} value={data[f.k]} error={errors[f.k]} onChange={set} />
+                      {(cfg.quickAdds?.[f.k] || (cfg.quickAdd?.field === f.k ? cfg.quickAdd : null)) && (
+                        <button type="button" className="btn btn-primary mt-2" onClick={() => { setQuickAddTarget(f.k); setQuickAddOpen(true); }}>
+                          <Icon name="plus" size={13} /> {(cfg.quickAdds?.[f.k] || cfg.quickAdd).label}
+                        </button>
+                      )}
+                      {inlineSourceCard?.inlineAfter === f.k && (
+                        <div className="mt-3">
+                          <SourceSelect
+                            card={inlineSourceCard}
+                            supplierId={data.supplierId}
+                            value={source}
+                            onChange={(next) => {
+                              setSource(next);
+                              if (inlineSourceCard.sourceKey) set(inlineSourceCard.sourceKey, next);
+                            }}
+                            onSelect={(row) => {
+                              if (!row || !inlineSourceCard.populate) return;
+                              setData((current) => Object.entries(inlineSourceCard.populate).reduce(
+                                (next, [target, sourceKey]) => ({ ...next, [target]: row[sourceKey] ?? '' }),
+                                current
+                              ));
+                            }}
+                          />
+                        </div>
+                      )}
+                    </div>
                   ))}
                 </div>
                 {card.preview && (
@@ -353,6 +391,7 @@ export default function TransactionFormView({ cfg, id, slug }) {
           );
         }
 
+        if (card.type === 'source' && card.inlineAfter) return null;
         if (card.type === 'source') {
           return (
             <div className="card" key={i}>
@@ -362,7 +401,17 @@ export default function TransactionFormView({ cfg, id, slug }) {
                     card={card}
                     supplierId={data.supplierId}
                     value={source}
-                    onChange={setSource}
+                    onChange={(next) => {
+                      setSource(next);
+                      if (card.sourceKey) set(card.sourceKey, next);
+                    }}
+                    onSelect={(row) => {
+                      if (!row || !card.populate) return;
+                      setData((current) => Object.entries(card.populate).reduce(
+                        (next, [target, sourceKey]) => ({ ...next, [target]: row[sourceKey] ?? '' }),
+                        current
+                      ));
+                    }}
                   />
                   {card.info && <InfoBox items={card.info} />}
                 </div>
@@ -444,9 +493,26 @@ export default function TransactionFormView({ cfg, id, slug }) {
         return null;
       })}
 
+      {quickAddOpen && (cfg.quickAdds?.[quickAddTarget] || cfg.quickAdd) && (
+        <ModalForm
+          cfg={(() => {
+            const quickAdd = cfg.quickAdds?.[quickAddTarget] || cfg.quickAdd;
+            return { addTitle: quickAdd.title, endpoint: quickAdd.endpoint, fields: quickAdd.fields, modalWide: true };
+          })()}
+          slug={(cfg.quickAdds?.[quickAddTarget] || cfg.quickAdd).slug}
+          onClose={() => { setQuickAddOpen(false); setQuickAddTarget(null); }}
+          onSaved={() => { setQuickAddOpen(false); setQuickAddTarget(null); setQuickAddNonce((nonce) => nonce + 1); }}
+        />
+      )}
+
       <button type="button" className="btn btn-primary mx-auto mt-2 flex h-[38px] w-full max-w-[390px] justify-center" onClick={submit} disabled={saving}>
         {saving ? <span className="spin" /> : <Icon name="save" size={14} />} Submit
       </button>
+      {cfg.afterSaveBarcode && savedId && (
+        <button type="button" className="btn mx-auto mt-2 flex h-[38px] w-full max-w-[390px] justify-center bg-indigo-600 text-white" onClick={() => router.push((cfg.barcodePath || '') + savedId + (cfg.barcodeSuffix || ''))}>
+          <Icon name="barcode" size={14} /> Barcode Generation
+        </button>
+      )}
     </>
   );
 }
