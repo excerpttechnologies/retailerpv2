@@ -4,8 +4,8 @@ One screen: `/admin/ledger-transaction`. A filter card over a read-only list of
 Dr / Cr entries.
 
 **Nothing is entered here.** There is no ADD button because this module owns no
-data of its own — it reads eight other collections and turns each document into
-a ledger line.
+data of its own — it reads ten other sources and turns each document into a
+ledger line.
 
 ---
 
@@ -26,6 +26,9 @@ Sell → POS Return               ──────►    Cr  the customer
 
 Inter Company Sell
   → Sales Invoice               ──────►    Dr  the destination business
+
+Voucher → Receipt Voucher       ──────►    Cr  the customer
+Voucher → Payment Voucher       ──────►    Dr  the supplier
 ```
 
 Direction is from the **party's** point of view, which is how the deployed
@@ -69,7 +72,7 @@ party — old rows included, because entries are computed on read.
 
 ---
 
-## The eight sources
+## The ten sources
 
 | Doc Type | Party field | Side | Date field | Number field | Amount from |
 |---|---|---|---|---|---|
@@ -81,18 +84,39 @@ party — old rows included, because entries are computed on read.
 | POS | `customerId` | **Dr** | `date` | `invoiceNo` | `totalAmount` |
 | POS Return | `customerId` | **Cr** | `date` | `invoiceNo` | `totalAmount` |
 | Inter Company Sales Invoice | `toBusinessId` | **Dr** | `invoiceDate` | `invoiceNo` | `netValue` |
+| **Receipt Voucher** | `partyLedgerId` † | **Cr** | `voucherDate` | `voucherNo` | `totalAmount` |
+| **Payment Voucher** | `partyLedgerId` † | **Dr** | `voucherDate` | `voucherNo` | `totalAmount` |
 
 \* `SalesInvoice` and `CreditNote` carry no date field of their own, so the
 record's `createdAt` stands in.
 
+† The two vouchers are the odd ones out in two ways. They live in **one
+collection** — `voucher` holds all three types — so each source narrows it
+with a `where`. And their party **is a ledger**, whose name the voucher copied
+down at save time, so it needs no lookup: the row shows the name the voucher
+was raised against, not the ledger's current one.
+
 **Credit Note and Sales Return have no total on the header at all** — only line
 items — so their amount is summed from each line's `netAmount`.
+
+### The settlement side
+
+The first eight sources are documents that *imply* a ledger entry. The two
+vouchers **are** ledger entries — they exist for no other reason, which is why
+their amount is read straight off the voucher rather than derived.
+
+They are also the only sources that move a balance *down*: a receipt reduces
+what a customer owes, a payment reduces what you owe a supplier.
 
 ### What is deliberately NOT here
 
 **GRC, GRT and Delivery Challan.** They move stock, not money. A goods return
 shows up when its **Debit Note** is raised — which is the entry that carries
 the value.
+
+**Contra Vouchers.** They move money between the business's own bank and cash
+accounts, so there is no party for the entry to sit against. Including them
+would produce rows with both name columns blank.
 
 ---
 
@@ -111,7 +135,7 @@ GET /api/ledger-transaction
 
 - a **Document Type** filter → only that one
 - a **Ledger Type** filter → only sources on that side
-- neither → all eight
+- neither → all ten
 
 **3 · Each collection is queried in parallel**, filtered by business +
 location + financial year, plus your date range and document number, sorted
@@ -186,7 +210,7 @@ Three consequences worth understanding before anyone treats this as books:
 3. **No opening balances, no running balance, no trial balance.** There is
    nothing to accumulate against.
 
-**Merged in memory, so capped at 2,000 per source.** Sorting across eight
+**Merged in memory, so capped at 2,000 per source.** Sorting across ten
 collections cannot be done in the database. Past the cap the page shows the
 most recent slice and says so in a banner rather than quietly truncating.
 
@@ -199,7 +223,7 @@ matches it — but it is not a balanced journal.
 
 Add a `LedgerTransaction` collection, and have every transaction route write
 to it on save — the same place each one already calls `nextDocNumber()`. Then
-this page's route swaps its source from these eight collections to that one
+this page's route swaps its source from these ten sources to that one
 collection.
 
 **Nothing on the screen changes.** The columns, filters and layout stay as they
@@ -225,6 +249,6 @@ app/api/
 edited: config/nav.js          "Ledger Transaction" entry above Logout
 ```
 
-**Adding a ninth document type** is one entry in `SOURCES`
+**Adding an eleventh document type** is one entry in `SOURCES`
 (`app/api/ledger-transaction/route.js`) plus one string in `DOC_TYPES`
 (`app/admin/ledger-transaction/fields.js`). Nothing else needs touching.

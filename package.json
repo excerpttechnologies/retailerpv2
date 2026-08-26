@@ -6,8 +6,12 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "seed": "node scripts/seed.mjs"
+    "seed": "node scripts/seed.mjs",
+    "seed:groups": "node --env-file=.env scripts/seedProductGroups.mjs",
+      "update:groups-business": "node --env-file=.env scripts/updateProductGroupsBusinessId.mjs",
+      "seed:items": "node --env-file=.env scripts/seedItems.mjs"
   },
+  
   "dependencies": {
     "jsbarcode": "^3.12.3",
     "lucide-react": "^1.33.0",
