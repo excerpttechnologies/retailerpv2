@@ -1,0 +1,180 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ==========================================================================
+   Reusable primitives for the Orbit ERP look. Every page composes these so
+   the markup stays short and the styling stays consistent.
+   ========================================================================== */
+@layer components {
+
+  /* ------------------------------------------------------------- shell --- */
+  .sb-item {
+    @apply flex w-full items-center gap-3.5 border-0 bg-transparent px-5 py-3
+           text-left text-[15px] text-sidebar-text cursor-pointer;
+  }
+  .sb-item:hover { @apply bg-sidebar-hover text-white; }
+  .sb-item-active { @apply bg-sidebar-active text-white; }
+  .sb-sub-link { @apply block py-2 pl-[60px] pr-5 text-sm text-sidebar-muted hover:text-white; }
+  .sb-sub-link-active { @apply font-bold text-white; }
+
+  .tb-select {
+    @apply h-9 min-w-[170px] rounded-md border border-linestrong bg-white
+           px-2.5 text-sm text-ink outline-none;
+  }
+
+  /* -------------------------------------------------------------- card --- */
+  .card { @apply mb-4 rounded-lg border border-line bg-white; }
+  .card-head { @apply flex items-center gap-2 border-b border-line px-[18px] py-3.5; }
+  .card-title { @apply flex items-center gap-2 text-[15px] font-bold; }
+  .card-body { @apply px-[18px] py-4; }
+
+  /* ------------------------------------------------------------ button --- */
+  .btn {
+    @apply inline-flex h-[34px] items-center gap-[7px] whitespace-nowrap rounded-md
+           border border-linestrong bg-white px-3 text-[13px] text-brand-link
+           hover:bg-[#f5f8fd] disabled:opacity-60;
+  }
+  .btn-primary {
+    @apply border-brand bg-brand font-bold text-white hover:bg-brand-hover hover:border-brand-hover;
+  }
+  .btn-ghost { @apply text-inkmuted; }
+  .btn-dark { @apply border-[#6b7280] bg-[#6b7280] text-white hover:bg-[#5b6472]; }
+  .btn-submit { @apply mx-auto mt-2 flex h-[38px] w-full max-w-[280px] justify-center; }
+
+  .search-input {
+    @apply h-[34px] w-[220px] rounded-md border border-linestrong pl-[30px] pr-2.5
+           text-[13px] outline-none focus:border-[#8fb0e8];
+  }
+
+  /* ------------------------------------------------------------- table --- */
+  .dt { @apply w-full border-collapse text-[13.5px]; }
+  .dt th {
+    @apply whitespace-nowrap border-y border-r border-line bg-thead px-3 py-2.5
+           text-left font-bold text-ink last:border-r-0;
+  }
+  .dt td { @apply border-b border-line px-3 py-2.5 text-cell align-middle; }
+  .dt tbody tr:nth-child(odd) { @apply bg-rowalt; }
+  .dt tbody tr:hover { @apply bg-[#f2f6fc]; }
+  .dt-empty { @apply py-3.5 text-center text-inkmuted; }
+
+  .pill { @apply inline-block rounded px-2.5 py-[3px] text-xs; }
+  .pill-green { @apply bg-okgreenbg text-okgreen; }
+  .pill-grey { @apply bg-pillgrey text-[#5b6880]; }
+  .pill-blue { @apply bg-[#e8f1fd] text-brand-link; }
+  .pill-red { @apply bg-[#fdeaea] text-danger; }
+
+  .act-btn {
+    @apply inline-flex h-6 w-[26px] items-center justify-center rounded border-0
+           text-[11px] text-white cursor-pointer;
+  }
+
+  /* -------------------------------------------------------------- form --- */
+  .form-grid { @apply grid grid-cols-1 gap-x-[22px] gap-y-3.5 md:grid-cols-2 xl:grid-cols-3; }
+  .form-grid-4 { @apply grid grid-cols-1 gap-x-[22px] gap-y-3.5 md:grid-cols-2 xl:grid-cols-4; }
+  .form-grid-6 { @apply grid grid-cols-1 gap-x-[22px] gap-y-3.5 md:grid-cols-2 xl:grid-cols-6; }
+  .f-label { @apply mb-[5px] block text-[13px] text-ink; }
+  .f-req { @apply ml-0.5 text-danger; }
+  .f-hint { @apply ml-1 text-[11.5px] text-inkmuted; }
+  .f-input {
+    @apply h-9 w-full rounded-md border border-linestrong bg-white px-2.5 text-[13.5px]
+           text-ink outline-none focus:border-[#8fb0e8] focus:ring-[3px]
+           focus:ring-brand-link/10 read-only:bg-[#f2f4f8];
+  }
+  .f-textarea { @apply min-h-[76px] resize-y py-2; }
+  .f-radio-row { @apply flex h-9 items-center gap-[18px]; }
+  .f-radio { @apply inline-flex items-center gap-1.5 text-[13.5px]; }
+  .f-err { @apply mt-1 text-xs text-danger; }
+  .form-section + .form-section { @apply mt-[18px] border-t border-line pt-4; }
+  .form-section-title { @apply mb-3 mt-1 text-[15px] font-bold; }
+
+  .info-box {
+    @apply mb-4 rounded-md border border-[#cfe6f6] bg-[#eaf4fb] px-4 py-3
+           text-[13px] text-[#2b4a63];
+  }
+  .note-box { @apply mb-3.5 text-[12.5px] leading-[1.8] text-[#5c6a82]; }
+  .kbd {
+    @apply rounded bg-[#2f3a4f] px-[7px] py-0.5 text-[11.5px] text-white;
+  }
+  .kbd-hint { @apply my-2 flex items-center gap-1.5 text-[13px] text-danger; }
+
+  /* ------------------------------------------------------- multiselect --- */
+  .ms-control {
+    @apply flex min-h-9 flex-wrap items-center gap-1.5 rounded-md border
+           border-linestrong bg-white p-1 px-1.5 cursor-text;
+  }
+  .ms-chip {
+    @apply inline-flex items-center gap-1.5 rounded bg-pillgrey px-[7px] py-[3px]
+           text-[12.5px] text-[#3d4a61];
+  }
+  .ms-input { @apply h-[26px] min-w-[60px] flex-1 border-0 text-[13px] outline-none; }
+  .ms-menu {
+    @apply absolute left-0 right-0 top-[calc(100%+3px)] z-[45] max-h-60 overflow-auto
+           rounded-md border border-linestrong bg-white shadow-pop;
+  }
+  .ms-opt { @apply cursor-pointer px-[11px] py-2 text-[13px] hover:bg-[#eef4fd]; }
+
+  /* ----------------------------------------------------------- mapping --- */
+  .map-tbl { @apply w-full border-collapse; }
+  .map-tbl th { @apply border-y border-line bg-thead px-3 py-2.5 text-center font-bold; }
+  .map-tbl td { @apply border-b border-line px-3 py-2; }
+  .map-key { @apply w-[38%] text-brand-link; }
+
+  .vs-group { @apply mb-3.5 rounded-md border border-line px-4 py-3.5; }
+
+  .flash { @apply mb-3.5 rounded-md px-3.5 py-2.5 text-[13px]; }
+  .flash-ok { @apply bg-okgreenbg text-okgreen; }
+  .flash-err { @apply bg-[#fdecea] text-danger; }
+}
+
+/* sidebar scrollbar, matching the original's inner scroll track */
+.sb-nav::-webkit-scrollbar { width: 8px; }
+.sb-nav::-webkit-scrollbar-thumb { background: #55617d; border-radius: 4px; }
+.sb-nav::-webkit-scrollbar-track { background: #16203a; }
+
+.spin {
+  display: inline-block; width: 14px; height: 14px;
+  border: 2px solid #c9d4e8; border-top-color: #2b57b0;
+  border-radius: 50%; animation: sp .7s linear infinite;
+}
+@keyframes sp { to { transform: rotate(360deg); } }
+
+/* Tabbed form header (Suppliers / Agents / Customers).
+   Two columns on mobile, one per tab from --tab-count on desktop, so removing
+   a tab does not leave an empty cell. Tailwind cannot generate a class name
+   built at runtime, hence the custom property. */
+.tabstrip {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+@media (min-width: 768px) {
+  .tabstrip {
+    grid-template-columns: repeat(var(--tab-count, 4), minmax(0, 1fr));
+  }
+}
+
+/* Printable documents (GRC Print, barcode preview).
+   At print time only .print-doc survives: the sidebar, top bar and the
+   Print / Back buttons are dropped so the paper output is just the document. */
+@media print {
+  body * { visibility: hidden; }
+  .print-doc, .print-doc * { visibility: visible; }
+  .print-doc { position: absolute; inset: 0; margin: 0; width: 100%; border: 0; }
+  .no-print { display: none !important; }
+}
+.prn-tbl { width: 100%; border-collapse: collapse; font-size: 13px; }
+.prn-tbl th,
+.prn-tbl td { border: 1px solid #000; padding: 4px 6px; }
+.prn-tbl thead th { font-weight: 700; text-align: center; }
+.prn-tbl tfoot td { border-top: 2px solid #000; }
+
+/* Purchase Invoice totals block */
+.tot-tbl { border-collapse: collapse; min-width: 460px; font-size: 13px; }
+.tot-tbl td { border: 1px solid #dbe1ea; padding: 6px 10px; }
+.tot-tbl td:first-child { text-align: right; color: #4a5568; }
+
+.sb-sub-link {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
