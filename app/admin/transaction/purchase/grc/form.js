@@ -136,11 +136,7 @@ export const FORM = {
 export const SUPPLIER_QUICK_FIELDS = [
   { "k": "typeId", "label": "Type", "type": "ref", "ref": "contact-type-supplier", "req": true },
   { "k": "businessName", "label": "Business Name", "type": "text" },
-  { "k": "businessType", "label": "Business Type", "type": "select", "req": true, "def": "Individual", "opts": [{ "v": "Individual", "l": "Individual" }, { "v": "Business", "l": "Business" }] },
-  { "k": "contactType2", "label": "Contact Type (2)", "type": "select", "req": true, "def": "Individual", "opts": [{ "v": "Individual", "l": "Individual" }, { "v": "Business", "l": "Business" }] },
   { "k": "firstName", "label": "First Name", "type": "text", "req": true },
   { "k": "billingMobile", "label": "Mobile", "type": "text", "req": true },
-  { "k": "markupPriceCalculation", "label": "Price Calculation", "type": "select", "req": true, "def": "Purchase Rate", "opts": [{ "v": "Purchase Rate", "l": "Purchase Rate" }, { "v": "MRP", "l": "MRP" }, { "v": "Landing Cost", "l": "Landing Cost" }] },
-  { "k": "openingBalance", "label": "Opening Balance", "type": "number", "req": true, "def": 0 },
   { "k": "gstNo", "label": "GST No", "type": "text" },
 ];

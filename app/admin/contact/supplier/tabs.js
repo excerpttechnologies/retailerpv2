@@ -17,68 +17,10 @@ export const TABS = [
               "req": true
             },
             {
-              "k": "businessType",
-              "label": "Business Type",
-              "type": "select",
-              "req": true,
-              "placeholder": "--Select--",
-              "opts": [
-                {
-                  "v": "Proprietorship",
-                  "l": "Proprietorship"
-                },
-                {
-                  "v": "Partnership",
-                  "l": "Partnership"
-                },
-                {
-                  "v": "Private Limited",
-                  "l": "Private Limited"
-                },
-                {
-                  "v": "Public Limited",
-                  "l": "Public Limited"
-                },
-                {
-                  "v": "LLP",
-                  "l": "LLP"
-                },
-                {
-                  "v": "HUF",
-                  "l": "HUF"
-                },
-                {
-                  "v": "Trust",
-                  "l": "Trust"
-                },
-                {
-                  "v": "Individual",
-                  "l": "Individual"
-                }
-              ]
-            },
-            {
               "k": "gstNo",
               "label": "GST NO",
               "type": "text",
               "placeholder": "ex: 22AAAAA0000A1Z5"
-            },
-            {
-              "k": "contactType2",
-              "label": "Contact Type (2)",
-              "type": "select",
-              "req": true,
-              "def": "Individual",
-              "opts": [
-                {
-                  "v": "Individual",
-                  "l": "Individual"
-                },
-                {
-                  "v": "Business",
-                  "l": "Business"
-                }
-              ]
             },
             {
               "k": "businessName",
@@ -147,44 +89,6 @@ export const TABS = [
               "ph": true,
               "type": "date"
             },
-            {
-              "k": "gender",
-              "label": "Gender",
-              "type": "select",
-              "placeholder": "--Select Gender--",
-              "opts": [
-                {
-                  "v": "Male",
-                  "l": "Male"
-                },
-                {
-                  "v": "Female",
-                  "l": "Female"
-                },
-                {
-                  "v": "Other",
-                  "l": "Other"
-                }
-              ]
-            },
-            {
-              "k": "allowLogin",
-              "label": "Allow Login",
-              "type": "checkbox"
-            },
-            {
-              "k": "userName",
-              "label": "User Name",
-              "ph": true,
-              "type": "text",
-              "span": 2
-            },
-            {
-              "k": "password",
-              "label": "Password",
-              "ph": true,
-              "type": "password"
-            }
           ]
         },
         {
@@ -223,12 +127,6 @@ export const TABS = [
               "type": "text"
             },
             {
-              "k": "billingDistrict",
-              "label": "District",
-              "ph": true,
-              "type": "text"
-            },
-            {
               "k": "billingZipCode",
               "label": "Zip Code",
               "ph": true,
@@ -236,8 +134,7 @@ export const TABS = [
               "fill": {
                 "city": "billingCity",
                 "state": "billingState",
-                "country": "billingCountry",
-                "district": "billingDistrict"
+                "country": "billingCountry"
               }
             },
             {
@@ -325,12 +222,6 @@ export const TABS = [
               "type": "text"
             },
             {
-              "k": "shippingDistrict",
-              "label": "District",
-              "ph": true,
-              "type": "text"
-            },
-            {
               "k": "shippingZipCode",
               "label": "Zip Code",
               "ph": true,
@@ -338,8 +229,7 @@ export const TABS = [
               "fill": {
                 "city": "shippingCity",
                 "state": "shippingState",
-                "country": "shippingCountry",
-                "district": "shippingDistrict"
+                "country": "shippingCountry"
               }
             },
             {
@@ -396,27 +286,6 @@ export const TABS = [
         {
           "title": "Price Calculation Setup",
           "fields": [
-            {
-              "k": "markupPriceCalculation",
-              "label": "Markup Price Calculation",
-              "type": "select",
-              "req": true,
-              "def": "Purchase Rate",
-              "opts": [
-                {
-                  "v": "Purchase Rate",
-                  "l": "Purchase Rate"
-                },
-                {
-                  "v": "MRP",
-                  "l": "MRP"
-                },
-                {
-                  "v": "Landing Cost",
-                  "l": "Landing Cost"
-                }
-              ]
-            },
             {
               "k": "discountType",
               "label": "Discount Type",
@@ -477,8 +346,8 @@ export const TABS = [
               "k": "agentId",
               "label": "Agent Name",
               "type": "ref",
-              "ref": "supplier",
-              "placeholder": "Select Supplier"
+              "ref": "agent",
+              "placeholder": "Select Agent"
             },
             {
               "k": "commissionPercent",
@@ -609,13 +478,6 @@ export const TABS = [
                 }
               ]
             },
-            {
-              "k": "openingBalance",
-              "label": "Opening Balance",
-              "type": "number",
-              "req": true,
-              "def": 0
-            }
           ]
         },
         {
@@ -775,4 +637,14 @@ export const TABS = [
         }
       ]
     }
+  ];
+
+  export const AGENT_QUICK_FIELDS = [
+    { k: 'typeId', label: 'Type', type: 'ref', ref: 'contact-type-agent', req: true },
+    { k: 'shortName', label: 'Short Name', type: 'text' },
+    { k: 'prefix', label: 'Prefix', type: 'select', def: 'Mr.', opts: [
+      { v: 'Mr.', l: 'Mr.' }, { v: 'Mrs.', l: 'Mrs.' }, { v: 'Ms.', l: 'Ms.' },
+    ] },
+    { k: 'firstName', label: 'First Name', type: 'text', req: true },
+    { k: 'billingMobile', label: 'Mobile', type: 'text', req: true },
   ];

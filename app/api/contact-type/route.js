@@ -38,7 +38,7 @@ export async function GET(req) {
     .lean();
 
   return json({
-    rows: rows.map((r) => ({ ...r, _id: String(r._id) })),
+    rows: rows.map((r) => ({ ...r, name: String(r.name || '').toUpperCase(), _id: String(r._id) })),
     labels: await resolveRefLabels(rows),
     total,
     page,
@@ -56,6 +56,7 @@ export async function POST(req) {
 
   const { errors, doc, ok } = validate(FIELDS, body.data || {});
   if (!ok) return json({ errors }, 422);
+  doc.name = String(doc.name || '').trim().toUpperCase();
   if (body.business && isValidObjectId(body.business)) doc.businessId = body.business;
 
   const created = await ContactType.create(doc);

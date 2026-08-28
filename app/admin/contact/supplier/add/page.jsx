@@ -1,6 +1,6 @@
 'use client';
 import TabbedFormView from '@/components/TabbedFormView';
-import { TABS } from '../tabs';
+import { AGENT_QUICK_FIELDS, TABS } from '../tabs';
 
 /* Add Suppliers - four tabs, one Submit per tab. */
 
@@ -17,6 +17,13 @@ export default function AddSupplierPage() {
         scope: ["business"],
         contactKind: "Supplier",
         tabs: TABS,
+        quickAdds: {
+          agentId: {
+            label: 'Add Agent', title: 'Add Agent', slug: 'agent', ref: 'agent',
+            endpoint: '/api/agent', fields: AGENT_QUICK_FIELDS,
+            prepareData: (data) => ({ ...data, openingBalance: 0 }),
+          },
+        },
       }}
     />
   );

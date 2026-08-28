@@ -11,7 +11,7 @@ import { useScope } from './ScopeContext';
 import { fmt, toCsv, toXlsHtml, download, printTable } from '@/lib/format';
 import { FIELDS, freightBreakdown, bookingDelayDays, delayTone } from '@/app/admin/transport/delivery/fields';
 import { FIELDS as TRANSPORTER_FIELDS } from '@/app/admin/transport/transporter/fields';
-import { TABS as SUPPLIER_TABS } from '@/app/admin/contact/supplier/tabs';
+import { AGENT_QUICK_FIELDS, TABS as SUPPLIER_TABS } from '@/app/admin/contact/supplier/tabs';
 
 /* The LR-page quick-add does not collect a transporter code. The API still
   requires one, so the dialog supplies an internal value when saving. */
@@ -229,6 +229,13 @@ function DeliveryDialog({ row, onClose, onSaved }) {
                 scope: ['business'],
                 contactKind: 'Supplier',
                 tabs: SUPPLIER_TABS,
+                quickAdds: {
+                  agentId: {
+                    label: 'Add Agent', title: 'Add Agent', slug: 'agent', ref: 'agent',
+                    endpoint: '/api/agent', fields: AGENT_QUICK_FIELDS,
+                    prepareData: (data) => ({ ...data, openingBalance: 0 }),
+                  },
+                },
                 allowBlankFirstName: true,
                 isFieldVisible: (f, data) => f.k !== 'firstName'
                   || !SUPPLIER_TYPES_WITHOUT_FIRST_NAME.test(data._supplierTypeLabel || ''),

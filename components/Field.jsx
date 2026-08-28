@@ -634,8 +634,8 @@ export default function Field({ f, value, error, onChange, onOptionChange }) {
 
     default:
       control = (
-        <input
-          type="text" className="f-input" value={value ?? ''}
+          <input
+          type="text" className={'f-input' + (f.uppercase ? ' uppercase' : '')} value={value ?? ''}
           readOnly={!!f.readOnly} placeholder={f.placeholder || (f.ph ? f.label : '')}
           onChange={(e) => set(e.target.value)}
         />

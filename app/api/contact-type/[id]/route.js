@@ -30,6 +30,7 @@ export async function PUT(req, { params }) {
 
   const { errors, doc, ok } = validate(FIELDS, body.data || {});
   if (!ok) return json({ errors }, 422);
+  doc.name = String(doc.name || '').trim().toUpperCase();
 
   const updated = await ContactType.findByIdAndUpdate(id, doc, { new: true, runValidators: true });
   if (!updated) return json({ error: 'Not found' }, 404);

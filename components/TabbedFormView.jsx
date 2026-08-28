@@ -3,6 +3,8 @@ import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import Icon from './Icon';
 import Field from './Field';
+import ModalForm from './ModalForm';
+import { refreshOptions } from './useOptions';
 import { useScope } from './ScopeContext';
 
 /* Supplier / Customer / Agent add form: four tabs across the top, each with its
@@ -23,6 +25,11 @@ export default function TabbedFormView({ cfg, id, slug, onSaved }) {
   const [errors, setErrors] = useState({});
   const [flash, setFlash] = useState(null);
   const [saving, setSaving] = useState(false);
+  const [quickAddField, setQuickAddField] = useState(null);
+
+  useEffect(() => {
+    if (tabs.length && active >= tabs.length) setActive(tabs.length - 1);
+  }, [active, tabs.length]);
 
   const allFields = tabs.flatMap((t) => (t.sections || []).flatMap((s) => s.fields || []));
 
@@ -105,10 +112,27 @@ export default function TabbedFormView({ cfg, id, slug, onSaved }) {
     } finally { setSaving(false); }
   }
 
-  const tab = tabs[active];
+  const tab = tabs[active] || tabs[0];
+
+  const quickAdd = quickAddField ? cfg.quickAdds?.[quickAddField] : null;
+
+  if (!tab) return null;
 
   return (
-    <div className="card">
+    <>
+      {quickAdd && (
+        <ModalForm
+          cfg={quickAdd}
+          slug={quickAdd.slug || quickAddField}
+          onClose={() => setQuickAddField(null)}
+          onSaved={(result) => {
+            setQuickAddField(null);
+            set(quickAddField, result.id);
+            refreshOptions(quickAdd.ref || quickAdd.slug || quickAddField);
+          }}
+        />
+      )}
+      <div className="card">
       {/* tab bar - column count follows tabs.length, so a page with 3 tabs
           (Supplier, Agent) doesn't leave an empty 4th cell. Driven by the
           --tab-count custom property, with the rule in globals.css: a
@@ -164,23 +188,40 @@ export default function TabbedFormView({ cfg, id, slug, onSaved }) {
                     : 'form-grid-4'
               }
             >
-              {(s.fields || []).filter((f) => !cfg.isFieldVisible || cfg.isFieldVisible(f, data)).map((f) => (
-                <Field
-                  key={f.k}
-                  f={f}
-                  value={data[f.k]}
-                  error={errors[f.k]}
-                  onChange={set}
-                  onOptionChange={(option) => {
-                    const patch = cfg.onOptionChange?.(f, option, data) || {};
-                    setData((current) => ({
-                      ...current,
-                      ...patch,
-                      ...(f.k === 'typeId' ? { _supplierTypeLabel: option?.label || '' } : {}),
-                    }));
-                  }}
-                />
-              ))}
+              {(s.fields || []).filter((f) => !cfg.isFieldVisible || cfg.isFieldVisible(f, data)).map((f) => {
+                const add = cfg.quickAdds?.[f.k];
+                return (
+                  <div key={f.k} className={add ? 'flex items-end gap-1.5' : ''}>
+                    <div className={add ? 'min-w-0 flex-1' : ''}>
+                      <Field
+                        f={f}
+                        value={data[f.k]}
+                        error={errors[f.k]}
+                        onChange={set}
+                        onOptionChange={(option) => {
+                          const patch = cfg.onOptionChange?.(f, option, data) || {};
+                          setData((current) => ({
+                            ...current,
+                            ...patch,
+                            ...(f.k === 'typeId' ? { _supplierTypeLabel: option?.label || '' } : {}),
+                          }));
+                        }}
+                      />
+                    </div>
+                    {add && (
+                      <button
+                        type="button"
+                        title={add.label || 'Add'}
+                        aria-label={add.label || 'Add'}
+                        className="mb-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-brand text-white hover:opacity-90"
+                        onClick={() => setQuickAddField(f.k)}
+                      >
+                        <Icon name="plus" size={15} />
+                      </button>
+                    )}
+                  </div>
+                );
+              })}
             </div>
           </div>
         ))}
@@ -189,6 +230,7 @@ export default function TabbedFormView({ cfg, id, slug, onSaved }) {
           {saving ? <span className="spin" /> : <Icon name="save" size={14} />} Submit
         </button>
       </div>
-    </div>
+      </div>
+    </>
   );
 }
