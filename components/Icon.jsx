@@ -40,6 +40,7 @@ const P = {
   chevD: 'M6 9l6 6 6-6',
   chevL: 'M15 6l-6 6 6 6',
   x: 'M6 6l12 12M18 6L6 18',
+  check: 'M5 12l4 4L19 6',
 };
 
 export default function Icon({ name, size = 18, className = '', stroke = 1.7 }) {

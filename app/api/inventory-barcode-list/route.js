@@ -76,6 +76,10 @@ export async function GET(req) {
       { itemCode: rx },
       { printDescription: rx },
       { supplierDescription: rx },
+      { retailPrice: rx },
+      { finalNet: rx },
+      { offerPrice: rx },
+      { wspPrice: rx },
     ];
   }
 
@@ -112,14 +116,19 @@ export async function GET(req) {
     rows: rows.map((r) => ({
       _id: String(r._id),
       barcodeNo: r.barcodeGenerated || r.oldBarcode || '',
+      itemCode: r.itemCode || '',
       itemId: r.printDescription || r.supplierDescription || r.itemCode || '',
+      description: r.printDescription || r.supplierDescription || '',
+      hsn: r.hsn || '',
+      gst: Number(String(r.gst || '').match(/[\d.]+/)?.[0] || 0),
+      quantity: Number(r.qty) || 0,
       rsp: Number(r.retailPrice) || 0,
       cp: Number(r.finalNet || r.purRate) || 0,
       grcNo: grcNumberById[r.grcId] || '',
       /* The mobile app writes the staff-uploaded photo straight onto the
          barcode row, so it arrives with the row - no join, no second
          collection. */
-      productImageUrl: r.imageUrl || '',
+      productImageUrl: imageUrl(r.imageUrl || r.filePath || ''),
     })),
     labels: {},
     total,
@@ -129,4 +138,11 @@ export async function GET(req) {
   });
 
   
+}
+
+function imageUrl(value) {
+  const stored = String(value || '').trim();
+  if (!stored) return '';
+  if (/^(https?:|data:|blob:|\/)/i.test(stored)) return stored;
+  return '/api/files/' + stored.replace(/^\/+/, '');
 }

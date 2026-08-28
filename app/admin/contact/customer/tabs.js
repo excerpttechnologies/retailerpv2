@@ -224,6 +224,12 @@ export const TABS = [
               "type": "text"
             },
             {
+              "k": "billingTaluk",
+              "label": "Taluk",
+              "ph": true,
+              "type": "text"
+            },
+            {
               "k": "billingZipCode",
               "label": "Zip Code",
               "ph": true,
@@ -232,7 +238,8 @@ export const TABS = [
                 "city": "billingCity",
                 "state": "billingState",
                 "country": "billingCountry",
-                "district": "billingDistrict"
+                "district": "billingDistrict",
+                "taluk": "billingTaluk"
               }
             },
             {

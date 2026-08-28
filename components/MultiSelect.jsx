@@ -27,6 +27,7 @@ export default function MultiSelect({
     : options.find((o) => o.value === value) || (value ? { value, label: String(value) } : null);
 
   const shown = options.filter((o) => {
+    if (o.addCustomer) return true;
     if (term && !String(o.label).toLowerCase().includes(term.toLowerCase())) return false;
     if (mode === 'multi') return !(value || []).includes(o.value);
     return true;
@@ -85,8 +86,9 @@ export default function MultiSelect({
             <div className="px-2.5 py-2.5 text-[13px] text-inkmuted">No options</div>
           )}
           {shown.slice(0, 200).map((o) => (
-            <div key={o.value} className="ms-opt" onClick={() => pick(o)}>
-              {o.label}
+            <div key={o.value} className={'ms-opt ' + (o.addCustomer ? 'flex items-center gap-2 text-brand' : '')} onClick={() => pick(o)}>
+              {o.addCustomer && <Icon name="plus" size={14} />}
+              <span>{o.label}</span>
               {o.sub && <span className="block text-[11.5px] text-inkmuted">{o.sub}</span>}
             </div>
           ))}

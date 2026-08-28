@@ -36,6 +36,15 @@ export async function PUT(req, { params }) {
   const { errors, doc, ok } = validate(FIELDS, body.data || {});
   if (!ok) return json({ errors }, 422);
 
+  if (doc.gstNo) doc.gstNo = String(doc.gstNo).trim().toUpperCase();
+  const duplicate = doc.gstNo && await Contact.exists({
+    gstNo: doc.gstNo,
+    contactKind: 'Supplier',
+    _id: { $ne: id },
+    ...(body.business && { businessId: body.business }),
+  });
+  if (duplicate) return json({ errors: { gstNo: 'GST already exists' } }, 422);
+
   const updated = await Contact.findByIdAndUpdate(id, doc, { new: true, runValidators: true });
   if (!updated) return json({ error: 'Not found' }, 404);
 

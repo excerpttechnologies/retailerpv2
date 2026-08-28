@@ -200,7 +200,8 @@ function Label({ f }) {
 
 function RefField({ f, value, onChange, multi, onOptionChange }) {
   const [query, setQuery] = useState('');
-  const { options, loading } = useOptions(f.ref, query);
+  const meetsMinimum = !f.minSearch || query.trim().length >= f.minSearch;
+  const { options, loading } = useOptions(f.ref, query, meetsMinimum);
   return (
     <MultiSelect
       mode={multi ? 'multi' : 'single'}

@@ -16,12 +16,16 @@ const PosInvoiceSchema = new mongoose.Schema(
     counterId: { type: mongoose.Schema.Types.ObjectId, default: null },
     customerId: { type: mongoose.Schema.Types.ObjectId, default: null },
     customerContact: { type: String, default: '' },
+    customerSnapshot: { type: mongoose.Schema.Types.Mixed, default: null },
     exempted: { type: String, default: '' },
     billingType: { type: String, default: '' },
     paymentStatus: { type: String, default: '' },
     totalAmount: { type: Number, default: 0 },
     paid: { type: Number, default: 0 },
     sellDue: { type: Number, default: 0 },
+    payments: { type: mongoose.Schema.Types.Mixed, default: [] },
+    sellNote: { type: String, default: '' },
+    staffNote: { type: String, default: '' },
 
     /* line items are free-form per document type */
     items: { type: mongoose.Schema.Types.Mixed, default: [] },

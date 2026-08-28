@@ -73,6 +73,33 @@ input[type='number'],
   .dt tbody tr:hover { @apply bg-[#f2f6fc]; }
   .dt-empty { @apply py-3.5 text-center text-inkmuted; }
 
+  .pos-header-row { @apply flex min-h-[44px] flex-wrap items-center gap-2 border-b border-line px-3 py-1.5; }
+  .pos-control-row { @apply grid grid-cols-1 items-center gap-2 border-b border-line px-3 py-1.5 md:grid-cols-5; }
+  .pos-items-table { @apply min-w-[1360px] table-fixed text-[12.5px]; }
+  .pos-items-table th { @apply px-2 py-2 text-center align-middle; }
+  .pos-items-table td { @apply px-2 py-2 text-center align-middle; }
+  .pos-items-table th:nth-child(1), .pos-items-table td:nth-child(1) { width: 42px; }
+  .pos-items-table th:nth-child(2), .pos-items-table td:nth-child(2) { width: 105px; }
+  .pos-items-table th:nth-child(3), .pos-items-table td:nth-child(3) { width: 105px; }
+  .pos-items-table th:nth-child(4), .pos-items-table td:nth-child(4) { width: 260px; text-align: left; }
+  .pos-items-table th:nth-child(5), .pos-items-table td:nth-child(5) { width: 75px; }
+  .pos-items-table th:nth-child(6), .pos-items-table td:nth-child(6) { width: 65px; }
+  .pos-items-table th:nth-child(7), .pos-items-table td:nth-child(7) { width: 90px; }
+  .pos-items-table th:nth-child(8), .pos-items-table td:nth-child(8) { width: 105px; }
+  .pos-items-table th:nth-child(9), .pos-items-table td:nth-child(9) { width: 75px; }
+  .pos-items-table th:nth-child(10), .pos-items-table td:nth-child(10), .pos-items-table th:nth-child(11), .pos-items-table td:nth-child(11) { width: 100px; }
+  .pos-items-table th:nth-child(12), .pos-items-table td:nth-child(12) { width: 145px; }
+  .pos-items-table th:nth-child(13), .pos-items-table td:nth-child(13) { width: 75px; }
+  .pos-items-table th:nth-child(14), .pos-items-table td:nth-child(14) { width: 42px; }
+  .pos-till > div:first-child { @apply border-b border-line; }
+  .pos-till > div:nth-child(2), .pos-till > div:nth-child(3) { @apply px-3; }
+  .pos-till > div:nth-child(2) { @apply py-1.5; }
+  .pos-till > div:nth-child(3) { @apply mt-1 py-1.5; }
+  .pos-till > div:nth-last-child(4) { @apply border-t border-line; }
+  .pos-till table.dt { min-width: 1360px; table-layout: fixed; font-size: 12.5px; }
+  .pos-till table.dt th { @apply px-2 py-2 text-center align-middle; }
+  .pos-till table.dt td { @apply px-2 py-2 text-center align-middle; }
+
   .pill { @apply inline-block rounded px-2.5 py-[3px] text-xs; }
   .pill-green { @apply bg-okgreenbg text-okgreen; }
   .pill-grey { @apply bg-pillgrey text-[#5b6880]; }

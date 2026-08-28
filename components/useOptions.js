@@ -28,7 +28,7 @@ export function refreshOptions(ref) {
   listeners.forEach((fn) => fn());
 }
 
-export function useOptions(ref, query = '') {
+export function useOptions(ref, query = '', enabled = true) {
   const { business, location } = useScope();
   const [options, setOptions] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -41,7 +41,11 @@ export function useOptions(ref, query = '') {
   }, [ref]);
 
   useEffect(() => {
-    if (!ref) return undefined;
+    if (!ref || !enabled) {
+      setOptions([]);
+      setLoading(false);
+      return undefined;
+    }
     let off = false;
     setLoading(true);
 
@@ -54,7 +58,7 @@ export function useOptions(ref, query = '') {
 
     /* a scope change mid-flight must not let the old list land last */
     return () => { off = true; };
-  }, [ref, business, location, query, version]);
+  }, [ref, business, location, query, version, enabled]);
 
   return { options, loading };
 }

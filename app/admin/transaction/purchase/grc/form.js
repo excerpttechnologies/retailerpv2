@@ -12,6 +12,7 @@ export const FORM = {
             "type": "ref",
             "ref": "supplier",
             "req": true,
+            "minSearch": 1,
             "placeholder": "Select Supplier",
             /* picking a vendor fills the read-only Vendor GST No below it */
             "fillFrom": {

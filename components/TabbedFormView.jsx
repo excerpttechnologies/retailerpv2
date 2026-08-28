@@ -26,6 +26,8 @@ export default function TabbedFormView({ cfg, id, slug, onSaved }) {
   const [flash, setFlash] = useState(null);
   const [saving, setSaving] = useState(false);
   const [quickAddField, setQuickAddField] = useState(null);
+  const [gstMatch, setGstMatch] = useState(null);
+  const [gstChecking, setGstChecking] = useState(false);
 
   useEffect(() => {
     if (tabs.length && active >= tabs.length) setActive(tabs.length - 1);
@@ -60,6 +62,42 @@ export default function TabbedFormView({ cfg, id, slug, onSaved }) {
   }, [id, slugPath]);
 
   const set = (k, v) => { setData((d) => ({ ...d, [k]: v })); setErrors((e) => ({ ...e, [k]: undefined })); };
+
+  useEffect(() => {
+    if (!cfg.gstLookup || recordId || !String(data.gstNo || '').trim()) {
+      setGstMatch(null);
+      setGstChecking(false);
+      return undefined;
+    }
+    const gstNo = String(data.gstNo).trim().toUpperCase();
+    let cancelled = false;
+    setGstChecking(true);
+    fetch(`${cfg.endpoint}?gstNo=${encodeURIComponent(gstNo)}&business=${scope.business || ''}`)
+      .then((response) => response.json())
+      .then((result) => {
+        if (!cancelled) setGstMatch(result.doc || null);
+      })
+      .catch(() => {
+        if (!cancelled) setGstMatch(null);
+      })
+      .finally(() => {
+        if (!cancelled) setGstChecking(false);
+      });
+    return () => { cancelled = true; };
+  }, [cfg.endpoint, cfg.gstLookup, data.gstNo, recordId, scope.business]);
+
+  function useExistingSupplier() {
+    if (!gstMatch) return;
+    const next = { ...data };
+    allFields.forEach((f) => {
+      const value = gstMatch[f.k];
+      if (value !== null && value !== undefined) next[f.k] = f.type === 'ref' ? String(value) : value;
+    });
+    setData(next);
+    setRecordId(String(gstMatch._id));
+    setGstMatch(null);
+    setFlash({ type: 'ok', msg: 'Existing supplier details loaded.' });
+  }
 
   /* "Same as Billing Address" copies the billing block into shipping */
   function copyBillingToShipping(on) {
@@ -207,6 +245,18 @@ export default function TabbedFormView({ cfg, id, slug, onSaved }) {
                           }));
                         }}
                       />
+                      {f.k === 'gstNo' && cfg.gstLookup && gstChecking && (
+                        <div className="mt-1 text-xs text-inkmuted">Checking GST...</div>
+                      )}
+                      {f.k === 'gstNo' && cfg.gstLookup && gstMatch && (
+                        <button
+                          type="button"
+                          className="mt-1 inline-flex items-center gap-1 text-xs font-semibold text-danger hover:underline"
+                          onClick={useExistingSupplier}
+                        >
+                          <Icon name="check" size={14} /> GST already exists. Fetch all details
+                        </button>
+                      )}
                     </div>
                     {add && (
                       <button
@@ -226,7 +276,7 @@ export default function TabbedFormView({ cfg, id, slug, onSaved }) {
           </div>
         ))}
 
-        <button type="button" className="btn btn-primary mt-2 flex h-[38px] w-full max-w-[390px] justify-center" onClick={submit} disabled={saving}>
+        <button type="button" className="btn btn-primary mt-2 flex h-[38px] w-full max-w-[390px] justify-center" onClick={submit} disabled={saving || gstChecking || !!gstMatch}>
           {saving ? <span className="spin" /> : <Icon name="save" size={14} />} Submit
         </button>
       </div>

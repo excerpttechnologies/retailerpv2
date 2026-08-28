@@ -8,6 +8,7 @@ const CONFIG = {
   basePath: '/admin/contact/',
   slugPath: "supplier",
   endpoint: '/api/supplier',
+  gstLookup: true,
   scope: ["business"],
   formMode: "tabs",
   actionPosition: "left",

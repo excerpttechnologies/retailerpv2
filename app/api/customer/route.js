@@ -23,7 +23,7 @@ const json = (d, s = 200) => Response.json(d, {
 const PER_PAGE = 10;
 const QUICK_FIELDS = FIELDS.filter((field) => [
   'typeId', 'businessType', 'gstNo', 'businessName', 'prefix', 'firstName', 'middleName', 'lastName',
-  'billingAddressLine1', 'billingZipCode', 'billingCity', 'billingMobile', 'billingWebsiteUrl', 'billingEmail',
+  'billingAddressLine1', 'billingZipCode', 'billingCity', 'billingState', 'billingCountry', 'billingDistrict', 'billingTaluk', 'billingMobile', 'billingWebsiteUrl', 'billingEmail',
 ].includes(field.k));
 
 export async function GET(req) {

@@ -29,6 +29,19 @@ export async function GET(req) {
   const page = Math.max(1, Number(sp.get('page') || 1));
   const perPage = Math.min(500, Number(sp.get('perPage') || PER_PAGE));
   const search = (sp.get('search') || '').trim();
+  const gstNo = (sp.get('gstNo') || '').trim().toUpperCase();
+
+  if (gstNo) {
+    const exactFilter = {
+      gstNo: { $regex: `^${escapeRegex(gstNo)}$`, $options: 'i' },
+      contactKind: 'Supplier',
+    };
+    if (sp.get('business') && isValidObjectId(sp.get('business'))) exactFilter.businessId = sp.get('business');
+    const doc = await Contact.findOne(exactFilter).lean();
+    return doc
+      ? json({ doc: { ...doc, _id: String(doc._id) } })
+      : json({ doc: null });
+  }
 
   const filter = {};
   const b = sp.get('business'); if (b && isValidObjectId(b)) filter.businessId = b;
@@ -73,6 +86,13 @@ export async function POST(req) {
 
   /* stamped here, never taken from the client */
   doc.contactKind = 'Supplier';
+  if (doc.gstNo) doc.gstNo = String(doc.gstNo).trim().toUpperCase();
+  const duplicate = doc.gstNo && await Contact.exists({
+    gstNo: doc.gstNo,
+    contactKind: 'Supplier',
+    ...(doc.businessId ? { businessId: doc.businessId } : {}),
+  });
+  if (duplicate) return json({ errors: { gstNo: 'GST already exists' } }, 422);
   doc.contactId = await nextContactId(Contact, ContactType, doc.typeId);
 
   const created = await Contact.create(doc);

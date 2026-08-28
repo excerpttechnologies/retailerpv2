@@ -426,12 +426,6 @@ export const TABS = [
           "title": "Tax Other Setup",
           "fields": [
             {
-              "k": "purchaseTermsId",
-              "label": "Purchase Terms",
-              "type": "ref",
-              "ref": "purchase/master/term"
-            },
-            {
               "k": "logisticsTerms",
               "label": "Logistics Terms",
               "type": "select",

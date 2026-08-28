@@ -30,6 +30,7 @@ const ContactSchema = new mongoose.Schema(
     billingState: { type: String, default: '' },
     billingCountry: { type: String, default: '' },
     billingDistrict: { type: String, default: '' },
+   billingTaluk: { type: String, default: '' },
     billingZipCode: { type: String, default: '' },
     billingMobile: { type: String, default: '' },
     billingAlternateContactNumber: { type: String, default: '' },
