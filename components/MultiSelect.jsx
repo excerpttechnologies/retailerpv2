@@ -6,7 +6,7 @@ import Icon from './Icon';
    mode="single" renders one value; mode="multi" renders removable chips. */
 export default function MultiSelect({
   options = [], value, onChange, mode = 'multi',
-  placeholder = 'Select...', disabled = false, loading = false,
+  placeholder = 'Select...', disabled = false, loading = false, onSearch,
 }) {
   const [open, setOpen] = useState(false);
   const [term, setTerm] = useState('');
@@ -33,8 +33,8 @@ export default function MultiSelect({
   });
 
   function pick(opt) {
-    if (mode === 'multi') { onChange([...(value || []), opt.value]); setTerm(''); }
-    else { onChange(opt.value); setOpen(false); setTerm(''); }
+    if (mode === 'multi') { onChange([...(value || []), opt.value]); setTerm(''); onSearch?.(''); }
+    else { onChange(opt.value); setOpen(false); setTerm(''); onSearch?.(''); }
   }
   function drop(v) { onChange((value || []).filter((x) => x !== v)); }
 
@@ -62,7 +62,7 @@ export default function MultiSelect({
           value={term}
           disabled={disabled}
           placeholder={(mode === 'multi' ? selected.length : selected) ? '' : placeholder}
-          onChange={(e) => { setTerm(e.target.value); setOpen(true); }}
+          onChange={(e) => { setTerm(e.target.value); onSearch?.(e.target.value); setOpen(true); }}
           onFocus={() => setOpen(true)}
         />
 
@@ -70,7 +70,7 @@ export default function MultiSelect({
           <button
             type="button"
             className="text-[#9aa6ba]"
-            onClick={(e) => { e.stopPropagation(); onChange(mode === 'multi' ? [] : ''); }}
+            onClick={(e) => { e.stopPropagation(); onChange(mode === 'multi' ? [] : ''); setTerm(''); onSearch?.(''); }}
           >
             <Icon name="x" size={13} />
           </button>

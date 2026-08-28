@@ -43,6 +43,7 @@ const GrcSchema = new mongoose.Schema(
 
     /* line items are free-form per document type */
     items: { type: mongoose.Schema.Types.Mixed, default: [] },
+    voucherRows: { type: mongoose.Schema.Types.Mixed, default: [] },
   },
   { timestamps: true }
 );

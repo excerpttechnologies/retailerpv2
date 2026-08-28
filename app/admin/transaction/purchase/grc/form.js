@@ -12,7 +12,12 @@ export const FORM = {
             "type": "ref",
             "ref": "supplier",
             "req": true,
-            "placeholder": "Select Supplier"
+            "placeholder": "Select Supplier",
+            /* picking a vendor fills the read-only Vendor GST No below it */
+            "fillFrom": {
+              "endpoint": "/api/supplier",
+              "map": { "vendorGstNo": "gstNo" }
+            }
           },
           {
             "k": "vendorGstNo",
@@ -91,31 +96,6 @@ export const FORM = {
             "info": true
           },
           {
-            "k": "hsnCode",
-            "label": "Enter HSN Code",
-            "type": "text"
-          },
-          {
-            "k": "invoiceQty",
-            "label": "Enter Invoice Qty",
-            "type": "number"
-          },
-          {
-            "k": "taxableValue",
-            "label": "Enter Taxable",
-            "type": "number"
-          },
-          {
-            "k": "taxAmount",
-            "label": "Enter Tax Qty (IGST)",
-            "type": "number"
-          },
-          {
-            "k": "totalAmount",
-            "label": "Enter Total Amount",
-            "type": "number"
-          },
-          {
             "k": "freightMode",
             "label": "Freight",
             "type": "select",
@@ -125,12 +105,17 @@ export const FORM = {
               { "v": "After Tax", "l": "After Tax" }
             ]
           },
-          {
-            "k": "freightAmount",
-            "label": "Freight Amount",
-            "type": "number",
-            "visibleWhen": { "freightMode": "After Tax" }
-          },
+        ]
+      },
+      {
+        "type": "voucher",
+        "title": "Voucher Section",
+        "fields": [
+          { "k": "hsnCode", "label": "Enter HSN Code", "type": "text" },
+          { "k": "invoiceQty", "label": "Enter Invoice Qty", "type": "number" },
+          { "k": "taxableValue", "label": "Enter Taxable", "type": "number" },
+          { "k": "totalAmount", "label": "Enter Total Amount", "type": "number" },
+          { "k": "freightAmount", "label": "Freight", "type": "number", "req": true }
         ]
       },
       {

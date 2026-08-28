@@ -1,6 +1,7 @@
 import { isValidObjectId } from 'mongoose';
 import dbConnect from '@/lib/db';
 import Item from '@/models/Item';
+import { BarcodeLabel } from '@/lib/barcodeLabel';
 import { requireSession } from '@/lib/session';
 import { resolveRefLabels } from '@/lib/refLabels';
 import { validate, escapeRegex } from '@/lib/validate';
@@ -23,11 +24,16 @@ export async function GET(req) {
   const search = (sp.get('search') || '').trim();
 
   const filter = {};
+  const barcodeImageByCode = {};
   const b = sp.get('business'); if (b && isValidObjectId(b)) filter.businessId = b;
 
   if (search) {
     const rx = { $regex: escapeRegex(search), $options: 'i' };
+    const barcodeRows = await BarcodeLabel.find({ $or: [{ barcodeGenerated: rx }, { oldBarcode: rx }] }).select('itemCode imageUrl').limit(100).lean();
+    const barcodeCodes = barcodeRows.map((row) => row.itemCode).filter(Boolean);
+    barcodeRows.forEach((row) => { if (row.itemCode && row.imageUrl) barcodeImageByCode[String(row.itemCode)] = row.imageUrl; });
     filter.$or = [{ name: rx }, { prefix: rx }, { itemCode: rx }, { description: rx }];
+    if (barcodeCodes.length) filter.$or.push({ itemCode: { $in: barcodeCodes } });
   }
 
   const total = await Item.countDocuments(filter);
@@ -38,7 +44,7 @@ export async function GET(req) {
     .lean();
 
   return json({
-    rows: rows.map((r) => ({ ...r, _id: String(r._id) })),
+    rows: rows.map((r) => ({ ...r, _id: String(r._id), image: r.image || barcodeImageByCode[String(r.itemCode)] || '' })),
     labels: await resolveRefLabels(rows),
     total,
     page,

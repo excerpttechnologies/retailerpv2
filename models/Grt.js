@@ -26,6 +26,10 @@ const GrtSchema = new mongoose.Schema(
     grtNo: { type: String, default: '' },
     grtDate: { type: Date, default: null },
     qty: { type: Number, default: 0 },
+    itemCount: { type: Number, default: 0 },
+    taxable: { type: Number, default: 0 },
+    gst: { type: Number, default: 0 },
+    netAmount: { type: Number, default: 0 },
     /* set when this document is converted downstream; null = still available */
     debitNoteId: { type: mongoose.Schema.Types.ObjectId, default: null, index: true },
 

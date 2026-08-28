@@ -64,7 +64,10 @@ export async function POST(req) {
   const body = await req.json();
   await dbConnect();
 
-  const { errors, doc, ok } = validate(FIELDS, body.data || {});
+  const validationFields = body.allowBlankFirstName === true
+    ? FIELDS.map((f) => (f.k === 'firstName' ? { ...f, req: false } : f))
+    : FIELDS;
+  const { errors, doc, ok } = validate(validationFields, body.data || {});
   if (!ok) return json({ errors }, 422);
   if (body.business && isValidObjectId(body.business)) doc.businessId = body.business;
 

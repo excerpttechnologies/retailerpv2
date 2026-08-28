@@ -198,8 +198,9 @@ function Label({ f }) {
   );
 }
 
-function RefField({ f, value, onChange, multi }) {
-  const { options, loading } = useOptions(f.ref);
+function RefField({ f, value, onChange, multi, onOptionChange }) {
+  const [query, setQuery] = useState('');
+  const { options, loading } = useOptions(f.ref, query);
   return (
     <MultiSelect
       mode={multi ? 'multi' : 'single'}
@@ -207,7 +208,11 @@ function RefField({ f, value, onChange, multi }) {
       loading={loading}
       value={multi ? (value || []) : (value || '')}
       placeholder={f.placeholder || 'Select...'}
-      onChange={onChange}
+      onChange={(next) => {
+        onChange(next);
+        if (!multi) onOptionChange?.(options.find((option) => option.value === next));
+      }}
+      onSearch={setQuery}
     />
   );
 }
@@ -236,7 +241,7 @@ function FileField({ f, value, onChange }) {
   const [err, setErr] = useState('');
   const [meta, setMeta] = useState(null); // { name, size } for this session
 
-  const wantsImage = String(f.accept || '').includes('image');
+  const acceptsImages = String(f.accept || '').includes('image');
   const stored = typeof value === 'string' ? value : '';
   const isUploaded = stored.startsWith('/api/files/');
   const isLegacyDataUrl = stored.startsWith('data:image/');
@@ -263,7 +268,7 @@ function FileField({ f, value, onChange }) {
       let blob = file;
       let name = file.name;
 
-      if (wantsImage) {
+      if (file.type.startsWith('image/')) {
         const out = await compressImage(file, {
           maxDim: f.maxDim,
           maxBytes: f.maxKb ? f.maxKb * 1024 : undefined,
@@ -313,7 +318,7 @@ function FileField({ f, value, onChange }) {
           }
         >
           <span className="shrink-0 rounded bg-[#eff2f7] px-2 py-1">
-            {busy ? 'Uploading...' : wantsImage ? 'Choose Image' : 'Choose File'}
+            {busy ? 'Uploading...' : acceptsImages ? 'Choose File' : 'Choose Image'}
           </span>
           <span className="truncate text-inkmuted">{caption}</span>
           <input
@@ -445,7 +450,7 @@ function PincodeField({ f, value, onChange, patch }) {
   );
 }
 
-export default function Field({ f, value, error, onChange }) {
+export default function Field({ f, value, error, onChange, onOptionChange }) {
   /* Written as literal class strings: Tailwind scans source text, so a class
      assembled at runtime (`md:col-span-${n}`) would never be generated. */
   const SPAN = { 2: 'md:col-span-2', 3: 'md:col-span-2 xl:col-span-3', all: 'col-span-full' };
@@ -498,7 +503,7 @@ export default function Field({ f, value, error, onChange }) {
       break;
 
     case 'ref':
-      control = <RefField f={f} value={value} onChange={set} />;
+      control = <RefField f={f} value={value} onChange={set} onOptionChange={onOptionChange} />;
       break;
 
     case 'multiref':
@@ -545,6 +550,32 @@ export default function Field({ f, value, error, onChange }) {
         );
       }
       break;
+
+    /* Date AND clock time in one native control - the browser renders the
+       calendar and the time side by side, and both are editable.
+
+       The stored value is an ISO timestamp in UTC, but datetime-local speaks
+       local time, so it is converted on the way in rather than sliced: a
+       naive String(value).slice(0, 16) would display a UTC clock and show
+       the wrong time to everyone outside UTC. */
+    case 'datetime': {
+      const local = (v) => {
+        if (!v) return '';
+        const dt = new Date(v);
+        if (Number.isNaN(dt.getTime())) return String(v).slice(0, 16);
+        const p = (n) => String(n).padStart(2, '0');
+        return dt.getFullYear() + '-' + p(dt.getMonth() + 1) + '-' + p(dt.getDate())
+          + 'T' + p(dt.getHours()) + ':' + p(dt.getMinutes());
+      };
+      control = (
+        <input
+          type="datetime-local" className="f-input"
+          value={local(value)}
+          onChange={(e) => set(e.target.value)}
+        />
+      );
+      break;
+    }
 
     case 'number':
       control = (

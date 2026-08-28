@@ -9,7 +9,11 @@
     "seed": "node scripts/seed.mjs",
     "seed:groups": "node --env-file=.env scripts/seedProductGroups.mjs",
       "update:groups-business": "node --env-file=.env scripts/updateProductGroupsBusinessId.mjs",
-      "seed:items": "node --env-file=.env scripts/seedItems.mjs"
+      "seed:items": "node --env-file=.env scripts/seedItems.mjs",
+    "seed:barcodes": "node scripts/seedBarcodeDump.mjs",
+    "seed:barcodes:apply": "node scripts/seedBarcodeDump.mjs --apply",
+    "delete:barcodes": "node scripts/deleteBarcodeDump.mjs",
+    "delete:barcodes:apply": "node scripts/deleteBarcodeDump.mjs --apply"
   },
   
   "dependencies": {

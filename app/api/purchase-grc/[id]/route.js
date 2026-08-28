@@ -49,6 +49,7 @@ export async function PUT(req, { params }) {
   if (!ok) return json({ errors }, 422);
 
   if (Array.isArray(body.data?.items)) doc.items = body.data.items;
+  if (Array.isArray(body.data?.voucherRows)) doc.voucherRows = body.data.voucherRows;
 
   /* never overwrite the document number on edit */
   delete doc.grcNumber;

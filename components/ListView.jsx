@@ -1537,6 +1537,7 @@ export default function ListView({ cfg, slug }) {
   const [modal, setModal] = useState(false);
   const [filters, setFilters] = useState({});
   const [menuFor, setMenuFor] = useState(null);
+  const [viewRow, setViewRow] = useState(null);
  
   /* close the open Action menu on any outside click */
   useEffect(() => {
@@ -1903,9 +1904,7 @@ export default function ListView({ cfg, slug }) {
                                     key={a}
                                     className="act-btn bg-[#2b7fd4]"
                                     title="View"
-                                    onClick={() =>
-                                      router.push(base + "/" + row._id)
-                                    }
+                                    onClick={() => cfg.viewModal ? setViewRow(row) : router.push(base + "/" + row._id)}
                                   >
                                     <Icon name="eye" size={12} />
                                   </button>
@@ -1997,6 +1996,15 @@ export default function ListView({ cfg, slug }) {
           </div>
         </div>
       </div>
+      {viewRow && cfg.viewModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" onMouseDown={() => setViewRow(null)}>
+          <div className="max-h-[90vh] w-full max-w-6xl overflow-auto rounded-lg bg-white shadow-xl" onMouseDown={(event) => event.stopPropagation()}>
+            <div className="flex items-center border-b border-line px-5 py-3"><span className="card-title">Preview {cfg.title}</span><span className="flex-1" /><button type="button" className="btn btn-primary mr-2" onClick={() => window.print()}>Download / Print</button><button type="button" className="btn" onClick={() => setViewRow(null)}>Close</button></div>
+            <div className="grid grid-cols-1 gap-2 border-b border-line p-5 text-sm md:grid-cols-4"><div><b>Vendor:</b> {state.labels[String(viewRow.supplierId)] || viewRow.supplierName || '-'}</div><div><b>GRT No:</b> {viewRow.grtNo || '-'}</div><div><b>GRT Date:</b> {fmt('date', viewRow.grtDate)}</div><div><b>Total Qty:</b> {viewRow.qty || 0}</div>{['oldStock', 'vendorGstNo', 'grcNumber', 'vendorDocNo', 'vendorDocDate', 'purchaseGroupId', 'occasion', 'purchaseTermId', 'agentId', 'logisticId'].map((key) => <div key={key}><b>{key}:</b> {key.endsWith('Date') ? fmt('date', viewRow[key]) : key.endsWith('Id') ? (state.labels[String(viewRow[key])] || viewRow[key] || '-') : (viewRow[key] || '-')}</div>)}</div>
+            <div className="overflow-x-auto p-5"><table className="dt min-w-[1100px]"><thead><tr><th>SL.No</th><th>Barcode</th><th>Item Code</th><th>Item Name</th><th>HSN</th><th>Pur Rate</th><th>Final NET</th><th>Retail Price</th><th>Qty</th><th>GST %</th><th>Taxable</th><th>GST Amt</th></tr></thead><tbody>{(Array.isArray(viewRow.items) ? viewRow.items : []).map((item, index) => { const qty = Number(item.qty) || 1; const finalNet = Number(item.finalNet) || 0; const taxable = finalNet * qty; const gstAmount = taxable * ((Number(item.gst) || 0) / 100); return <tr key={item._id || index}><td>{index + 1}</td><td>{item.barcodeGenerated || item.barcodeNo || '-'}</td><td>{item.itemCode || '-'}</td><td>{item.supplierDescription || item.itemName || item.printDescription || '-'}</td><td>{item.hsn || '-'}</td><td>{item.purRate || '-'}</td><td>{item.finalNet || '-'}</td><td>{item.retailPrice || item.offerPrice || '-'}</td><td>{qty}</td><td>{item.gst || 0}%</td><td>{taxable.toFixed(2)}</td><td>{gstAmount.toFixed(2)}</td></tr>; })}</tbody></table>{(!viewRow.items || viewRow.items.length === 0) && <div className="py-6 text-center text-sm text-gray-500">No items selected.</div>}</div>
+          </div>
+        </div>
+      )}
     </>
   );
 }

@@ -1,11 +1,12 @@
 'use client';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import Icon from './Icon';
 import Field from './Field';
 import MultiSelect from './MultiSelect';
 import ModalForm from './ModalForm';
 import { useScope } from './ScopeContext';
+import { refreshOptions } from './useOptions';
 import { fmt } from '@/lib/format';
 
 /* Renders the Purchase add screens from the registry `form.cards` spec:
@@ -190,6 +191,63 @@ function Totals({ card, data, onChange }) {
   );
 }
 
+function VoucherSection({ card, rows, onChange, onAdd, onRemove }) {
+  const number = (value) => Number(value) || 0;
+  const totals = rows.reduce((result, row) => ({
+    invoiceQty: result.invoiceQty + number(row.invoiceQty),
+    taxableValue: result.taxableValue + number(row.taxableValue),
+    totalAmount: result.totalAmount + number(row.totalAmount),
+    freightAmount: result.freightAmount + number(row.freightAmount),
+  }), { invoiceQty: 0, taxableValue: 0, totalAmount: 0, freightAmount: 0 });
+
+  return (
+    <div className="card">
+      <div className="card-head flex items-center justify-between gap-3">
+        <span className="card-title">{card.title || 'Voucher Section'}</span>
+        <button type="button" className="btn btn-primary" onClick={onAdd}>
+          <Icon name="plus" size={14} /> Add
+        </button>
+      </div>
+      <div className="card-body overflow-x-auto">
+        <table className="dt min-w-[900px]">
+          <thead><tr>{card.fields.map((field) => <th key={field.k}>{field.label}</th>)}<th /></tr></thead>
+          <tbody>
+            {rows.map((row, index) => (
+              <tr key={index}>
+                {card.fields.map((field) => (
+                  <td key={field.k} className="min-w-[150px]">
+                    <input
+                      type={field.type === 'number' ? 'number' : 'text'}
+                      className="f-input"
+                      value={row[field.k] ?? ''}
+                      onChange={(event) => onChange(index, field.k, event.target.value)}
+                    />
+                  </td>
+                ))}
+                <td>
+                  <button type="button" className="act-btn bg-danger" onClick={() => onRemove(index)} disabled={rows.length === 1}>
+                    <Icon name="x" size={12} />
+                  </button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+          <tfoot>
+            <tr>
+              <th>Total</th>
+              <th>{totals.invoiceQty.toFixed(2)}</th>
+              <th>{totals.taxableValue.toFixed(2)}</th>
+              <th>{totals.totalAmount.toFixed(2)}</th>
+              <th>{totals.freightAmount.toFixed(2)}</th>
+              <th />
+            </tr>
+          </tfoot>
+        </table>
+      </div>
+    </div>
+  );
+}
+
 function SourceTable({ card, partyId, selected, onToggle }) {
   const [rows, setRows] = useState([]);
   const scope = useScope();
@@ -242,6 +300,50 @@ function SourceTable({ card, partyId, selected, onToggle }) {
   );
 }
 
+function VendorItems({ supplierId, selected, onChange, scope }) {
+  const [available, setAvailable] = useState([]);
+  const [term, setTerm] = useState('');
+  const [open, setOpen] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [checked, setChecked] = useState([]);
+
+  useEffect(() => {
+    setAvailable([]); setChecked([]); onChange([]);
+    if (!supplierId) { setOpen(false); return undefined; }
+    let cancelled = false;
+    setLoading(true);
+    const qs = new URLSearchParams({ supplier: supplierId, business: scope.business || '', location: scope.location || '', perPage: '1000', page: '1' });
+    fetch('/api/barcode-generation?' + qs)
+      .then((response) => response.json())
+      .then((result) => { if (!cancelled) { setAvailable(result.rows || []); setOpen(true); } })
+      .catch(() => { if (!cancelled) setAvailable([]); })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, [supplierId, scope.business, scope.location, onChange]);
+
+  const matches = available.filter((row) => {
+    const query = term.trim().toLowerCase();
+    if (!query) return true;
+    return [row.barcodeGenerated, row.itemCode, row.itemName, row.supplierDescription, row.printDescription, row.purRate, row.finalNet, row.retailPrice, row.offerPrice]
+      .some((value) => String(value || '').toLowerCase().includes(query));
+  });
+  const toggle = (id) => setChecked((current) => current.includes(id) ? current.filter((value) => value !== id) : [...current, id]);
+  const applySelection = () => { onChange(available.filter((row) => checked.includes(row._id))); setOpen(false); };
+  const firstMatchId = matches[0]?._id;
+
+  return (
+    <div className="card">
+      <div className="card-head flex items-center justify-between gap-3"><span className="card-title">Vendor Items</span>{supplierId && <button type="button" className="btn btn-primary" onClick={() => setOpen(true)}>Select Items</button>}</div>
+      <div className="card-body">
+        {!supplierId && <div className="text-sm text-gray-500">Select a vendor to view its items.</div>}
+        {supplierId && selected.length > 0 && <div className="overflow-x-auto"><table className="dt min-w-[900px]"><thead><tr><th>Barcode</th><th>Item Name</th><th>HSN</th><th>Price</th><th>Qty</th><th>GST</th></tr></thead><tbody>{selected.map((row) => <tr key={row._id}><td>{row.barcodeGenerated || '-'}</td><td>{row.supplierDescription || row.itemName || '-'}</td><td>{row.hsn || '-'}</td><td>{row.finalNet || row.purRate || row.offerPrice || '-'}</td><td>{row.qty || 1}</td><td>{row.gst || 0}%</td></tr>)}</tbody></table></div>}
+        {supplierId && selected.length === 0 && !loading && <div className="text-sm text-gray-500">No items selected yet.</div>}
+      </div>
+      {open && supplierId && <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"><div className="flex max-h-[85vh] w-full max-w-6xl flex-col rounded-lg bg-white shadow-xl"><div className="flex items-center gap-3 border-b border-line px-5 py-3"><span className="card-title">Select Vendor Items</span><span className="flex-1" /><button type="button" className="btn" onClick={() => setOpen(false)}>Close</button></div><div className="flex flex-wrap gap-2 border-b border-line p-4"><input className="f-input min-w-[280px] flex-1" placeholder="Search by barcode, item name, or price" value={term} onChange={(event) => setTerm(event.target.value)} /><button type="button" className="btn" onClick={() => setTerm((value) => value.trim())}>Search</button><button type="button" className="btn" onClick={() => setChecked(matches.map((row) => row._id))}>Select All</button><button type="button" className="btn" onClick={() => setChecked([])}>Unselect All</button></div><div className="flex-1 overflow-auto p-4">{loading && <div className="py-8 text-center text-sm text-gray-500">Loading vendor items...</div>}{!loading && matches.length === 0 && <div className="py-8 text-center text-sm text-gray-500">No matching items.</div>}{!loading && matches.length > 0 && <table className="dt min-w-[1050px]"><thead><tr><th>Select</th><th>Barcode</th><th>Item Code</th><th>Item Name</th><th>HSN</th><th>Pur Rate</th><th>Final NET</th><th>Retail Price</th><th>Qty</th><th>GST</th></tr></thead><tbody>{matches.map((row) => <tr key={row._id} className={(checked.includes(row._id) ? 'bg-indigo-50 ' : '') + (term && row._id === firstMatchId ? 'bg-yellow-100' : '')}><td><input type="checkbox" checked={checked.includes(row._id)} onChange={() => toggle(row._id)} /></td><td>{row.barcodeGenerated || '-'}</td><td>{row.itemCode || '-'}</td><td>{row.supplierDescription || row.itemName || row.printDescription || '-'}</td><td>{row.hsn || '-'}</td><td>{row.purRate || '-'}</td><td>{row.finalNet || '-'}</td><td>{row.retailPrice || row.offerPrice || '-'}</td><td>{row.qty || 1}</td><td>{row.gst || 0}%</td></tr>)}</tbody></table>}</div><div className="flex justify-end gap-2 border-t border-line p-4"><button type="button" className="btn" onClick={() => setOpen(false)}>Cancel</button><button type="button" className="btn btn-primary" onClick={applySelection}>Submit Selected ({checked.length})</button></div></div></div>}
+    </div>
+  );
+}
+
 export default function TransactionFormView({ cfg, id, slug }) {
   const router = useRouter();
   const scope = useScope();
@@ -252,6 +354,7 @@ export default function TransactionFormView({ cfg, id, slug }) {
     () => cards.filter((c) => c.type === 'fields').flatMap((c) => c.fields || []),
     [cards]
   );
+  const voucherCard = cards.find((card) => card.type === 'voucher');
   const inlineSourceCard = cards.find((card) => card.type === 'source' && card.inlineAfter);
 
   const [data, setData] = useState(() => {
@@ -263,6 +366,10 @@ export default function TransactionFormView({ cfg, id, slug }) {
   });
   const [source, setSource] = useState([]);
   const [items, setItems] = useState([]);
+  const [vendorItems, setVendorItems] = useState([]);
+  const [voucherRows, setVoucherRows] = useState(() => [
+    Object.fromEntries((voucherCard?.fields || []).map((field) => [field.k, ''])),
+  ]);
   const [tab, setTab] = useState((cards.find((c) => c.type === 'scanTabs')?.tabs || [{ k: '' }])[0].k);
   const [errors, setErrors] = useState({});
   const [flash, setFlash] = useState(null);
@@ -288,17 +395,68 @@ export default function TransactionFormView({ cfg, id, slug }) {
           return next;
         });
         setItems(d.doc.items || []);
+        setVendorItems(d.doc.items || []);
+        if (voucherCard) {
+          const savedRows = Array.isArray(d.doc.voucherRows) && d.doc.voucherRows.length
+            ? d.doc.voucherRows
+            : [Object.fromEntries((voucherCard.fields || []).map((field) => [field.k, d.doc[field.k] ?? '']))];
+          setVoucherRows(savedRows);
+        }
       });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id, slugPath]);
 
-  const set = (k, v) => { setData((d) => ({ ...d, [k]: v })); setErrors((e) => ({ ...e, [k]: undefined })); };
+  /* A slow lookup for a vendor picked two changes ago must not land on top
+     of the current one. */
+  const fillTicket = useRef(0);
+
+  const set = (k, v) => {
+    setData((d) => ({ ...d, [k]: v }));
+    setErrors((e) => ({ ...e, [k]: undefined }));
+
+    /* `fillFrom` lets a ref field copy details off the record it points at.
+       Vendor GST No is read-only and has no other source - without this it
+       renders as a permanently empty box. */
+    const spec = allFields.find((f) => f.k === k);
+    if (!spec?.fillFrom) return;
+
+    const { endpoint, map } = spec.fillFrom;
+    const ticket = ++fillTicket.current;
+
+    /* clearing the vendor clears what it filled in */
+    if (!v) {
+      setData((d) => Object.keys(map)
+        .reduce((next, target) => ({ ...next, [target]: '' }), d));
+      return;
+    }
+
+    fetch(endpoint + '/' + v)
+      .then((r) => r.json())
+      .then(({ doc }) => {
+        if (ticket !== fillTicket.current || !doc) return;
+        setData((d) => Object.entries(map)
+          .reduce((next, [target, src]) => ({ ...next, [target]: doc[src] ?? '' }), d));
+      })
+      .catch(() => { /* leave the filled fields as they are */ });
+  };
+
+  const updateVoucherRow = (index, key, value) => {
+    setVoucherRows((current) => current.map((row, rowIndex) => (
+      rowIndex === index ? { ...row, [key]: value } : row
+    )));
+  };
 
   async function submit() {
     setSaving(true); setFlash(null);
     try {
       const payload = {
-        data: { ...data, items, sourceIds: source, ...(tab ? { type: tab } : {}) },
+        data: {
+          ...data,
+          ...Object.fromEntries((voucherCard?.fields || []).map((field) => [field.k, voucherRows[0]?.[field.k] ?? ''])),
+          voucherRows,
+          items: vendorItems.length ? vendorItems : items,
+          sourceIds: source, ...(tab ? { type: tab } : {}),
+        },
         business: scope.business, location: scope.location, finYear: scope.finYear,
       };
 
@@ -380,6 +538,26 @@ export default function TransactionFormView({ cfg, id, slug }) {
         }
 
         if (card.type === 'info') return <div className="card" key={i}><div className="card-body"><InfoBox items={card.items} /></div></div>;
+
+        if (card.type === 'voucher') {
+          return (
+            <VoucherSection
+              key={i}
+              card={card}
+              rows={voucherRows}
+              onChange={updateVoucherRow}
+              onAdd={() => setVoucherRows((rows) => [
+                ...rows,
+                Object.fromEntries(card.fields.map((field) => [field.k, ''])),
+              ])}
+              onRemove={(index) => setVoucherRows((rows) => rows.filter((_, rowIndex) => rowIndex !== index))}
+            />
+          );
+        }
+
+        if (card.type === 'vendorItems') {
+          return <VendorItems key={i} supplierId={data.supplierId} selected={vendorItems} onChange={setVendorItems} scope={scope} />;
+        }
 
         if (card.type === 'scan') {
           return (
@@ -501,7 +679,14 @@ export default function TransactionFormView({ cfg, id, slug }) {
           })()}
           slug={(cfg.quickAdds?.[quickAddTarget] || cfg.quickAdd).slug}
           onClose={() => { setQuickAddOpen(false); setQuickAddTarget(null); }}
-          onSaved={() => { setQuickAddOpen(false); setQuickAddTarget(null); setQuickAddNonce((nonce) => nonce + 1); }}
+          onSaved={() => {
+            /* same reason as DeliveryView: a remount alone would be answered
+               from the browser cache, so the new record has to be announced */
+            const spec = cfg.quickAdds?.[quickAddTarget] || cfg.quickAdd;
+            const target = allFields.find((f) => f.k === (spec?.field || quickAddTarget));
+            if (target?.ref) refreshOptions(target.ref);
+            setQuickAddOpen(false); setQuickAddTarget(null); setQuickAddNonce((nonce) => nonce + 1);
+          }}
         />
       )}
 

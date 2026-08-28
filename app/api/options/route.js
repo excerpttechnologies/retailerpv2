@@ -104,18 +104,6 @@
 //       ...(entry.defaultField && r[entry.defaultField] ? { isDefault: true } : {}),
 //     })),
 //   });
-// }
-
-// function escapeRegex(s) {
-//   return String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-// }
-
-
-
-
-
-
-
 
 
 
@@ -134,7 +122,14 @@ import { requireSession } from '@/lib/session';
    This is a model index, not a page registry - it maps a dropdown's target
    name to a model file and the field to display. Nothing here renders a page. */
  
-const json = (d, s = 200) => Response.json(d, { status: s });
+/* no-store, explicitly. Dropdown lists change the moment somebody uses a
+   quick-add, and without a cache directive the browser is free to answer a
+   repeat GET from its own memory cache - so a record created seconds ago
+   did not appear until the page was reloaded. */
+const json = (d, s = 200) => Response.json(d, {
+  status: s,
+  headers: { 'Cache-Control': 'no-store' },
+});
  
 const REFS = {
   /* defaultField: rows where this field is truthy sort first and come back
@@ -169,7 +164,7 @@ const REFS = {
      the Agent form does not even ask for it - so fall back to the personal
      name rather than showing "(untitled)" in every picker. This mirrors what
      lib/refLabels.js resolveRefLabels already does for list columns. */
-  supplier:                  { load: () => import('@/models/Contact'), kind: 'Supplier', label: 'businessName', nameFallback: ['firstName', 'lastName'] },
+  supplier:                  { load: () => import('@/models/Contact'), scoped: false, kind: 'Supplier', label: 'businessName', nameFallback: ['firstName', 'lastName'] },
   agent:                     { load: () => import('@/models/Contact'), kind: 'Agent', label: 'businessName', nameFallback: ['firstName', 'lastName'] },
   customer:                  { load: () => import('@/models/Contact'), kind: 'Customer', label: 'businessName', nameFallback: ['firstName', 'lastName'] },
  
@@ -262,7 +257,9 @@ export async function GET(req) {
   }
  
   /* the default row sorts first, so it survives the 200-row cap */
-  const sort = entry.defaultField
+  const sort = ref === 'supplier'
+    ? { createdAt: -1, [label]: 1 }
+    : entry.defaultField
     ? { [entry.defaultField]: -1, [label]: 1 }
     : { [label]: 1 };
  

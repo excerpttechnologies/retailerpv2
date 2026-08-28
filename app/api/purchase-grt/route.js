@@ -1,10 +1,10 @@
 import { isValidObjectId } from 'mongoose';
 import dbConnect from '@/lib/db';
 import Grt from '@/models/Grt';
+import Grc from '@/models/Grc';
 import { requireSession } from '@/lib/session';
 import { resolveRefLabels } from '@/lib/refLabels';
 import { validate, escapeRegex } from '@/lib/validate';
-import { nextDocNumber } from '@/lib/docnumber';
 import { FORM } from '@/app/admin/transaction/purchase/grt/form';
 
 /* header fields AND the totals rows - the totals card holds real stored
@@ -25,6 +25,24 @@ const FIELDS = (FORM.cards || []).flatMap((c) => {
 
 const json = (d, s = 200) => Response.json(d, { status: s });
 const PER_PAGE = 10;
+const GRT_PREFIX = 'TFJ/26/';
+const GRT_START = 129;
+
+async function nextGrtNumber({ businessId, locationId, finYear }) {
+  const rows = await Grt.find({
+    grtNo: { $regex: '^' + GRT_PREFIX.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') },
+    ...(businessId ? { businessId } : {}),
+    ...(locationId ? { locationId } : {}),
+    ...(finYear ? { finYear } : {}),
+  }).select('grtNo').lean();
+
+  const highest = rows.reduce((max, row) => {
+    const number = Number.parseInt(String(row.grtNo).slice(GRT_PREFIX.length), 10);
+    return Number.isNaN(number) ? max : Math.max(max, number);
+  }, GRT_START - 1);
+
+  return GRT_PREFIX + String(highest + 1).padStart(4, '0');
+}
 
 export async function GET(req) {
   const session = await requireSession();
@@ -66,8 +84,25 @@ export async function GET(req) {
     .limit(perPage)
     .lean();
 
+  const enrichedRows = await Promise.all(rows.map(async (row) => {
+    const items = Array.isArray(row.items) ? row.items : [];
+    if (row.grcNumber && row.itemCount && row.taxable !== undefined) return row;
+    const taxable = items.reduce((sum, item) => sum + (Number(item.finalNet) || 0) * (Number(item.qty) || 1), 0);
+    const gst = items.reduce((sum, item) => {
+      const itemTaxable = (Number(item.finalNet) || 0) * (Number(item.qty) || 1);
+      return sum + itemTaxable * ((Number(item.gst) || 0) / 100);
+    }, 0);
+    let grcNumber = row.grcNumber || '';
+    const sourceGrcId = items[0]?.grcId;
+    if (!grcNumber && sourceGrcId && isValidObjectId(sourceGrcId)) {
+      const sourceGrc = await Grc.findById(sourceGrcId).select('grcNumber').lean();
+      grcNumber = sourceGrc?.grcNumber || '';
+    }
+    return { ...row, grcNumber, itemCount: row.itemCount || items.length, qty: row.qty || items.reduce((sum, item) => sum + (Number(item.qty) || 1), 0), taxable: row.taxable || taxable, gst: row.gst || gst, netAmount: row.netAmount || taxable + gst };
+  }));
+
   return json({
-    rows: rows.map((r) => ({ ...r, _id: String(r._id) })),
+    rows: enrichedRows.map((r) => ({ ...r, _id: String(r._id) })),
     labels: await resolveRefLabels(rows),
     total,
     page,
@@ -89,11 +124,31 @@ export async function POST(req) {
   if (body.location && isValidObjectId(body.location)) doc.locationId = body.location;
   if (body.finYear) doc.finYear = body.finYear;
 
-  if (Array.isArray(body.data?.items)) doc.items = body.data.items;
+  if (Array.isArray(body.data?.items)) {
+    doc.items = body.data.items;
+    doc.qty = body.data.items.reduce((sum, item) => sum + (Number(item.qty) || 1), 0);
+    doc.itemCount = body.data.items.length;
+    doc.taxable = body.data.items.reduce((sum, item) => sum + (Number(item.finalNet) || 0) * (Number(item.qty) || 1), 0);
+    doc.gst = body.data.items.reduce((sum, item) => {
+      const taxable = (Number(item.finalNet) || 0) * (Number(item.qty) || 1);
+      return sum + taxable * ((Number(item.gst) || 0) / 100);
+    }, 0);
+    doc.netAmount = doc.taxable + doc.gst;
+    const sourceGrcId = body.data.items[0]?.grcId;
+    if (sourceGrcId && isValidObjectId(sourceGrcId)) {
+      const sourceGrc = await Grc.findById(sourceGrcId).select('grcNumber').lean();
+      if (sourceGrc?.grcNumber) doc.grcNumber = sourceGrc.grcNumber;
+    }
+  }
+  if (!doc.grtDate) doc.grtDate = new Date();
+  if (!Array.isArray(body.data?.items) || body.data.items.length === 0) {
+    return json({ errors: { items: 'Select at least one vendor item.' } }, 422);
+  }
 
-  /* document number from the Doc Setup master */
+  /* GRT sequence starts at TFJ/26/0129 and increments from the highest
+     number already issued for this business, location and financial year. */
   if (!doc.grtNo) {
-    doc.grtNo = await nextDocNumber(Grt, 'grtNo', "GRT", {
+    doc.grtNo = await nextGrtNumber({
       businessId: doc.businessId, locationId: doc.locationId, finYear: doc.finYear,
     });
   }

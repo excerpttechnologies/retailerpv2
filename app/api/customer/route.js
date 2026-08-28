@@ -16,8 +16,15 @@ const FIELDS = TABS.flatMap((t) => (t.sections || []).flatMap((s) => [
 
 /* /api/customer - list + create. */
 
-const json = (d, s = 200) => Response.json(d, { status: s });
+const json = (d, s = 200) => Response.json(d, {
+  status: s,
+  headers: { 'Cache-Control': 'no-store' },
+});
 const PER_PAGE = 10;
+const QUICK_FIELDS = FIELDS.filter((field) => [
+  'typeId', 'businessType', 'gstNo', 'businessName', 'prefix', 'firstName', 'middleName', 'lastName',
+  'billingAddressLine1', 'billingZipCode', 'billingCity', 'billingMobile', 'billingWebsiteUrl', 'billingEmail',
+].includes(field.k));
 
 export async function GET(req) {
   const session = await requireSession();
@@ -37,7 +44,7 @@ export async function GET(req) {
 
   if (search) {
     const rx = { $regex: escapeRegex(search), $options: 'i' };
-    filter.$or = [{ gstNo: rx }, { businessName: rx }, { shortName: rx }, { firstName: rx }, { middleName: rx }, { lastName: rx }, { userName: rx }, { billingAddressLine1: rx }];
+    filter.$or = [{ gstNo: rx }, { businessName: rx }, { shortName: rx }, { firstName: rx }, { middleName: rx }, { lastName: rx }, { userName: rx }, { billingAddressLine1: rx }, { billingMobile: rx }, { billingAlternateContactNumber: rx }];
   }
 
   const total = await Contact.countDocuments(filter);
@@ -64,7 +71,14 @@ export async function POST(req) {
   const body = await req.json();
   await dbConnect();
 
-  const { errors, doc, ok } = validate(FIELDS, body.data || {});
+  /* POS quick-add deliberately omits the full customer page's sales and
+     ledger tabs. Keep that smaller contract explicit instead of making those
+     fields optional for every customer submission. */
+  const fields = body.quick ? QUICK_FIELDS : FIELDS;
+  const quickData = body.quick
+    ? { priceList: 'ON RSP', openingBalance: 0, ...(body.data || {}) }
+    : body.data || {};
+  const { errors, doc, ok } = validate(fields, quickData);
   if (!ok) return json({ errors }, 422);
   if (body.business && isValidObjectId(body.business)) doc.businessId = body.business;
 
@@ -73,5 +87,18 @@ export async function POST(req) {
   doc.contactId = await nextContactId(Contact, ContactType, doc.typeId);
 
   const created = await Contact.create(doc);
-  return json({ ok: true, id: String(created._id) });
+  return json({
+    ok: true,
+    id: String(created._id),
+    customer: {
+      _id: String(created._id),
+      businessId: created.businessId ? String(created.businessId) : '',
+      contactKind: created.contactKind,
+      contactId: created.contactId,
+      businessName: created.businessName || '',
+      firstName: created.firstName || '',
+      lastName: created.lastName || '',
+      billingMobile: created.billingMobile || '',
+    },
+  });
 }

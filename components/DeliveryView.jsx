@@ -5,54 +5,18 @@ import Icon from './Icon';
 import Toolbar from './Toolbar';
 import Field from './Field';
 import ModalForm from './ModalForm';
+import TabbedFormView from './TabbedFormView';
+import { refreshOptions } from './useOptions';
 import { useScope } from './ScopeContext';
-import { useOptions } from './useOptions';
 import { fmt, toCsv, toXlsHtml, download, printTable } from '@/lib/format';
 import { FIELDS, freightBreakdown, bookingDelayDays, delayTone } from '@/app/admin/transport/delivery/fields';
 import { FIELDS as TRANSPORTER_FIELDS } from '@/app/admin/transport/transporter/fields';
 import { TABS as SUPPLIER_TABS } from '@/app/admin/contact/supplier/tabs';
 
+/* The LR-page quick-add does not collect a transporter code. The API still
+  requires one, so the dialog supplies an internal value when saving. */
 const TRANSPORTER_QUICK_FIELDS = TRANSPORTER_FIELDS.filter((f) => f.k !== 'transporterCode');
-
-/* ==========================================================================
-   Quick-add supplier.
-
-   The real supplier form is four tabs and ~85 fields - far too much for an
-   inline add while you are halfway through booking a consignment. This is
-   the short version: enough to create a usable supplier, and nothing else.
-   The full record can be completed later under Contacts.
-
-   The list is DERIVED from the supplier tabs rather than hand-copied, for
-   two reasons. /api/supplier validates against the whole tab set, so every
-   `req: true` field has to be here or the POST comes back 422 - deriving
-   means a newly-required field appears here automatically instead of
-   silently breaking this dialog. And the labels, options and defaults stay
-   whatever the real form says they are.
-   ========================================================================== */
-const SUPPLIER_ALL_FIELDS = SUPPLIER_TABS.flatMap(
-  (t) => (t.sections || []).flatMap((s) => s.fields || [])
-);
-
-const pick = (k) => SUPPLIER_ALL_FIELDS.find((f) => f.k === k);
-
-/* the ones worth asking for, in the order they read best. businessName is
-   not required by the API but it IS the label every supplier dropdown shows,
-   so leaving it out would create a supplier that appears blank everywhere. */
-const SUPPLIER_QUICK_FIELDS = (() => {
-  const preferred = ['typeId', 'businessName', 'firstName', 'billingMobile', 'gstNo']
-    .map(pick)
-    .filter(Boolean);
-  const seen = new Set(preferred.map((f) => f.k));
-  /* anything else the API insists on, appended so it can never 422 */
-  const required = SUPPLIER_ALL_FIELDS.filter((f) => f.req && !seen.has(f.k));
-  return [...preferred, ...required];
-})();
-
-const supplierTypeNeedsBusinessName = (label) => {
-  const normalized = String(label || '').toLowerCase();
-  return (normalized.includes('vendor') && normalized.includes('goods'))
-    || (normalized.includes('b2b') && normalized.includes('interstore'));
-};
+const SUPPLIER_TYPES_WITHOUT_FIRST_NAME = /b2b.*inter.*store|vendor\s+(?:of|for)\s+goods/i;
 
 /* ==========================================================================
    Delivery / LR Transactions.
@@ -72,9 +36,38 @@ const supplierTypeNeedsBusinessName = (label) => {
 const ENDPOINT = '/api/delivery';
 const money = (n) => '\u20b9 ' + (Number(n) || 0).toFixed(2);
 
+/* "now" as a datetime-local string. Built from the local clock rather than
+   toISOString(), which would hand the picker a UTC time. */
+function nowLocal() {
+  const d = new Date();
+  const p = (n) => String(n).padStart(2, '0');
+  return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate())
+    + 'T' + p(d.getHours()) + ':' + p(d.getMinutes()) + ':' + p(d.getSeconds());
+}
+
+function localTransactionDate(value) {
+  if (!value) return { date: '', time: '' };
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return { date: String(value).slice(0, 10), time: '' };
+  const p = (n) => String(n).padStart(2, '0');
+  const hours = d.getHours();
+  const hour12 = hours % 12 || 12;
+  return {
+    date: d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()),
+    time: hour12 + ':' + p(d.getMinutes()) + ':' + p(d.getSeconds()) + (hours < 12 ? ' am' : ' pm'),
+  };
+}
+
+function keepTransactionTime(value, date) {
+  const current = new Date(value);
+  if (Number.isNaN(current.getTime())) return date + 'T00:00:00';
+  const p = (n) => String(n).padStart(2, '0');
+  return date + 'T' + p(current.getHours()) + ':' + p(current.getMinutes()) + ':' + p(current.getSeconds());
+}
+
 const COLUMNS = [
   { k: 'transactionNo', t: 'Transaction No' },
-  { k: 'transactionDate', t: 'Date', f: 'date' },
+  { k: 'transactionDate', t: 'Date', f: 'datetime' },
   { k: 'transporterId', t: 'Transporter', f: 'ref' },
   { k: 'lrNumber', t: 'LR No' },
   { k: 'bookingDelay', t: 'Booking Delay' },
@@ -83,7 +76,7 @@ const COLUMNS = [
   { k: 'parcelQty', t: 'Parcel Qty' },
   { k: 'value', t: 'Value', f: 'amount' },
   { k: 'totalFreight', t: 'Freight', f: 'amount' },
-  { k: 'dispatchId', t: 'Dispatch', f: 'ref' },
+  // { k: 'dispatchId', t: 'Dispatch', f: 'ref' },
 ];
 
 const field = (k) => FIELDS.find((f) => f.k === k);
@@ -104,15 +97,17 @@ function Section({ title, children }) {
 function DeliveryDialog({ row, onClose, onSaved }) {
   const scope = useScope();
   const isEdit = Boolean(row?._id);
-  const { options: supplierTypeOptions } = useOptions('contact-type');
-  const [openedAt] = useState(() => new Date());
 
   const [data, setData] = useState(() => {
     const d = {};
     FIELDS.forEach((f) => {
       const v = row?.[f.k];
       d[f.k] = v === undefined || v === null
-        ? (f.def === 'today' ? new Date().toISOString().slice(0, 10) : (f.def !== undefined ? f.def : ''))
+        ? (f.def === 'now' ? nowLocal()
+          : f.def === 'today' ? new Date().toISOString().slice(0, 10)
+            : (f.def !== undefined ? f.def : ''))
+        /* datetime is handed over raw: Field converts the stored UTC
+           timestamp into the local clock the picker expects */
         : (f.type === 'date' ? String(v).slice(0, 10) : (f.type === 'ref' ? String(v) : v));
     });
     return d;
@@ -182,42 +177,76 @@ function DeliveryDialog({ row, onClose, onSaved }) {
             endpoint: '/api/transporter',
             fields: TRANSPORTER_QUICK_FIELDS,
             modalWide: true,
+            prepareData: (data) => ({
+              ...data,
+              transporterCode: 'AUTO-' + Date.now(),
+            }),
           }}
           slug="transporter"
           onClose={() => setAddingTransporter(false)}
           onSaved={() => {
             setAddingTransporter(false);
+            refreshOptions('transporter');
             setTransporterNonce((n) => n + 1);
           }}
         />
       )}
 
       {addingSupplier && (
-        <ModalForm
-          cfg={{
-            addTitle: 'Add Supplier',
-            endpoint: '/api/supplier',
-            fields: SUPPLIER_QUICK_FIELDS,
-            modalWide: true,
-            isFieldVisible: (f, values) => {
-              if (f.k !== 'firstName') return true;
-              const selected = supplierTypeOptions.find((o) => String(o.value) === String(values.typeId));
-              return !supplierTypeNeedsBusinessName(selected?.label);
-            },
-            prepareData: (values) => {
-              const selected = supplierTypeOptions.find((o) => String(o.value) === String(values.typeId));
-              return supplierTypeNeedsBusinessName(selected?.label)
-                ? { ...values, firstName: values.businessName || 'Business' }
-                : values;
-            },
-          }}
-          slug="supplier"
-          onClose={() => setAddingSupplier(false)}
-          onSaved={() => {
-            setAddingSupplier(false);
-            setSupplierNonce((n) => n + 1);
-          }}
-        />
+        <div className="fixed inset-0 z-50 flex items-start justify-center overflow-auto bg-black/45 p-4 pt-8">
+          {/* No click-outside-to-close here, unlike the small dialogs: this is
+              a three-tab form and a stray click on the backdrop would throw
+              away everything typed so far. The X is the only way out. */}
+          <div className="w-full max-w-[1120px]">
+            <div className="flex items-center rounded-t-lg border-b border-line bg-white px-5 py-3">
+              <span className="text-[16px] font-bold">Add Supplier</span>
+              <span className="flex-1" />
+              {/* TabbedFormView only reports back on the LAST tab, but the
+                  supplier is created on the first one - so closing early still
+                  has to refresh the dropdown, or the record exists and cannot
+                  be picked. */}
+              <button
+                type="button"
+                onClick={() => { setAddingSupplier(false); refreshOptions('supplier'); }}
+                aria-label="Close"
+                className="flex h-7 w-7 items-center justify-center rounded-full bg-[#e0342c] text-white"
+              >
+                <Icon name="x" size={14} />
+              </button>
+            </div>
+
+            {/* The real supplier form - all three tabs, saving per tab exactly
+                as Contacts > Suppliers does. onSaved is what keeps it in a
+                dialog: finishing the last tab hands the record back here
+                instead of navigating away from the consignment being booked. */}
+            <TabbedFormView
+              cfg={{
+                title: 'Suppliers',
+                addTitle: 'Add Suppliers',
+                basePath: '/admin/contact/',
+                slugPath: 'supplier',
+                endpoint: '/api/supplier',
+                scope: ['business'],
+                contactKind: 'Supplier',
+                tabs: SUPPLIER_TABS,
+                allowBlankFirstName: true,
+                isFieldVisible: (f, data) => f.k !== 'firstName'
+                  || !SUPPLIER_TYPES_WITHOUT_FIRST_NAME.test(data._supplierTypeLabel || ''),
+                onOptionChange: (f, option) => {
+                  if (f.k !== 'typeId') return {};
+                  return SUPPLIER_TYPES_WITHOUT_FIRST_NAME.test(option?.label || '')
+                    ? { firstName: '' }
+                    : {};
+                },
+              }}
+              onSaved={() => {
+                setAddingSupplier(false);
+                refreshOptions('supplier');
+                setSupplierNonce((n) => n + 1);
+              }}
+            />
+          </div>
+        </div>
       )}
 
       <div
@@ -242,17 +271,10 @@ function DeliveryDialog({ row, onClose, onSaved }) {
             {flash && <div className={'flash ' + (flash.type === 'err' ? 'flash-err' : 'flash-ok')}>{flash.msg}</div>}
 
             <Section title="Transaction Info">
-              <div className="mb-3">
-                <label className="f-label">Opened At</label>
-                <input
-                  className="f-input bg-[#eff2f7] text-inkmuted"
-                  value={openedAt.toLocaleString('en-IN', {
-                    day: '2-digit', month: '2-digit', year: 'numeric',
-                    hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true,
-                  })}
-                  readOnly
-                />
-              </div>
+              {/* "Opened At" used to sit here as a read-only clock. It said
+                  nothing Transaction Date does not, and Transaction Date is
+                  the field that is actually stored - so the clock is gone and
+                  Transaction Date opens on today with a calendar picker. */}
               <div className="mb-3">
                 <Field
                   f={{ ...field('transactionNo'), label: 'Transaction No', placeholder: 'Auto generate on save' }}
@@ -267,7 +289,25 @@ function DeliveryDialog({ row, onClose, onSaved }) {
               </div>
 
               <div className="grid grid-cols-1 gap-3">
-                <Field f={field('transactionDate')} value={data.transactionDate} error={errors.transactionDate} onChange={set} />
+                <div>
+                  <label className="mb-1 block text-[13px] font-semibold">Transaction Date</label>
+                  <div className="grid grid-cols-2 gap-2">
+                    <input
+                      type="date"
+                      className="f-input"
+                      value={localTransactionDate(data.transactionDate).date}
+                      onChange={(e) => set('transactionDate', keepTransactionTime(data.transactionDate, e.target.value))}
+                    />
+                    <input
+                      type="text"
+                      className="f-input bg-gray-100"
+                      value={localTransactionDate(data.transactionDate).time}
+                      readOnly
+                      aria-label="Transaction time"
+                    />
+                  </div>
+                  {errors.transactionDate && <div className="mt-1 text-[12px] text-red-600">{errors.transactionDate}</div>}
+                </div>
 
                 <div>
                   <Field
@@ -324,13 +364,16 @@ function DeliveryDialog({ row, onClose, onSaved }) {
                 <Field f={field('gstApplicable')} value={data.gstApplicable} error={errors.gstApplicable} onChange={set} />
 
                 {data.gstApplicable === 'Yes' && (
-                  <div className="rounded-md border border-line bg-[#f7fafc] px-3 py-2 text-[13px]">
-                    <div className="font-semibold">GST @ {totals.gstRate}%</div>
-                    <div className="mt-1 flex gap-5 text-inkmuted">
-                      <span>Input CGST: {money(totals.inputCgst)}</span>
-                      <span>Input SGST: {money(totals.inputSgst)}</span>
+                  <>
+                    <Field f={field('gstRate')} value={data.gstRate} error={errors.gstRate} onChange={set} />
+                    <div className="rounded-md border border-line bg-[#f7fafc] px-3 py-2 text-[13px]">
+                      <div className="font-semibold">GST @ {totals.gstRate}%</div>
+                      <div className="mt-1 flex gap-5 text-inkmuted">
+                        <span>Input CGST: {money(totals.inputCgst)}</span>
+                        <span>Input SGST: {money(totals.inputSgst)}</span>
+                      </div>
                     </div>
-                  </div>
+                  </>
                 )}
 
                 <div className="flex items-center border-y border-line py-2">

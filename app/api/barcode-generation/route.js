@@ -188,7 +188,7 @@ export async function GET(req) {
   const sp = new URL(req.url).searchParams;
 
   const page = Math.max(1, Number(sp.get('page') || 1));
-  const perPage = Math.min(200, Number(sp.get('perPage') || 20));
+  const perPage = Math.min(1000, Number(sp.get('perPage') || 20));
 
   const filter = {};
   const business = sp.get('business');

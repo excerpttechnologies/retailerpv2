@@ -112,6 +112,7 @@ export async function POST(req) {
   if (body.finYear) doc.finYear = body.finYear;
 
   if (Array.isArray(body.data?.items)) doc.items = body.data.items;
+  if (Array.isArray(body.data?.voucherRows)) doc.voucherRows = body.data.voucherRows;
 
   const duplicate = await Grc.exists({ lrTransactionId: doc.lrTransactionId });
   if (duplicate) return json({ errors: { lrTransactionId: 'This LR / Transaction already has a GRC.' } }, 422);

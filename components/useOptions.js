@@ -5,22 +5,56 @@ import { useScope } from './ScopeContext';
 /* Loads {value,label} options for a ref name. Hits /api/options, which maps
    the name to a model - no page registry involved. */
 
-export function useOptions(ref) {
+/* ==========================================================================
+   Option lists are shared state.
+
+   A quick-add dialog creates a record that every open dropdown for that ref
+   should see straight away. Callers used to force this by changing the React
+   `key` on the field so it remounted - but a remount only refires the fetch,
+   and /api/options answers with no Cache-Control header at all, so the
+   browser was free to serve the repeat GET from its own memory cache. The
+   new record then did not appear until the page was reloaded.
+
+   Two fixes, both needed: `cache: no-store` so the request actually
+   reaches the server, and refreshOptions() so a create can tell every
+   mounted dropdown to reload rather than relying on a remount.
+   ========================================================================== */
+const listeners = new Set();
+const versions = new Map();
+
+/* Call after creating a record of this ref type. */
+export function refreshOptions(ref) {
+  versions.set(ref, (versions.get(ref) || 0) + 1);
+  listeners.forEach((fn) => fn());
+}
+
+export function useOptions(ref, query = '') {
   const { business, location } = useScope();
   const [options, setOptions] = useState([]);
   const [loading, setLoading] = useState(false);
+  const [version, setVersion] = useState(() => versions.get(ref) || 0);
 
   useEffect(() => {
-    if (!ref) return;
+    const onBump = () => setVersion(versions.get(ref) || 0);
+    listeners.add(onBump);
+    return () => { listeners.delete(onBump); };
+  }, [ref]);
+
+  useEffect(() => {
+    if (!ref) return undefined;
+    let off = false;
     setLoading(true);
 
-    const qs = new URLSearchParams({ ref, business: business || '', location: location || '' });
-    fetch('/api/options?' + qs)
+    const qs = new URLSearchParams({ ref, business: business || '', location: location || '', q: query });
+    fetch('/api/options?' + qs, { cache: 'no-store' })
       .then((r) => r.json())
-      .then((d) => setOptions(d.options || []))
-      .catch(() => setOptions([]))
-      .finally(() => setLoading(false));
-  }, [ref, business, location]);
+      .then((d) => { if (!off) setOptions(d.options || []); })
+      .catch(() => { if (!off) setOptions([]); })
+      .finally(() => { if (!off) setLoading(false); });
+
+    /* a scope change mid-flight must not let the old list land last */
+    return () => { off = true; };
+  }, [ref, business, location, query, version]);
 
   return { options, loading };
 }

@@ -97,7 +97,7 @@ export default function EditTransactionPurchaseGrcPage() {
       });
       const result = await response.json();
       if (!response.ok) throw new Error(result.error || 'Update failed');
-      setStatus('GRC updated');
+      router.push('/admin/transaction/purchase/grc');
     } catch (error) {
       setStatus(error.message || 'Update failed');
     } finally {

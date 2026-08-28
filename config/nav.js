@@ -369,41 +369,41 @@ export const NAV = [
     label: 'Sell',
     icon: LuShoppingBag,
     children: [
-      {
-        label: 'Delivery Challan',
-        icon: LuFileCheck,
-        href: '/admin/transaction/sell/deliverychallan',
-      },
-      {
-        label: 'Sales Invoice',
-        icon: LuFileText,
-        href: '/admin/transaction/sell/salesinvoice',
-      },
-      {
-        label: 'Sales Return',
-        icon: LuUndo2,
-        href: '/admin/transaction/sell/salereturn',
-      },
-      {
-        label: 'Credit Note',
-        icon: LuFilePlus,
-        href: '/admin/transaction/sell/creditnote',
-      },
+      // {
+      //   label: 'Delivery Challan',
+      //   icon: LuFileCheck,
+      //   href: '/admin/transaction/sell/deliverychallan',
+      // },
+      // {
+      //   label: 'Sales Invoice',
+      //   icon: LuFileText,
+      //   href: '/admin/transaction/sell/salesinvoice',
+      // },
+      // {
+      //   label: 'Sales Return',
+      //   icon: LuUndo2,
+      //   href: '/admin/transaction/sell/salereturn',
+      // },
+      // {
+      //   label: 'Credit Note',
+      //   icon: LuFilePlus,
+      //   href: '/admin/transaction/sell/creditnote',
+      // },
       {
         label: 'POS',
         icon: LuMonitor,
         href: '/admin/transaction/sell/pos',
       },
-      {
-        label: 'POS Return',
-        icon: LuUndo2,
-        href: '/admin/transaction/sell/pos-return',
-      },
-      {
-        label: 'B2B Invoice',
-        icon: LuFileText,
-        href: '/admin/transaction/sell/b2binvoice',
-      },
+      // {
+      //   label: 'POS Return',
+      //   icon: LuUndo2,
+      //   href: '/admin/transaction/sell/pos-return',
+      // },
+      // {
+      //   label: 'B2B Invoice',
+      //   icon: LuFileText,
+      //   href: '/admin/transaction/sell/b2binvoice',
+      // },
     ],
   },
  
@@ -435,9 +435,42 @@ export const NAV = [
         href: '/admin/transaction/intercompanysell/salereturn' },
     ],
   },
- 
- 
- 
+
+  {
+    label: 'Reports',
+    icon: LuChartNoAxesColumn,
+    children: [
+      { label: 'Barcode Report', icon: LuBarcode,
+        href: '/admin/reports/barcode-report' },
+      { label: 'Receipt Voucher Report', icon: LuBadgeIndianRupee,
+        href: '/admin/reports/receipt-voucher-report' },
+      { label: 'Payment Voucher Report', icon: LuWalletCards,
+        href: '/admin/reports/payment-voucher-report' },
+      { label: 'Sales Analysis', icon: LuChartNoAxesColumn,
+        href: '/admin/reports/sales-analysis' },
+      { label: 'Sales Report', icon: LuFileText,
+        href: '/admin/reports/sales-report' },
+      { label: 'Sales Person', icon: LuUserRound,
+        href: '/admin/reports/sales-person' },
+      { label: 'POS Summary', icon: LuMonitor,
+        href: '/admin/reports/pos-summary' },
+      { label: 'POS Report', icon: LuStore,
+        href: '/admin/reports/pos-report' },
+      { label: 'POS Credit Note', icon: LuFileMinus,
+        href: '/admin/reports/pos-credit-note' },
+      { label: 'Item Stock', icon: LuWarehouse,
+        href: '/admin/reports/item-stock' },
+      { label: 'Supplier Bill Report', icon: LuReceipt,
+        href: '/admin/reports/supplier-bill' },
+      { label: 'Supplier Outstanding Report', icon: LuCreditCard,
+        href: '/admin/reports/supplier-outstanding' },
+      { label: 'Customer Outstanding Report', icon: LuContactRound,
+        href: '/admin/reports/customer-outstanding' },
+    ],
+  },
+
+
+
   // {
   //   label: 'Staff Management',
   //   icon: LuUsers,
@@ -474,12 +507,6 @@ export const NAV = [
   // },
  
   // {
-  //   label: 'Reports',
-  //   icon: LuChartNoAxesColumn,
-  //   children: [],
-  // },
- 
-  // {
   //   label: 'Communication',
   //   icon: LuMail,
   //   children: [],
@@ -506,12 +533,6 @@ export const NAV = [
   // {
   //   label: 'Ledger Transaction',
   //   icon: LuBookMarked,
-  //   children: [],
-  // },
- 
-  // {
-  //   label: 'E-commerce',
-  //   icon: LuStore,
   //   children: [],
   // },
  
@@ -544,6 +565,17 @@ export const NAV = [
     label: 'Ledger Transaction',
     icon: LuBookMarked,
     href: '/admin/ledger-transaction',
+  },
+
+  {
+    label: 'E-commerce',
+    icon: LuShoppingCart,
+    children: [
+      { label: 'Products', icon: LuTag, href: '/admin/ecommerce/product' },
+      /* Orders and Coupons are on the deployed sidebar but have no screen
+         here yet. Left out rather than shipped as dead links - the same call
+         Staff Management's three entries got. */
+    ],
   },
 
   {

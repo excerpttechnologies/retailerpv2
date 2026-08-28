@@ -88,7 +88,7 @@ const COLUMNS = [
   { key: "billSlNo", label: "Bill Sl No.", width: 100 },
   { key: "seqDummy", label: "SEQ Dummy", width: 100 },
   { key: "supplierDescription", label: "Supplier Description", width: 220 },
-  { key: "qty", label: "QTY", width: 70 },
+  { key: "qty", label: "QTY", width: 100 },
   { key: "uom", label: "UOM", width: 80 },
   { key: "hsn", label: "HSN", width: 90 },
   { key: "purRate", label: "Pur Rate", width: 100 },
@@ -190,6 +190,8 @@ export default function GCRBarcodeGeneration({
   const [justSubmitted, setJustSubmitted] = useState(false);
   const [saving, setSaving] = useState(false);
   const [itemModalRowId, setItemModalRowId] = useState(null);
+  const [qtyEditingRowId, setQtyEditingRowId] = useState(null);
+  const [purRateEditingRowId, setPurRateEditingRowId] = useState(null);
   const [savedRows, setSavedRows] = useState([]);
   const [savedSupplier, setSavedSupplier] = useState("");
   const [barcodeSetting, setBarcodeSetting] = useState(null);
@@ -413,18 +415,20 @@ export default function GCRBarcodeGeneration({
       const row = cleaned[idx];
       const qty = Math.max(0, parseInt(rawValue, 10) || 0);
 
-      if (row.mode === "unique" && qty > 1) {
+      if (row.mode === "unique" && qty > 0) {
         const leader = computeCalculated({
           ...row,
           qty: 1,
           groupSize: qty,
           groupId: null,
+          billSlNo: "1",
         });
-        const duplicates = Array.from({ length: qty - 1 }, () =>
+        const duplicates = Array.from({ length: Math.max(0, qty - 1) }, (_, duplicateIndex) =>
           computeCalculated({
             ...leader,
             id: makeId(),
             groupId: leader.id,
+            billSlNo: String(duplicateIndex + 2),
             barcodeNo: null,
           }),
         );
@@ -469,7 +473,7 @@ export default function GCRBarcodeGeneration({
             const perUnit = groupSize > 0 ? total / groupSize : 0;
             updated.purRate = total === 0 ? "" : String(round2(perUnit));
             if (next[i].id === row.id) updated.enteredTotal = rawValue; // keep raw text on leader only
-          } else {
+          } else if (field !== "billSlNo") {
             updated[field] = rawValue;
           }
           next[i] = computeCalculated(updated);
@@ -542,6 +546,21 @@ export default function GCRBarcodeGeneration({
     );
   }, [validRows]);
   const grandTotal = totals.taxable + totals.gst;
+  const modalTotals = useMemo(() => validRows.reduce((acc, row) => {
+    const qty = parseFloat(row.qty) || 0;
+    const purRate = parseFloat(row.purRate) || 0;
+    const finalNet = parseFloat(row.finalNet) || 0;
+    const taxable = finalNet * qty;
+    const gstAmount = taxable * ((parseFloat(row.gst) || 0) / 100);
+    acc.qty += qty;
+    acc.purRate += purRate * qty;
+    acc.finalNet += taxable;
+    acc.taxable += taxable;
+    acc.gstAmount += gstAmount;
+    acc.gstBase += taxable * (parseFloat(row.gst) || 0);
+    return acc;
+  }, { qty: 0, purRate: 0, finalNet: 0, taxable: 0, gstAmount: 0, gstBase: 0 }), [validRows]);
+  const modalGstRate = modalTotals.taxable ? modalTotals.gstBase / modalTotals.taxable : 0;
 
   const colTotalWidth = COLUMNS.reduce((sum, c) => sum + c.width, 0);
 
@@ -616,6 +635,12 @@ export default function GCRBarcodeGeneration({
                 const isLeaderOfGroup =
                   row.groupId === null &&
                   rows.some((r) => r.groupId === row.id);
+                const groupLeaderIndex = row.groupId === null
+                  ? index
+                  : rows.findIndex((r) => r.id === row.groupId);
+                const serialNumber = row.groupId === null
+                  ? (isLeaderOfGroup ? 1 : index + 1)
+                  : index - groupLeaderIndex + 1;
                 const rowBg = isDuplicate
                   ? "bg-indigo-50/50"
                   : index % 2 === 0
@@ -628,7 +653,7 @@ export default function GCRBarcodeGeneration({
                     <td
                       className={`sticky left-0 z-10 border border-gray-200 px-1 py-1 text-center text-gray-400 font-medium ${rowBg}`}
                     >
-                      {isDuplicate ? "↳" : index + 1}
+                      {serialNumber}
                     </td>
 
                     {/* Old Barcode */}
@@ -731,10 +756,18 @@ export default function GCRBarcodeGeneration({
                       <input
                         type="number"
                         min={0}
-                        value={row.qty}
+                        value={isLeaderOfGroup && qtyEditingRowId === row.id ? row.groupSize : row.qty}
                         disabled={isDuplicate}
                         onChange={(e) => updateQty(row.id, e.target.value)}
-                        className="w-full h-full px-1.5 py-1 bg-transparent outline-none focus:ring-2 focus:ring-inset focus:ring-indigo-400 disabled:bg-gray-100 disabled:text-gray-400 text-right font-mono"
+                        onFocus={() => setQtyEditingRowId(row.id)}
+                        onBlur={() => setQtyEditingRowId(null)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") {
+                            e.preventDefault();
+                            e.currentTarget.blur();
+                          }
+                        }}
+                        className="no-spinner w-full h-full px-1.5 py-1 bg-transparent outline-none focus:ring-2 focus:ring-inset focus:ring-indigo-400 disabled:bg-gray-100 disabled:text-gray-400 text-right font-mono"
                       />
                     </td>
 
@@ -766,12 +799,20 @@ export default function GCRBarcodeGeneration({
                     <td className="border border-gray-200 p-0">
                       <input
                         type="number"
-                        value={isLeaderOfGroup ? row.enteredTotal : row.purRate}
+                        value={isLeaderOfGroup && purRateEditingRowId === row.id ? row.enteredTotal : row.purRate}
                         title={
                           isLeaderOfGroup
                             ? "Enter the TOTAL pur rate for this group — it is split evenly across all duplicate rows"
                             : undefined
                         }
+                        onFocus={() => setPurRateEditingRowId(row.id)}
+                        onBlur={() => setPurRateEditingRowId(null)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") {
+                            e.preventDefault();
+                            e.currentTarget.blur();
+                          }
+                        }}
                         onChange={(e) =>
                           updateField(row.id, "purRate", e.target.value)
                         }
@@ -1088,16 +1129,28 @@ export default function GCRBarcodeGeneration({
                 <tfoot>
                   <tr className="bg-gray-100 font-semibold">
                     <td
-                      colSpan={7}
+                      colSpan={3}
                       className="border border-gray-200 px-2 py-1.5 text-right"
                     >
                       Totals
                     </td>
                     <td className="border border-gray-200 px-2 py-1.5 text-right font-mono">
-                      {inr(totals.taxable)}
+                      {modalTotals.qty}
                     </td>
                     <td className="border border-gray-200 px-2 py-1.5 text-right font-mono">
-                      {inr(totals.gst)}
+                      {inr(modalTotals.purRate)}
+                    </td>
+                    <td className="border border-gray-200 px-2 py-1.5 text-right font-mono">
+                      {inr(modalTotals.finalNet)}
+                    </td>
+                    <td className="border border-gray-200 px-2 py-1.5 text-right font-mono">
+                      {modalGstRate.toFixed(2)}%
+                    </td>
+                    <td className="border border-gray-200 px-2 py-1.5 text-right font-mono">
+                      {inr(modalTotals.taxable)}
+                    </td>
+                    <td className="border border-gray-200 px-2 py-1.5 text-right font-mono">
+                      {inr(modalTotals.gstAmount)}
                     </td>
                     <td className="border border-gray-200 px-2 py-1.5" />
                   </tr>

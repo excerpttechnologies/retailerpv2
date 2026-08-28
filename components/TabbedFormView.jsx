@@ -6,8 +6,13 @@ import Field from './Field';
 import { useScope } from './ScopeContext';
 
 /* Supplier / Customer / Agent add form: four tabs across the top, each with its
-   own grey-headed sections and its own Submit (the original saves per tab). */
-export default function TabbedFormView({ cfg, id, slug }) {
+   own grey-headed sections and its own Submit (the original saves per tab).
+
+   `onSaved` lets this be embedded in a dialog rather than owning the page:
+   when it is supplied, finishing the last tab calls it instead of navigating
+   to the list. That is how the Delivery / LR screen offers the full supplier
+   form inline without the user losing the consignment they were booking. */
+export default function TabbedFormView({ cfg, id, slug, onSaved }) {
   const router = useRouter();
   const scope = useScope();
   const tabs = cfg.tabs || [];
@@ -71,6 +76,7 @@ export default function TabbedFormView({ cfg, id, slug }) {
       const payload = {
         data,
         business: scope.business, location: scope.location, finYear: scope.finYear,
+        allowBlankFirstName: cfg.allowBlankFirstName === true,
       };
 
       const r = await fetch(cfg.endpoint + (recordId ? '/' + recordId : ''), {
@@ -89,7 +95,12 @@ export default function TabbedFormView({ cfg, id, slug }) {
         return;
       }
       setRecordId(d.id);
-      if (active === tabs.length - 1) router.push(listUrl);
+      if (active === tabs.length - 1) {
+        /* embedded in a dialog: hand the new record back rather than leaving
+           the page the caller was in the middle of */
+        if (onSaved) onSaved(d);
+        else router.push(listUrl);
+      }
       else { setFlash({ type: 'ok', msg: 'Saved. Continue with the next tab.' }); setActive((a) => a + 1); }
     } finally { setSaving(false); }
   }
@@ -153,8 +164,22 @@ export default function TabbedFormView({ cfg, id, slug }) {
                     : 'form-grid-4'
               }
             >
-              {(s.fields || []).map((f) => (
-                <Field key={f.k} f={f} value={data[f.k]} error={errors[f.k]} onChange={set} />
+              {(s.fields || []).filter((f) => !cfg.isFieldVisible || cfg.isFieldVisible(f, data)).map((f) => (
+                <Field
+                  key={f.k}
+                  f={f}
+                  value={data[f.k]}
+                  error={errors[f.k]}
+                  onChange={set}
+                  onOptionChange={(option) => {
+                    const patch = cfg.onOptionChange?.(f, option, data) || {};
+                    setData((current) => ({
+                      ...current,
+                      ...patch,
+                      ...(f.k === 'typeId' ? { _supplierTypeLabel: option?.label || '' } : {}),
+                    }));
+                  }}
+                />
               ))}
             </div>
           </div>

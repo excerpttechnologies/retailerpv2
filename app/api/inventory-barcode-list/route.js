@@ -1,7 +1,6 @@
 import { isValidObjectId } from 'mongoose';
 import dbConnect from '@/lib/db';
 import Grc from '@/models/Grc';
-import ProductImage from '@/models/ProductImage';
 import { BarcodeLabel } from '@/lib/barcodeLabel';
 import { requireSession } from '@/lib/session';
 import { escapeRegex } from '@/lib/validate';
@@ -109,26 +108,6 @@ export async function GET(req) {
     : [];
   const grcNumberById = Object.fromEntries(grcs.map((g) => [String(g._id), g.grcNumber]));
 
-  /* Staff-uploaded product photo (if any), keyed on the same barcode value
-     the mobile app backend stores it under - barcodeGenerated. Falls back
-     to oldBarcode the same way the row's own barcodeNo does, so labels
-     that predate the ERP's own numbering still match if a photo was
-     submitted against the old barcode. */
-  const barcodeValues = [
-    ...new Set(rows.flatMap((r) => [r.barcodeGenerated, r.oldBarcode]).filter(Boolean)),
-  ];
-  const imageByBarcode = {};
-  if (barcodeValues.length) {
-    const images = await ProductImage.find({ barcodeGenerated: { $in: barcodeValues } })
-      .sort({ createdAt: -1 })
-      .lean();
-    for (const img of images) {
-      if (!imageByBarcode[img.barcodeGenerated]) {
-        imageByBarcode[img.barcodeGenerated] = img.imageUrl;
-      }
-    }
-  }
-
   return json({
     rows: rows.map((r) => ({
       _id: String(r._id),
@@ -137,8 +116,10 @@ export async function GET(req) {
       rsp: Number(r.retailPrice) || 0,
       cp: Number(r.finalNet || r.purRate) || 0,
       grcNo: grcNumberById[r.grcId] || '',
-      productImageUrl:
-        imageByBarcode[r.barcodeGenerated] || imageByBarcode[r.oldBarcode] || '',
+      /* The mobile app writes the staff-uploaded photo straight onto the
+         barcode row, so it arrives with the row - no join, no second
+         collection. */
+      productImageUrl: r.imageUrl || '',
     })),
     labels: {},
     total,
