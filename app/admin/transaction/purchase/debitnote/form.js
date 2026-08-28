@@ -59,6 +59,7 @@ export const FORM = {
       },
       {
         "type": "grid",
+        "total": true,
         "empty": "No Record Found",
         "cols": [
           "Sl No",

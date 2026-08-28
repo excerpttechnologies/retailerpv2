@@ -45,7 +45,17 @@ export async function PUT(req, { params }) {
   const { errors, doc, ok } = validate(FIELDS, body.data || {});
   if (!ok) return json({ errors }, 422);
 
-  if (Array.isArray(body.data?.items)) doc.items = body.data.items;
+  if (Array.isArray(body.data?.items)) {
+    doc.items = body.data.items;
+    doc.qty = body.data.items.reduce((sum, item) => sum + (Number(item.qty) || 0), 0);
+    doc.itemCount = body.data.items.length;
+    doc.taxable = body.data.items.reduce((sum, item) => sum + (Number(item.finalNet || item.purRate) || 0) * (Number(item.qty) || 0), 0);
+    doc.gst = body.data.items.reduce((sum, item) => {
+      const taxable = (Number(item.finalNet || item.purRate) || 0) * (Number(item.qty) || 0);
+      return sum + taxable * ((Number(item.gst) || 0) / 100);
+    }, 0);
+    doc.netAmount = doc.taxable + doc.gst;
+  }
 
   /* never overwrite the document number on edit */
   delete doc.grtNo;

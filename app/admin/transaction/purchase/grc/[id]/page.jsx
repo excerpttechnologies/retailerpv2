@@ -47,6 +47,7 @@ export default function EditTransactionPurchaseGrcPage() {
   const searchParams = useSearchParams();
   const scope = useScope();
   const [data, setData] = useState({});
+  const [supplierOption, setSupplierOption] = useState(null);
   const [rows, setRows] = useState([]);
   const [tab, setTab] = useState(searchParams.get('tab') === 'summary' ? 'summary' : 'items');
   const [status, setStatus] = useState('');
@@ -67,24 +68,35 @@ export default function EditTransactionPurchaseGrcPage() {
           next[field.k] = value == null ? '' : field.type === 'ref' ? String(value) : value;
         });
         setData(next);
+        if (next.supplierId && result.grc.supplierName) {
+          setSupplierOption({ value: next.supplierId, label: result.grc.supplierName });
+        }
         setRows(result.rows || []);
         setInvoiceId(result.grc.purchaseInvoiceId || null);
       })
       .catch((error) => setStatus(error.message || 'Failed to load GRC'));
   }, [id]);
 
-  const summary = useMemo(() => rows.reduce((result, row) => {
+  const summaryRows = useMemo(() => rows.map((row) => {
     const qty = number(row.qty);
-    const value = number(row.finalNet || row.purRate) * qty;
-    result.quantity += qty;
-    result.taxable += value;
-    result.gst += value * (number(row.gst) / 100);
-    result.net += value + value * (number(row.gst) / 100);
-    result.items[row.itemCode || ''] = result.items[row.itemCode || ''] || { qty: 0, value: 0 };
-    result.items[row.itemCode || ''].qty += qty;
-    result.items[row.itemCode || ''].value += value;
+    const beforeGst = number(row.finalNet || row.purRate) * qty;
+    const gstAmount = beforeGst * (number(row.gst) / 100);
+    return {
+      ...row,
+      qty,
+      beforeGst,
+      gstAmount,
+      netAmount: beforeGst + gstAmount,
+    };
+  }), [rows]);
+
+  const summary = useMemo(() => summaryRows.reduce((result, row) => {
+    result.quantity += row.qty;
+    result.taxable += row.beforeGst;
+    result.gst += row.gstAmount;
+    result.net += row.netAmount;
     return result;
-  }, { quantity: 0, taxable: 0, gst: 0, net: 0, items: {} }), [rows]);
+  }, { quantity: 0, taxable: 0, gst: 0, net: 0 }), [summaryRows]);
 
   async function submit() {
     setSaving(true);
@@ -142,7 +154,15 @@ export default function EditTransactionPurchaseGrcPage() {
         <div className="card-body">
           {status && <div className="mb-3 text-sm text-slate-600">{status}</div>}
           <div className="form-grid-4">
-            {fields.map((field) => <Field key={field.k} f={field} value={data[field.k]} onChange={set} />)}
+            {fields.map((field) => (
+              <Field
+                key={field.k}
+                f={field}
+                value={data[field.k]}
+                onChange={set}
+                selectedOption={field.k === 'supplierId' ? supplierOption : undefined}
+              />
+            ))}
           </div>
           <button type="button" className="btn btn-primary mx-auto mt-4 flex w-full max-w-[390px] justify-center" onClick={submit} disabled={saving}>
             {saving ? 'Saving...' : 'Update'}
@@ -165,12 +185,36 @@ export default function EditTransactionPurchaseGrcPage() {
               {rows.map((row) => <tr key={row._id}><td>{cell(row.itemCode)}</td><td>{cell(row.batchUnique)}</td><td>{cell(row.billSlNo)}</td><td>{cell(row.supplierDescription)}</td><td>{cell(row.qty)}</td><td>{cell(row.uom)}</td><td>{cell(row.hsn)}</td><td>{cell(row.purRate)}</td><td>{cell(row.finalNet)}</td><td>{cell(row.gst)}</td><td>{cell(row.retailPrice)}</td><td>{cell(row.offerPrice)}</td><td>{cell(row.barcodeGenerated)}</td><td><button type="button" className="text-brand-link underline" onClick={openBarcode}>Edit</button></td></tr>)}
             </tbody></table>
           ) : (
-            <>
-              <div className="grid gap-3 md:grid-cols-4">
-                {[['Total Quantity', summary.quantity], ['Total Taxable Value', summary.taxable], ['Total GST Amount', summary.gst], ['Total Net Amount', summary.net]].map(([label, value]) => <div key={label} className="border border-line p-3"><div className="text-xs text-cell">{label}</div><div className="mt-1 text-lg font-semibold">{value.toFixed(2)}</div></div>)}
-              </div>
-              <table className="dt mt-4"><thead><tr><th>Item Code</th><th>Total Qty</th><th>Total Value</th></tr></thead><tbody>{Object.entries(summary.items).map(([itemCode, item]) => <tr key={itemCode}><td>{cell(itemCode)}</td><td>{item.qty}</td><td>{item.value.toFixed(2)}</td></tr>)}</tbody></table>
-            </>
+            <table className="dt min-w-[900px]">
+              <thead>
+                <tr>
+                  {['Sl No', 'Bill Sl No.', 'Item Name', 'QTY', 'Before GST Amount', 'GST Amount', 'Net Amount'].map((heading) => <th key={heading}>{heading}</th>)}
+                </tr>
+              </thead>
+              <tbody>
+                {summaryRows.length === 0 && <tr><td colSpan={7} className="dt-empty">No summary items yet.</td></tr>}
+                {summaryRows.map((row, index) => (
+                  <tr key={row._id || `${row.billSlNo}-${index}`}>
+                    <td>{index + 1}</td>
+                    <td>{cell(row.billSlNo)}</td>
+                    <td>{cell(row.itemName || row.supplierDescription || row.itemCode)}</td>
+                    <td>{row.qty.toFixed(2)}</td>
+                    <td>{row.beforeGst.toFixed(2)}</td>
+                    <td>{row.gstAmount.toFixed(2)}</td>
+                    <td>{row.netAmount.toFixed(2)}</td>
+                  </tr>
+                ))}
+                {summaryRows.length > 0 && (
+                  <tr className="font-semibold">
+                    <td colSpan={3}>Total</td>
+                    <td>{summary.quantity.toFixed(2)}</td>
+                    <td>{summary.taxable.toFixed(2)}</td>
+                    <td>{summary.gst.toFixed(2)}</td>
+                    <td>{summary.net.toFixed(2)}</td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
           )}
         </div>
       </div>

@@ -97,7 +97,8 @@ function SourceSelect({ card, supplierId, value, onChange, onSelect }) {
         value={card.multi ? (value || []) : (value || '')}
         onChange={(next) => {
           onChange(next);
-          onSelect?.(options.find((option) => option.value === next)?.row);
+          if (card.multi) onSelect?.(options.filter((option) => next.includes(option.value)).map((option) => option.row));
+          else onSelect?.(options.find((option) => option.value === next)?.row);
         }}
       />
     </div>
@@ -105,6 +106,12 @@ function SourceSelect({ card, supplierId, value, onChange, onSelect }) {
 }
 
 function Grid({ card, rows, onRemove }) {
+  const total = rows.reduce((result, row) => {
+    ['Return Quantity', 'Before Tax', 'IGST Amount', 'CGST Amount', 'SGST Amount', 'Net Amount'].forEach((key) => {
+      result[key] = (result[key] || 0) + (Number(row[key]) || 0);
+    });
+    return result;
+  }, {});
   return (
     <div className="overflow-x-auto">
       <table className="dt">
@@ -134,6 +141,11 @@ function Grid({ card, rows, onRemove }) {
               )}
             </tr>
           ))}
+          {card.total && rows.length > 0 && (
+            <tr className="font-semibold">
+              {card.cols.map((c, i) => <td key={c}>{i === 0 ? 'Total' : total[c] === undefined ? '' : Number(total[c]).toFixed(2)}</td>)}
+            </tr>
+          )}
         </tbody>
       </table>
     </div>
@@ -196,9 +208,10 @@ function VoucherSection({ card, rows, onChange, onAdd, onRemove }) {
   const totals = rows.reduce((result, row) => ({
     invoiceQty: result.invoiceQty + number(row.invoiceQty),
     taxableValue: result.taxableValue + number(row.taxableValue),
+    taxAmount: result.taxAmount + number(row.taxAmount),
     totalAmount: result.totalAmount + number(row.totalAmount),
     freightAmount: result.freightAmount + number(row.freightAmount),
-  }), { invoiceQty: 0, taxableValue: 0, totalAmount: 0, freightAmount: 0 });
+  }), { invoiceQty: 0, taxableValue: 0, taxAmount: 0, totalAmount: 0, freightAmount: 0 });
 
   return (
     <div className="card">
@@ -237,6 +250,7 @@ function VoucherSection({ card, rows, onChange, onAdd, onRemove }) {
               <th>Total</th>
               <th>{totals.invoiceQty.toFixed(2)}</th>
               <th>{totals.taxableValue.toFixed(2)}</th>
+              <th>{totals.taxAmount.toFixed(2)}</th>
               <th>{totals.totalAmount.toFixed(2)}</th>
               <th>{totals.freightAmount.toFixed(2)}</th>
               <th />
@@ -329,6 +343,25 @@ function VendorItems({ supplierId, selected, onChange, scope }) {
   });
   const toggle = (id) => setChecked((current) => current.includes(id) ? current.filter((value) => value !== id) : [...current, id]);
   const applySelection = () => { onChange(available.filter((row) => checked.includes(row._id))); setOpen(false); };
+  const updateSelectedRow = (index, key, value) => {
+    onChange(selected.map((row, rowIndex) => rowIndex === index
+      ? { ...row, [key]: value, ...(key === 'finalNet' ? { purRate: value } : {}) }
+      : row));
+  };
+  const amountFor = (row) => {
+    const qty = Number(row.qty) || 0;
+    const rate = Number(row.finalNet || row.purRate) || 0;
+    const gst = Number(row.gst) || 0;
+    const beforeGst = rate * qty;
+    const gstAmount = beforeGst * gst / 100;
+    return { beforeGst, igst: 0, cgst: gstAmount / 2, sgst: gstAmount / 2, net: beforeGst + gstAmount };
+  };
+  const selectedTotals = selected.reduce((totals, row) => {
+    const amounts = amountFor(row);
+    totals.qty += Number(row.qty) || 0;
+    Object.keys(amounts).forEach((key) => { totals[key] += amounts[key]; });
+    return totals;
+  }, { qty: 0, beforeGst: 0, igst: 0, cgst: 0, sgst: 0, net: 0 });
   const firstMatchId = matches[0]?._id;
 
   return (
@@ -336,7 +369,14 @@ function VendorItems({ supplierId, selected, onChange, scope }) {
       <div className="card-head flex items-center justify-between gap-3"><span className="card-title">Vendor Items</span>{supplierId && <button type="button" className="btn btn-primary" onClick={() => setOpen(true)}>Select Items</button>}</div>
       <div className="card-body">
         {!supplierId && <div className="text-sm text-gray-500">Select a vendor to view its items.</div>}
-        {supplierId && selected.length > 0 && <div className="overflow-x-auto"><table className="dt min-w-[900px]"><thead><tr><th>Barcode</th><th>Item Name</th><th>HSN</th><th>Price</th><th>Qty</th><th>GST</th></tr></thead><tbody>{selected.map((row) => <tr key={row._id}><td>{row.barcodeGenerated || '-'}</td><td>{row.supplierDescription || row.itemName || '-'}</td><td>{row.hsn || '-'}</td><td>{row.finalNet || row.purRate || row.offerPrice || '-'}</td><td>{row.qty || 1}</td><td>{row.gst || 0}%</td></tr>)}</tbody></table></div>}
+        {supplierId && selected.length > 0 && <div className="overflow-x-auto"><table className="dt min-w-[1500px]"><thead><tr><th>Sl No</th><th>Item Code</th><th>Item Name</th><th>HSN</th><th>GST Slab</th><th>UOM</th><th>Maximum Quantity</th><th>Final Rate</th><th>Return Quantity</th><th>Before GST</th><th>IGST Amount</th><th>CGST Amount</th><th>SGST Amount</th><th>Net Amount</th></tr></thead><tbody>
+          {selected.map((row, index) => {
+            const amounts = amountFor(row);
+            const input = (key, type = 'text', fallback = '') => <input className="f-input h-8 min-w-[80px]" type={type} value={row[key] ?? fallback} onChange={(event) => updateSelectedRow(index, key, event.target.value)} />;
+            return <tr key={row._id}><td>{index + 1}</td><td>{input('itemCode')}</td><td>{input('supplierDescription', 'text', row.itemName)}</td><td>{input('hsn')}</td><td>{input('gst', 'number')}</td><td>{input('uom')}</td><td>{input('maximumQuantity', 'number', row.qty || 1)}</td><td>{input('finalNet', 'number')}</td><td>{input('qty', 'number')}</td><td>{amounts.beforeGst.toFixed(2)}</td><td>{amounts.igst.toFixed(2)}</td><td>{amounts.cgst.toFixed(2)}</td><td>{amounts.sgst.toFixed(2)}</td><td>{amounts.net.toFixed(2)}</td></tr>;
+          })}
+          <tr className="font-semibold"><td colSpan={8}>Total</td><td>{selectedTotals.qty.toFixed(2)}</td><td>{selectedTotals.beforeGst.toFixed(2)}</td><td>{selectedTotals.igst.toFixed(2)}</td><td>{selectedTotals.cgst.toFixed(2)}</td><td>{selectedTotals.sgst.toFixed(2)}</td><td>{selectedTotals.net.toFixed(2)}</td></tr>
+        </tbody></table></div>}
         {supplierId && selected.length === 0 && !loading && <div className="text-sm text-gray-500">No items selected yet.</div>}
       </div>
       {open && supplierId && <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"><div className="flex max-h-[85vh] w-full max-w-6xl flex-col rounded-lg bg-white shadow-xl"><div className="flex items-center gap-3 border-b border-line px-5 py-3"><span className="card-title">Select Vendor Items</span><span className="flex-1" /><button type="button" className="btn" onClick={() => setOpen(false)}>Close</button></div><div className="flex flex-wrap gap-2 border-b border-line p-4"><input className="f-input min-w-[280px] flex-1" placeholder="Search by barcode, item name, or price" value={term} onChange={(event) => setTerm(event.target.value)} /><button type="button" className="btn" onClick={() => setTerm((value) => value.trim())}>Search</button><button type="button" className="btn" onClick={() => setChecked(matches.map((row) => row._id))}>Select All</button><button type="button" className="btn" onClick={() => setChecked([])}>Unselect All</button></div><div className="flex-1 overflow-auto p-4">{loading && <div className="py-8 text-center text-sm text-gray-500">Loading vendor items...</div>}{!loading && matches.length === 0 && <div className="py-8 text-center text-sm text-gray-500">No matching items.</div>}{!loading && matches.length > 0 && <table className="dt min-w-[1050px]"><thead><tr><th>Select</th><th>Barcode</th><th>Item Code</th><th>Item Name</th><th>HSN</th><th>Pur Rate</th><th>Final NET</th><th>Retail Price</th><th>Qty</th><th>GST</th></tr></thead><tbody>{matches.map((row) => <tr key={row._id} className={(checked.includes(row._id) ? 'bg-indigo-50 ' : '') + (term && row._id === firstMatchId ? 'bg-yellow-100' : '')}><td><input type="checkbox" checked={checked.includes(row._id)} onChange={() => toggle(row._id)} /></td><td>{row.barcodeGenerated || '-'}</td><td>{row.itemCode || '-'}</td><td>{row.supplierDescription || row.itemName || row.printDescription || '-'}</td><td>{row.hsn || '-'}</td><td>{row.purRate || '-'}</td><td>{row.finalNet || '-'}</td><td>{row.retailPrice || row.offerPrice || '-'}</td><td>{row.qty || 1}</td><td>{row.gst || 0}%</td></tr>)}</tbody></table>}</div><div className="flex justify-end gap-2 border-t border-line p-4"><button type="button" className="btn" onClick={() => setOpen(false)}>Cancel</button><button type="button" className="btn btn-primary" onClick={applySelection}>Submit Selected ({checked.length})</button></div></div></div>}
@@ -583,7 +623,32 @@ export default function TransactionFormView({ cfg, id, slug }) {
                       setSource(next);
                       if (card.sourceKey) set(card.sourceKey, next);
                     }}
-                    onSelect={(row) => {
+                    onSelect={(selection) => {
+                      const selectedRows = Array.isArray(selection) ? selection : [selection];
+                      const sourceItems = selectedRows.flatMap((sourceRow) => (Array.isArray(sourceRow?.items) ? sourceRow.items : []).map((item) => {
+                        const qty = Number(item.qty) || 0;
+                        const rate = Number(item.finalNet || item.purRate) || 0;
+                        const beforeTax = qty * rate;
+                        const gstAmount = beforeTax * (Number(item.gst) || 0) / 100;
+                        return {
+                          ...item,
+                          'GRT Code': sourceRow.grtNo || '',
+                          'Item Code': item.itemCode || '',
+                          'Item Name': item.supplierDescription || item.itemName || item.printDescription || '',
+                          'HSN': item.hsn || '',
+                          'GST Slab': item.gst || 0,
+                          'UOM': item.uom || '',
+                          'Return Quantity': qty,
+                          'Final Rate': rate,
+                          'Before Tax': beforeTax,
+                          'IGST Amount': 0,
+                          'CGST Amount': gstAmount / 2,
+                          'SGST Amount': gstAmount / 2,
+                          'Net Amount': beforeTax + gstAmount,
+                        };
+                      }));
+                      if (sourceItems.length) setItems(sourceItems);
+                      const row = Array.isArray(selection) ? selection[0] : selection;
                       if (!row || !card.populate) return;
                       setData((current) => Object.entries(card.populate).reduce(
                         (next, [target, sourceKey]) => ({ ...next, [target]: row[sourceKey] ?? '' }),

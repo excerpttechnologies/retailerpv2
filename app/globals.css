@@ -17,6 +17,16 @@ input[type='number'],
 @tailwind components;
 @tailwind utilities;
 
+body,
+input[type='text'],
+input[type='email'],
+input[type='search'],
+input[type='tel'],
+textarea,
+select {
+  text-transform: uppercase;
+}
+
 /* ==========================================================================
    Reusable primitives for the Orbit ERP look. Every page composes these so
    the markup stays short and the styling stays consistent.

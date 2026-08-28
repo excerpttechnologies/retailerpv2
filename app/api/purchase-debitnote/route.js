@@ -90,7 +90,23 @@ export async function POST(req) {
   if (body.location && isValidObjectId(body.location)) doc.locationId = body.location;
   if (body.finYear) doc.finYear = body.finYear;
 
-  if (Array.isArray(body.data?.items)) doc.items = body.data.items;
+  const sourceIds = Array.isArray(body.data?.sourceIds)
+    ? body.data.sourceIds.filter(Boolean)
+    : (body.data?.sourceIds ? [body.data.sourceIds] : []);
+  const sourceRows = sourceIds.length
+    ? await Upstream.find({ _id: { $in: sourceIds } }).select('grtNo supplierId vendorGstNo').lean()
+    : [];
+
+  if (Array.isArray(body.data?.items)) {
+    doc.items = body.data.items;
+    doc.qty = body.data.items.reduce((sum, item) => sum + (Number(item['Return Quantity'] ?? item.qty) || 0), 0);
+    doc.value = body.data.items.reduce((sum, item) => sum + (Number(item['Before Tax']) || ((Number(item['Final Rate'] ?? item.finalNet ?? item.purRate) || 0) * (Number(item['Return Quantity'] ?? item.qty) || 0))), 0);
+  }
+  if (sourceRows.length) {
+    doc.grtNo = sourceRows.map((row) => row.grtNo).filter(Boolean).join(', ');
+    doc.supplierId = sourceRows[0].supplierId || doc.supplierId;
+    doc.vendorGstNo = sourceRows[0].vendorGstNo || doc.vendorGstNo;
+  }
 
   /* document number from the Doc Setup master */
   if (!doc.debitNoteNo) {
@@ -102,10 +118,6 @@ export async function POST(req) {
   const created = await DebitNote.create(doc);
 
   /* stamp the upstream document so it stops appearing as unconverted */
-  const sourceIds = Array.isArray(body.data?.sourceIds)
-    ? body.data.sourceIds
-    : (body.data?.sourceIds ? [body.data.sourceIds] : []);
-
   if (sourceIds.length) {
     await Upstream.updateMany(
       { _id: { $in: sourceIds.filter(Boolean) } },

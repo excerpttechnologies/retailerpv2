@@ -6,6 +6,7 @@ import ModalForm from "./ModalForm";
 import { useScope } from "./ScopeContext";
 import { useOptions } from "./useOptions";
 import { FIELDS as ITEM_FIELDS } from "@/app/admin/inventory/item/fields";
+import { FIELDS as HSN_FIELDS } from "@/app/admin/setting/hsn/fields";
 import { computeSampleBarcode } from "@/lib/barcodeFormat";
 
 /**
@@ -50,6 +51,7 @@ const ITEM_MASTER = {
   "SK-11": {
     description: "SILK ZARI BORDER FABRIC",
     uom: "Mtr",
+    uniqueBarcode: "Yes",
     hsn: "5007",
     gst: 12,
     disc: 8,
@@ -68,6 +70,7 @@ const ITEM_MASTER = {
   "SK-13": {
     description: "KANJIVARAM SILK FABRIC",
     uom: "Mtr",
+    uniqueBarcode: "Yes",
     hsn: "5007",
     gst: 12,
     disc: 6,
@@ -109,9 +112,11 @@ const COLUMNS = [
 const ROW_INCREMENT = 40;
 const EXTEND_THRESHOLD_PX = 300;
 
-function modeFromUom(uom) {
+function modeFromUom(uom, uniqueBarcode = "No") {
   const normalized = String(uom || '').trim().toLowerCase();
-  if (/\b(mtr|meter|metre|meters|metres)\b/.test(normalized)) return 'batch';
+  if (/\b(mtr|meter|metre|meters|metres)\b/.test(normalized)) {
+    return 'batch';
+  }
   if (/\b(pc|pcs|piece|pieces)\b/.test(normalized)) return 'unique';
   return 'unique';
 }
@@ -135,6 +140,7 @@ const emptyRow = (id) => ({
   itemName: "",
   itemCode: "",
   mode: "unique", // 'unique' | 'batch'
+  uniqueBarcode: "No",
   billSlNo: "",
   seqDummy: "",
   supplierDescription: "",
@@ -142,7 +148,6 @@ const emptyRow = (id) => ({
   uom: "",
   hsn: "",
   purRate: "",
-  enteredTotal: "", // raw total typed on a group leader's Pur Rate box (display only)
   disc1: "",
   finalNet: 0,
   gst: "",
@@ -156,6 +161,9 @@ const emptyRow = (id) => ({
   silkMark: false,
   barcodeNo: null,
 });
+
+const isMeterRow = (row) => /\b(mtr|meter|metre|meters|metres)\b/i.test(row.uom || '');
+const usesMeterCuts = (row) => isMeterRow(row) && String(row.uniqueBarcode).toLowerCase() === 'yes';
 
 // PLACEHOLDER pricing logic — replace with real backend rules later.
 function computeCalculated(row) {
@@ -191,13 +199,41 @@ export default function GCRBarcodeGeneration({
   const [saving, setSaving] = useState(false);
   const [itemModalRowId, setItemModalRowId] = useState(null);
   const [qtyEditingRowId, setQtyEditingRowId] = useState(null);
-  const [purRateEditingRowId, setPurRateEditingRowId] = useState(null);
   const [savedRows, setSavedRows] = useState([]);
   const [savedSupplier, setSavedSupplier] = useState("");
   const [barcodeSetting, setBarcodeSetting] = useState(null);
+  const [itemSearch, setItemSearch] = useState({ rowId: null, query: '', options: [], labels: {}, loading: false });
   const { options: supplierOptions } = useOptions("supplier");
   const extendingRef = useRef(false);
   const barcodeSequenceRef = useRef(null);
+
+  useEffect(() => {
+    const query = itemSearch.query.trim();
+    if (query.length < 3 || itemSearch.rowId === null) {
+      setItemSearch((current) => ({ ...current, options: [], labels: {}, loading: false }));
+      return undefined;
+    }
+    let cancelled = false;
+    setItemSearch((current) => ({ ...current, loading: true }));
+    const params = new URLSearchParams({
+      search: query,
+      perPage: "20",
+      page: "1",
+      business: scope.business || "",
+    });
+    fetch("/api/item?" + params, { cache: "no-store" })
+      .then((response) => response.json())
+      .then((result) => {
+        if (!cancelled) setItemSearch((current) => ({ ...current, options: result.rows || [], labels: result.labels || {} }));
+      })
+      .catch(() => {
+        if (!cancelled) setItemSearch((current) => ({ ...current, options: [], labels: {} }));
+      })
+      .finally(() => {
+        if (!cancelled) setItemSearch((current) => ({ ...current, loading: false }));
+      });
+    return () => { cancelled = true; };
+  }, [itemSearch.query, itemSearch.rowId, scope.business]);
 
   useEffect(() => {
     const query = new URLSearchParams({
@@ -300,10 +336,15 @@ export default function GCRBarcodeGeneration({
       ) || result.rows?.[0];
     if (!hit) return null;
     const labels = result.labels || {};
+    return itemValuesFromMaster(hit, labels, code);
+  }
+
+  function itemValuesFromMaster(hit, labels = {}, fallbackCode = "") {
     const uomLabel = labels[String(hit.uomId)] || "";
     return {
-      itemCode: hit.itemCode || code,
+      itemCode: hit.itemCode || fallbackCode,
       itemName: hit.name || "",
+      uniqueBarcode: hit.uniqueBarcode || "No",
       supplierDescription: hit.name || "",
       uom: uomLabel,
       hsn: labels[String(hit.hsnId)] || "",
@@ -311,7 +352,7 @@ export default function GCRBarcodeGeneration({
       printDescription: hit.description || hit.name || "",
       retailPrice: hit.rsp != null ? String(hit.rsp) : "",
       disc1: "",
-      mode: modeFromUom(uomLabel),
+      mode: modeFromUom(uomLabel, hit.uniqueBarcode),
     };
   }
 
@@ -323,6 +364,14 @@ export default function GCRBarcodeGeneration({
         row.id === rowId ? computeCalculated({ ...row, ...item }) : row,
       ),
     );
+  }
+
+  function selectItem(rowId, item) {
+    const values = itemValuesFromMaster(item, itemSearch.labels, item.itemCode || item.name);
+    setRows((prev) => prev.map((row) => (
+      row.id === rowId ? computeCalculated({ ...row, ...values }) : row
+    )));
+    setItemSearch({ rowId: null, query: '', options: [], labels: {}, loading: false });
   }
 
   async function loadSavedRows(supplier = savedSupplier) {
@@ -367,7 +416,7 @@ export default function GCRBarcodeGeneration({
       return cleaned.map((r) => {
         if (r.id !== rowId) return r;
         const master = ITEM_MASTER[value.trim().toUpperCase()];
-         let updated = { ...r, itemCode: value, itemName: '', qty: '', groupId: null, groupSize: 1, enteredTotal: '' }; // ✅ reset itemName
+         let updated = { ...r, itemCode: value, itemName: '', qty: '', groupId: null, groupSize: 1 }; // ✅ reset itemName
         
         if (master) {
           updated = {
@@ -380,7 +429,8 @@ export default function GCRBarcodeGeneration({
             printDescription: master.printDescription,
             retailPrice: String(master.retailPrice),
             disc1: String(master.disc),
-            mode: modeFromUom(master.uom),
+            uniqueBarcode: master.uniqueBarcode || "No",
+            mode: modeFromUom(master.uom, master.uniqueBarcode),
           };
         }
         return computeCalculated(updated);
@@ -415,20 +465,22 @@ export default function GCRBarcodeGeneration({
       const row = cleaned[idx];
       const qty = Math.max(0, parseInt(rawValue, 10) || 0);
 
-      if (row.mode === "unique" && qty > 0) {
+      if ((row.mode === "unique" || usesMeterCuts(row)) && qty > 0) {
         const leader = computeCalculated({
           ...row,
           qty: 1,
           groupSize: qty,
           groupId: null,
           billSlNo: "1",
+          seqDummy: "1",
         });
         const duplicates = Array.from({ length: Math.max(0, qty - 1) }, (_, duplicateIndex) =>
           computeCalculated({
             ...leader,
             id: makeId(),
             groupId: leader.id,
-            billSlNo: String(duplicateIndex + 2),
+            billSlNo: "1",
+            seqDummy: String(duplicateIndex + 2),
             barcodeNo: null,
           }),
         );
@@ -459,20 +511,15 @@ export default function GCRBarcodeGeneration({
 
       let next = [...prev];
 
-      if (row.mode === "unique" && hasDuplicates) {
+      if ((row.mode === "unique" || usesMeterCuts(row)) && hasDuplicates) {
         const groupIdx = next.reduce((acc, r, i) => {
           if (r.id === row.id || r.groupId === row.id) acc.push(i);
           return acc;
         }, []);
-        const groupSize = groupIdx.length;
-
         groupIdx.forEach((i) => {
           let updated = { ...next[i] };
           if (field === "purRate") {
-            const total = parseFloat(rawValue) || 0;
-            const perUnit = groupSize > 0 ? total / groupSize : 0;
-            updated.purRate = total === 0 ? "" : String(round2(perUnit));
-            if (next[i].id === row.id) updated.enteredTotal = rawValue; // keep raw text on leader only
+            updated.purRate = rawValue;
           } else if (field !== "billSlNo") {
             updated[field] = rawValue;
           }
@@ -670,21 +717,50 @@ export default function GCRBarcodeGeneration({
 
                     {/* Item Code */}
                     <td className="border border-gray-200 p-0">
-                      <div className="flex h-full items-stretch">
+                      <div className="relative flex h-full items-stretch">
                         <input
                           type="text"
                           value={row.itemName || row.itemCode}
                           disabled={isDuplicate}
                           placeholder="SK-10"
                           onChange={(e) =>
-                            updateItemCode(row.id, e.target.value)
+                            (updateItemCode(row.id, e.target.value), setItemSearch({
+                              rowId: row.id,
+                              query: e.target.value,
+                              options: [],
+                              labels: {},
+                              loading: false,
+                            }))
                           }
+                          onFocus={() => {
+                            if (row.itemCode) setItemSearch((current) => ({ ...current, rowId: row.id, query: row.itemCode }));
+                          }}
                           onKeyDown={(e) => {
                             if (e.key === "Enter")
                               handleItemCodeEnter(row.id, row.itemCode);
                           }}
                           className="min-w-0 flex-1 px-1.5 py-1 bg-transparent outline-none focus:ring-2 focus:ring-inset focus:ring-indigo-400 disabled:bg-gray-100 disabled:text-gray-400 font-medium"
                         />
+                        {itemSearch.rowId === row.id && itemSearch.query.trim().length >= 3 && (
+                          <div className="absolute left-0 right-8 top-full z-40 max-h-56 overflow-auto border border-gray-300 bg-white shadow-lg">
+                            {itemSearch.loading && <div className="px-2 py-2 text-xs text-gray-500">Searching items...</div>}
+                            {!itemSearch.loading && itemSearch.options.length === 0 && (
+                              <div className="px-2 py-2 text-xs text-gray-500">No matching items</div>
+                            )}
+                            {!itemSearch.loading && itemSearch.options.map((item) => (
+                              <button
+                                key={item._id}
+                                type="button"
+                                className="block w-full border-b border-gray-100 px-2 py-2 text-left text-xs hover:bg-indigo-50"
+                                onMouseDown={(e) => e.preventDefault()}
+                                onClick={() => selectItem(row.id, item)}
+                              >
+                                <span className="font-semibold">{item.itemCode || "-"}</span>
+                                <span className="ml-2 text-gray-600">{item.name || item.description || "Unnamed item"}</span>
+                              </button>
+                            ))}
+                          </div>
+                        )}
                         {!isDuplicate && (
                           <button
                             type="button"
@@ -756,6 +832,8 @@ export default function GCRBarcodeGeneration({
                       <input
                         type="number"
                         min={0}
+                        placeholder={usesMeterCuts(row) ? "No. Of Cuts" : "QTY"}
+                        title={usesMeterCuts(row) ? "No. Of Cuts" : "QTY"}
                         value={isLeaderOfGroup && qtyEditingRowId === row.id ? row.groupSize : row.qty}
                         disabled={isDuplicate}
                         onChange={(e) => updateQty(row.id, e.target.value)}
@@ -799,14 +877,7 @@ export default function GCRBarcodeGeneration({
                     <td className="border border-gray-200 p-0">
                       <input
                         type="number"
-                        value={isLeaderOfGroup && purRateEditingRowId === row.id ? row.enteredTotal : row.purRate}
-                        title={
-                          isLeaderOfGroup
-                            ? "Enter the TOTAL pur rate for this group — it is split evenly across all duplicate rows"
-                            : undefined
-                        }
-                        onFocus={() => setPurRateEditingRowId(row.id)}
-                        onBlur={() => setPurRateEditingRowId(null)}
+                        value={row.purRate}
                         onKeyDown={(e) => {
                           if (e.key === "Enter") {
                             e.preventDefault();
@@ -1203,7 +1274,16 @@ export default function GCRBarcodeGeneration({
             basePath: "/admin/inventory/",
             slugPath: "item",
             endpoint: "/api/item",
-            fields: ITEM_FIELDS,
+            fields: ITEM_FIELDS.filter((field) => field.k !== "rsp"),
+            quickAdds: {
+              hsnId: {
+                label: "Add HSN",
+                title: "Add HSN Code",
+                slug: "hsn",
+                endpoint: "/api/hsn",
+                fields: HSN_FIELDS,
+              },
+            },
             modalWide: true,
           }}
           slug="item"

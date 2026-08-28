@@ -3,8 +3,9 @@ import { useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import Icon from './Icon';
 import Field from './Field';
+import ModalForm from './ModalForm';
 import { useScope } from './ScopeContext';
-import { useOptions } from './useOptions';
+import { refreshOptions, useOptions } from './useOptions';
 
 /* ==========================================================================
    Generic add / edit form.
@@ -105,10 +106,12 @@ export default function FormView({ cfg, id, slug }) {
   const [errors, setErrors] = useState({});
   const [flash, setFlash] = useState(null);
   const [saving, setSaving] = useState(false);
+  const [quickAddField, setQuickAddField] = useState(null);
   const { options: uomOptions } = useOptions('uom');
   const uniqueBarcodeTouched = useRef(false);
   const uomDefaultApplied = useRef(false);
   const isEdit = Boolean(id);
+  const quickAdd = quickAddField ? cfg.quickAdds?.[quickAddField] : null;
 
   const slugPath = cfg.slugPath || slug;
   const listUrl = (cfg.basePath || '/admin/setting/') + slugPath;
@@ -185,7 +188,20 @@ export default function FormView({ cfg, id, slug }) {
   }
 
   return (
-    <div className="card">
+    <>
+      {quickAdd && (
+        <ModalForm
+          cfg={quickAdd}
+          slug={quickAdd.slug || quickAddField}
+          onClose={() => setQuickAddField(null)}
+          onSaved={(result) => {
+            setQuickAddField(null);
+            set(quickAddField, result.id);
+            refreshOptions(quickAdd.ref || quickAdd.slug || quickAddField);
+          }}
+        />
+      )}
+      <div className="card">
       <div className="card-head">
         <span className="card-title">
           {cfg.addTitle || (isEdit ? 'Edit ' : 'Add ') + cfg.title}
@@ -202,9 +218,27 @@ export default function FormView({ cfg, id, slug }) {
         )}
 
         <div className="form-grid">
-          {(cfg.fields || []).map((f) => (
-            <Field key={f.k} f={f} value={data[f.k]} error={errors[f.k]} onChange={set} />
-          ))}
+          {(cfg.fields || []).map((f) => {
+            const add = cfg.quickAdds?.[f.k];
+            return (
+              <div key={f.k} className={add ? 'flex items-end gap-1.5' : ''}>
+                <div className={add ? 'min-w-0 flex-1' : ''}>
+                  <Field f={f} value={data[f.k]} error={errors[f.k]} onChange={set} />
+                </div>
+                {add && (
+                  <button
+                    type="button"
+                    title={add.label || 'Add'}
+                    aria-label={add.label || 'Add'}
+                    className="mb-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-brand text-white hover:opacity-90"
+                    onClick={() => setQuickAddField(f.k)}
+                  >
+                    <Icon name="plus" size={15} />
+                  </button>
+                )}
+              </div>
+            );
+          })}
         </div>
 
         {cfg.rowsTable && (
@@ -228,6 +262,7 @@ export default function FormView({ cfg, id, slug }) {
           {saving ? <span className="spin" /> : <Icon name="save" size={14} />} Submit
         </button>
       </div>
-    </div>
+      </div>
+    </>
   );
 }

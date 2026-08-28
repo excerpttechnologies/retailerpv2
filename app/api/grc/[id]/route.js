@@ -43,6 +43,7 @@
 
 import dbConnect from '@/lib/db';
 import Grc from '@/models/Grc';
+import Contact from '@/models/Contact';
 import { BarcodeLabel } from '@/lib/barcodeLabel';
 import { requireSession } from '@/lib/session';
 import { validate } from '@/lib/validate';
@@ -61,10 +62,17 @@ export async function GET(_req, { params }) {
   const grc = await Grc.findById(id).lean();
   if (!grc) return json({ error: 'GRC not found' }, 404);
 
-  const rows = await BarcodeLabel.find({ grcId: id }).sort({ createdAt: 1 }).lean();
+  const [rows, supplier] = await Promise.all([
+    BarcodeLabel.find({ grcId: id }).sort({ createdAt: 1 }).lean(),
+    grc.supplierId ? Contact.findById(grc.supplierId).select('businessName firstName lastName').lean() : null,
+  ]);
 
   return json({
-    grc: { ...grc, _id: String(grc._id) },
+    grc: {
+      ...grc,
+      _id: String(grc._id),
+      supplierName: supplier?.businessName || [supplier?.firstName, supplier?.lastName].filter(Boolean).join(' '),
+    },
     rows: rows.map((r) => ({ ...r, _id: String(r._id) })),
   });
 }

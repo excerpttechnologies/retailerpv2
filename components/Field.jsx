@@ -198,20 +198,29 @@ function Label({ f }) {
   );
 }
 
-function RefField({ f, value, onChange, multi, onOptionChange }) {
+function RefField({ f, value, onChange, multi, onOptionChange, selectedOption }) {
   const [query, setQuery] = useState('');
+  const [lastSelectedOption, setLastSelectedOption] = useState(null);
   const meetsMinimum = !f.minSearch || query.trim().length >= f.minSearch;
   const { options, loading } = useOptions(f.ref, query, meetsMinimum);
+  const currentSelectedOption = selectedOption || lastSelectedOption;
+  const displayedOptions = currentSelectedOption && !options.some((option) => option.value === currentSelectedOption.value)
+    ? [currentSelectedOption, ...options]
+    : options;
   return (
     <MultiSelect
       mode={multi ? 'multi' : 'single'}
-      options={options}
+      options={displayedOptions}
       loading={loading}
       value={multi ? (value || []) : (value || '')}
       placeholder={f.placeholder || 'Select...'}
       onChange={(next) => {
         onChange(next);
-        if (!multi) onOptionChange?.(options.find((option) => option.value === next));
+        if (!multi) {
+          const option = displayedOptions.find((item) => item.value === next);
+          setLastSelectedOption(option || null);
+          onOptionChange?.(option);
+        }
       }}
       onSearch={setQuery}
     />
@@ -451,7 +460,7 @@ function PincodeField({ f, value, onChange, patch }) {
   );
 }
 
-export default function Field({ f, value, error, onChange, onOptionChange }) {
+export default function Field({ f, value, error, onChange, onOptionChange, selectedOption }) {
   /* Written as literal class strings: Tailwind scans source text, so a class
      assembled at runtime (`md:col-span-${n}`) would never be generated. */
   const SPAN = { 2: 'md:col-span-2', 3: 'md:col-span-2 xl:col-span-3', all: 'col-span-full' };
@@ -504,7 +513,7 @@ export default function Field({ f, value, error, onChange, onOptionChange }) {
       break;
 
     case 'ref':
-      control = <RefField f={f} value={value} onChange={set} onOptionChange={onOptionChange} />;
+      control = <RefField f={f} value={value} onChange={set} onOptionChange={onOptionChange} selectedOption={selectedOption} />;
       break;
 
     case 'multiref':

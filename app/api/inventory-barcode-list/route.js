@@ -1,6 +1,7 @@
 import { isValidObjectId } from 'mongoose';
 import dbConnect from '@/lib/db';
 import Grc from '@/models/Grc';
+import Grt from '@/models/Grt';
 import { BarcodeLabel } from '@/lib/barcodeLabel';
 import { requireSession } from '@/lib/session';
 import { escapeRegex } from '@/lib/validate';
@@ -29,6 +30,16 @@ export async function GET(req) {
   const filter = {};
   if (business && isValidObjectId(business)) filter.businessId = business;
   if (location && isValidObjectId(location)) filter.locationId = location;
+
+  const returnedFilter = {};
+  if (business && isValidObjectId(business)) returnedFilter.businessId = business;
+  if (location && isValidObjectId(location)) returnedFilter.locationId = location;
+  const returnedGrts = await Grt.find(returnedFilter).select('items').lean();
+  const returnedItems = returnedGrts.flatMap((grt) => Array.isArray(grt.items) ? grt.items : []);
+  const returnedIds = returnedItems.map((item) => String(item._id || '')).filter(Boolean);
+  const returnedBarcodes = returnedItems.map((item) => item.barcodeGenerated || item.barcodeNo).filter(Boolean);
+  if (returnedIds.length) filter._id = { $nin: returnedIds };
+  if (returnedBarcodes.length) filter.barcodeGenerated = { $nin: returnedBarcodes };
 
   /* groupId / subGroupId both point at the same product-group collection on
      the filter panel, but BarcodeLabel only carries one groupId field today.

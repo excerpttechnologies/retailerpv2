@@ -115,6 +115,7 @@ export const FORM = {
           { "k": "hsnCode", "label": "Enter HSN Code", "type": "text" },
           { "k": "invoiceQty", "label": "Enter Invoice Qty", "type": "number" },
           { "k": "taxableValue", "label": "Enter Taxable", "type": "number" },
+          { "k": "taxAmount", "label": "Tax Amount", "type": "number" },
           { "k": "totalAmount", "label": "Enter Total Amount", "type": "number" },
           { "k": "freightAmount", "label": "Freight", "type": "number", "req": true }
         ]

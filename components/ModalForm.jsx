@@ -3,6 +3,7 @@ import { useState } from 'react';
 import Icon from './Icon';
 import Field from './Field';
 import { useScope } from './ScopeContext';
+import { refreshOptions } from './useOptions';
 
 /* ADD-as-dialog, over the dimmed list, with the red circular close button.
    Used by Contact Types, the five Inventory masters and Logistic. */
@@ -18,6 +19,8 @@ export default function ModalForm({ cfg, slug, onClose, onSaved }) {
   });
   const [errors, setErrors] = useState({});
   const [saving, setSaving] = useState(false);
+  const [quickAddField, setQuickAddField] = useState(null);
+  const quickAdd = quickAddField ? cfg.quickAdds?.[quickAddField] : null;
 
   const set = (k, v) => { setData((d) => ({ ...d, [k]: v })); setErrors((e) => ({ ...e, [k]: undefined })); };
 
@@ -40,7 +43,20 @@ export default function ModalForm({ cfg, slug, onClose, onSaved }) {
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-start justify-center bg-black/45 p-4 pt-16" onMouseDown={onClose}>
+    <>
+    {quickAdd && (
+      <ModalForm
+        cfg={{ ...quickAdd, modalNested: true }}
+        slug={quickAdd.slug || quickAddField}
+        onClose={() => setQuickAddField(null)}
+        onSaved={(result) => {
+          setQuickAddField(null);
+          set(quickAddField, result.id);
+          refreshOptions(quickAdd.ref || quickAdd.slug || quickAddField);
+        }}
+      />
+    )}
+    <div className={'fixed inset-0 ' + (cfg.modalNested ? 'z-[60]' : 'z-50') + ' flex items-start justify-center bg-black/45 p-4 pt-16'} onMouseDown={onClose}>
       <div
         className={'w-full rounded-lg bg-white shadow-pop ' + (cfg.modalWide ? 'max-w-[960px]' : 'max-w-[420px]')}
         onMouseDown={(e) => e.stopPropagation()}
@@ -58,11 +74,27 @@ export default function ModalForm({ cfg, slug, onClose, onSaved }) {
 
         <div className="px-4 py-4">
           <div className={'grid gap-x-4 gap-y-3 ' + (cfg.modalWide ? 'grid-cols-1 md:grid-cols-3' : 'grid-cols-2')}>
-            {(cfg.fields || []).filter((f) => !cfg.isFieldVisible || cfg.isFieldVisible(f, data)).map((f) => (
-              <div key={f.k} className={f.span === 'all' && !cfg.modalWide ? 'col-span-2' : ''}>
-                <Field f={f} value={data[f.k]} error={errors[f.k]} onChange={set} />
-              </div>
-            ))}
+            {(cfg.fields || []).filter((f) => !cfg.isFieldVisible || cfg.isFieldVisible(f, data)).map((f) => {
+              const add = cfg.quickAdds?.[f.k];
+              return (
+                <div key={f.k} className={(f.span === 'all' && !cfg.modalWide ? 'col-span-2 ' : '') + (add ? 'flex items-end gap-1.5' : '')}>
+                  <div className={add ? 'min-w-0 flex-1' : ''}>
+                    <Field f={f} value={data[f.k]} error={errors[f.k]} onChange={set} />
+                  </div>
+                  {add && (
+                    <button
+                      type="button"
+                      title={add.label || 'Add'}
+                      aria-label={add.label || 'Add'}
+                      className="mb-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-brand text-white hover:opacity-90"
+                      onClick={() => setQuickAddField(f.k)}
+                    >
+                      <Icon name="plus" size={15} />
+                    </button>
+                  )}
+                </div>
+              );
+            })}
           </div>
 
           <button type="button" className="btn btn-primary btn-submit" onClick={submit} disabled={saving}>
@@ -71,5 +103,6 @@ export default function ModalForm({ cfg, slug, onClose, onSaved }) {
         </div>
       </div>
     </div>
+    </>
   );
 }

@@ -355,11 +355,11 @@ export const NAV = [
         icon: LuUndo2,
         href: '/admin/transaction/purchase/grt',
       },
-      {
-        label: 'Debit Note',
-        icon: LuFileMinus,
-        href: '/admin/transaction/purchase/debitnote',
-      },
+      // {
+      //   label: 'Debit Note',
+      //   icon: LuFileMinus,
+      //   href: '/admin/transaction/purchase/debitnote',
+      // },
      
     ],
   },
