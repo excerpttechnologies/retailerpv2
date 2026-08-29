@@ -1,5 +1,6 @@
 'use client';
 import ListView from '@/components/ListView';
+import { TABS } from './tabs';
 
 /* Agents - list. Columns declared here, not fetched from a registry. */
 

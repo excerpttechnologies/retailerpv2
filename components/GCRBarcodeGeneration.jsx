@@ -1,1306 +1,1348 @@
-"use client";
+﻿"use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import ModalForm from "./ModalForm";
 import { useScope } from "./ScopeContext";
 import { useOptions } from "./useOptions";
-import { FIELDS as ITEM_FIELDS } from "@/app/admin/inventory/item/fields";
-import { FIELDS as HSN_FIELDS } from "@/app/admin/setting/hsn/fields";
 import { computeSampleBarcode } from "@/lib/barcodeFormat";
 
-/**
- * GCRBarcodeGeneration.jsx
- * -----------------------------------------------------------------------
- * Static, front-end-only Excel-style data entry grid for GRC barcode
- * generation. No backend calls yet — all data (item master, calculations,
- * barcode numbers) is mocked/computed on the client so the page can be
- * wired to real APIs later.
- *
- * KEY ASSUMPTIONS (flagged here so they're easy to find & change later):
- * 1. WSP / DP / FMA formulas below are PLACEHOLDERS (simple markups on
- *    Final NET). Swap `computeCalculated()` with real business rules
- *    once available.
- * 2. UOM -> mode default: "Mtr" => BATCH, everything else => UNIQUE.
- *    User can still override the Batch/Unique dropdown per row.
- * 3. In UNIQUE mode, editing a field on the LEADER row (the first row of
- *    a duplicated group) copies that value to every duplicate row in the
- *    group. PUR RATE is the exception — it is treated as the TOTAL for
- *    the whole quantity and split evenly across the group. Editing a
- *    field directly on a duplicate row only changes that row.
- * 4. In BATCH mode, QTY is never duplicated — one row = one barcode for
- *    the whole quantity.
- * 5. Row auto-extension (+40 rows) fires when the grid is scrolled near
- *    the bottom, and is also available via a manual "+ 40 Rows" button.
- * -----------------------------------------------------------------------
- */
-
-// ---------------------------------------------------------------------
-// Mock item master — stand-in for a real item lookup API
-// ---------------------------------------------------------------------
-const ITEM_MASTER = {
-  "SK-10": {
-    description: "PREMIUM COTTON SAREE",
-    uom: "PC",
-    hsn: "5407",
-    gst: 5,
-    disc: 5,
-    printDescription: "COTTON SAREE PREM",
-    retailPrice: 1499,
-  },
-  "SK-11": {
-    description: "SILK ZARI BORDER FABRIC",
-    uom: "Mtr",
-    uniqueBarcode: "Yes",
-    hsn: "5007",
-    gst: 12,
-    disc: 8,
-    printDescription: "SILK ZARI FABRIC",
-    retailPrice: 399,
-  },
-  "SK-12": {
-    description: "DESIGNER BLOUSE PIECE",
-    uom: "PC",
-    hsn: "6211",
-    gst: 5,
-    disc: 10,
-    printDescription: "DESIGNER BLOUSE",
-    retailPrice: 349,
-  },
-  "SK-13": {
-    description: "KANJIVARAM SILK FABRIC",
-    uom: "Mtr",
-    uniqueBarcode: "Yes",
-    hsn: "5007",
-    gst: 12,
-    disc: 6,
-    printDescription: "KANJIVARAM SILK",
-    retailPrice: 899,
-  },
+const money = (value) => {
+  const n = Number(value || 0);
+  return Number.isFinite(n)
+    ? n.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+    : "0.00";
 };
 
-// ---------------------------------------------------------------------
-// Column layout (single source of truth for widths so header + body
-// always line up, via <colgroup>)
-// ---------------------------------------------------------------------
-const COLUMNS = [
-  { key: "rowNum", label: "#", width: 46 },
-  { key: "oldBarcode", label: "Old Barcode", width: 120 },
-  { key: "itemCode", label: "Item Code", width: 110 },
-  { key: "mode", label: "Batch / Unique", width: 118 },
-  { key: "billSlNo", label: "Bill Sl No.", width: 100 },
-  { key: "seqDummy", label: "SEQ Dummy", width: 100 },
-  { key: "supplierDescription", label: "Supplier Description", width: 220 },
-  { key: "qty", label: "QTY", width: 100 },
-  { key: "uom", label: "UOM", width: 80 },
-  { key: "hsn", label: "HSN", width: 90 },
-  { key: "purRate", label: "Pur Rate", width: 100 },
-  { key: "disc1", label: "Disc %", width: 75 },
-  { key: "finalNet", label: "Final NET", width: 100 },
-  { key: "gst", label: "GST %", width: 75 },
-  { key: "printDescription", label: "Print Description", width: 190 },
-  { key: "retailPrice", label: "Retail Price", width: 100 },
-  { key: "disc2", label: "Disc %", width: 75 },
-  { key: "offerPrice", label: "Offer Price", width: 100 },
-  { key: "wsp", label: "WSP Price", width: 100 },
-  { key: "dp", label: "DP Price", width: 100 },
-  { key: "fma", label: "FMA", width: 90 },
-  { key: "silkMark", label: "Silk Mark", width: 85 },
-  { key: "barcodeNo", label: "Barcode No. (Generated)", width: 200 },
-];
+const round2 = (value) => Math.round((Number(value || 0) + Number.EPSILON) * 100) / 100;
 
-const ROW_INCREMENT = 40;
-const EXTEND_THRESHOLD_PX = 300;
+const meterRegex = /(mtr|meter|metre|meters|metres)/i;
+const pcRegex = /(pc|pcs|piece|pieces)/i;
+
+function incrementSerial(value) {
+  const serial = String(value ?? '').trim();
+  if (!serial) return '1';
+
+  if (/^\d+$/.test(serial)) {
+    return String(Number(serial) + 1).padStart(serial.length, '0');
+  }
+
+  const match = serial.match(/^(.*?)([A-Za-z]+)$/);
+  if (!match) return serial;
+
+  const prefix = match[1];
+  const letters = match[2].toUpperCase().split('');
+  let index = letters.length - 1;
+  while (index >= 0 && letters[index] === 'Z') {
+    letters[index] = 'A';
+    index -= 1;
+  }
+  if (index < 0) letters.unshift('A');
+  else letters[index] = String.fromCharCode(letters[index].charCodeAt(0) + 1);
+
+  return prefix + letters.join('');
+}
 
 function modeFromUom(uom, uniqueBarcode = "No") {
-  const normalized = String(uom || '').trim().toLowerCase();
-  if (/\b(mtr|meter|metre|meters|metres)\b/.test(normalized)) {
-    return 'batch';
-  }
-  if (/\b(pc|pcs|piece|pieces)\b/.test(normalized)) return 'unique';
-  return 'unique';
+  const value = String(uom || "").trim();
+  if (meterRegex.test(value)) return "batch";
+  if (pcRegex.test(value)) return "unique";
+  return String(uniqueBarcode).toLowerCase() === "yes" ? "unique" : "batch";
 }
 
-// ---------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------
-const round2 = (n) => Math.round((n + Number.EPSILON) * 100) / 100;
+function usesMeterCuts(row) {
+  return meterRegex.test(String(row?.uom || "")) && String(row?.uniqueBarcode || "No").toLowerCase() === "yes";
+}
 
-const inr = (n) =>
-  (Number.isFinite(n) ? n : 0).toLocaleString("en-IN", {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
+function buildMeterCutPlan({ totalMtr = 0, qtyOrCuts = 1, uniqueBarcode = false }) {
+  const cuts = Math.max(1, Number(qtyOrCuts) || 1);
+  const total = Math.max(0, Number(totalMtr) || 0);
+  const plan = [];
+  let remaining = total;
+
+  for (let i = 0; i < cuts; i += 1) {
+    const share = i === 0 ? total : remaining;
+    if (i < cuts - 1) remaining = Math.max(0, remaining - share);
+    plan.push({
+      index: i + 1,
+      value: Number(share || 0),
+      shareBarcode: !uniqueBarcode,
+      groupId: uniqueBarcode ? `meter-${i + 1}` : "meter-shared",
+    });
+  }
+
+  return plan;
+}
+
+function makeMeterCutRows(count = 1, totalMtr = 0) {
+  const safeCount = Math.max(1, Number(count || 1));
+  void totalMtr;
+
+  return Array.from({ length: safeCount }, (_, index) => ({
+    id: index + 1,
+    value: "",
+  }));
+}
+
+function recalcMeterCutRows({ count, totalMtr, rows = [], changedIndex = null, changedValue = "" }) {
+  const safeCount = Math.max(1, Number(count || rows.length || 1));
+  const total = Number(totalMtr || 0);
+  const nextRows = Array.from({ length: safeCount }, (_, index) => {
+    const current = rows[index] || {};
+    const baseValue = current.value ?? "";
+    let value = baseValue;
+    if (index === changedIndex) value = changedValue;
+    return {
+      id: current.id ?? index + 1,
+      value: value === null || value === undefined ? "" : String(value),
+    };
   });
 
-const emptyRow = (id) => ({
-  id,
-  groupId: null, // set on duplicate rows -> points to the leader row's id
-  groupSize: 1, // meaningful on the leader row only
-  oldBarcode: "",
-  itemName: "",
-  itemCode: "",
-  mode: "unique", // 'unique' | 'batch'
-  uniqueBarcode: "No",
-  billSlNo: "",
-  seqDummy: "",
-  supplierDescription: "",
-  qty: "",
-  uom: "",
-  hsn: "",
-  purRate: "",
-  disc1: "",
-  finalNet: 0,
-  gst: "",
-  printDescription: "",
-  retailPrice: "",
-  disc2: "",
-  offerPrice: 0,
-  wsp: 0,
-  dp: 0,
-  fma: 0,
-  silkMark: false,
-  barcodeNo: null,
-});
+  if (changedIndex === null || !Number.isFinite(total) || total <= 0) {
+    return nextRows;
+  }
 
-const isMeterRow = (row) => /\b(mtr|meter|metre|meters|metres)\b/i.test(row.uom || '');
-const usesMeterCuts = (row) => isMeterRow(row) && String(row.uniqueBarcode).toLowerCase() === 'yes';
+  if (nextRows[changedIndex]?.value === "") {
+    return nextRows;
+  }
 
-// PLACEHOLDER pricing logic — replace with real backend rules later.
-function computeCalculated(row) {
-  const purRate = parseFloat(row.purRate) || 0;
-  const disc1 = parseFloat(row.disc1) || 0;
-  const retailPrice = parseFloat(row.retailPrice) || 0;
-  const disc2 = parseFloat(row.disc2) || 0;
+  let runningSum = 0;
+  let firstBlankIndex = -1;
 
-  const finalNet = round2(purRate - (purRate * disc1) / 100);
-  const offerPrice = round2(retailPrice - (retailPrice * disc2) / 100);
-  const wsp = round2(finalNet * 1.2); // 20% markup over Final NET
-  const dp = round2(finalNet * 1.1); // 10% markup over Final NET
-  const fma = round2(wsp - dp); // margin between WSP & DP
+  for (let index = 0; index < safeCount; index += 1) {
+    const raw = nextRows[index]?.value;
+    const numeric = raw === "" || raw === null || raw === undefined ? null : Number(raw);
+    if (numeric !== null && Number.isFinite(numeric)) {
+      runningSum += numeric;
+      continue;
+    }
 
-  return { ...row, finalNet, offerPrice, wsp, dp, fma };
+    firstBlankIndex = index;
+    break;
+  }
+
+  if (firstBlankIndex === -1) {
+    return nextRows;
+  }
+
+  const remaining = Math.max(0, total - runningSum);
+  nextRows[firstBlankIndex] = { ...nextRows[firstBlankIndex], value: remaining > 0 ? String(remaining) : "" };
+  for (let index = firstBlankIndex + 1; index < safeCount; index += 1) {
+    nextRows[index] = { ...nextRows[index], value: "" };
+  }
+
+  return nextRows;
 }
 
-export default function GCRBarcodeGeneration({
-  grcId = "",
-  initialRows = [],
-  editMode = false,
-}) {
-  const router = useRouter();
-  const scope = useScope();
-  const idRef = useRef(1);
-  const makeId = () => idRef.current++;
+function emptyRow(id) {
+  return {
+    id,
+    itemCode: "",
+    itemName: "",
+    hsn: "",
+    gst: "",
+    uom: "",
+    qty: "",
+    noOfCuts: "",
+    purchaseRate: "",
+    discountType: "Percentage",
+    discount: "5",
+    finalPrice: "",
+    retailPrice: "",
+    disc1: "",
+    uniqueBarcode: "No",
+    barcodeNo: "",
+    supplierDescription: "",
+    printDescription: "",
+    mode: "unique",
+    groupId: null,
+    groupSize: 1,
+    billSlNo: "",
+    rsp: "",
+    wsp: "",
+    dp: "",
+  };
+}
 
-  const [rows, setRows] = useState(() =>
-    Array.from({ length: ROW_INCREMENT }, () => emptyRow(makeId())),
-  );
-  const [showModal, setShowModal] = useState(false);
-  const [justSubmitted, setJustSubmitted] = useState(false);
-  const [saving, setSaving] = useState(false);
-  const [itemModalRowId, setItemModalRowId] = useState(null);
-  const [qtyEditingRowId, setQtyEditingRowId] = useState(null);
-  const [savedRows, setSavedRows] = useState([]);
-  const [savedSupplier, setSavedSupplier] = useState("");
-  const [barcodeSetting, setBarcodeSetting] = useState(null);
-  const [itemSearch, setItemSearch] = useState({ rowId: null, query: '', options: [], labels: {}, loading: false });
-  const { options: supplierOptions } = useOptions("supplier");
-  const extendingRef = useRef(false);
-  const barcodeSequenceRef = useRef(null);
+function isDateActive(row, date = new Date()) {
+  const effectiveDate = row?.effectiveDate ? new Date(row.effectiveDate) : null;
+  const expiryDate = row?.expiryDate ? new Date(row.expiryDate) : null;
+  const validEffective = !effectiveDate || (Number.isFinite(effectiveDate.getTime()) && effectiveDate <= date);
+  const validExpiry = !expiryDate || (Number.isFinite(expiryDate.getTime()) && expiryDate >= date);
+  return validEffective && validExpiry;
+}
+
+function buildBarcodePlan({ uom, uniqueBarcode, qtyOrCuts, totalMtr, cutRows = [] }) {
+  const meterMode = meterRegex.test(String(uom || ""));
+  const targetQty = Math.max(1, Number(qtyOrCuts || 1));
+
+  if (meterMode) {
+    const meterValues = cutRows.length > 0
+      ? cutRows.map((cut) => Number(cut.value || 0)).filter((value) => Number.isFinite(value) && value > 0)
+      : [Math.max(0, Number(totalMtr || 0)) || 1];
+
+    if (uniqueBarcode) {
+      return meterValues.map((value, index) => ({
+        qty: Number(value || 0),
+        groupId: `meter-${index + 1}`,
+        groupSize: 1,
+        shareBarcode: false,
+      }));
+    }
+
+    const sharedValue = meterValues.reduce((sum, value) => sum + Number(value || 0), 0) || targetQty;
+    return [{
+      qty: sharedValue,
+      groupId: "meter-shared",
+      groupSize: Math.max(1, meterValues.length),
+      shareBarcode: true,
+    }];
+  }
+
+  if (uniqueBarcode) {
+    return Array.from({ length: targetQty }, (_, index) => ({
+      qty: 1,
+      groupId: `pc-${index + 1}`,
+      groupSize: 1,
+      shareBarcode: false,
+    }));
+  }
+
+  return [{
+    qty: targetQty,
+    groupId: "pc-shared",
+    groupSize: 1,
+    shareBarcode: true,
+  }];
+}
+
+function calculatePrices(row) {
+  const purchaseRate = Number(row.purchaseRate || 0);
+  const discount = Number(row.discount || row.disc1 || 0);
+  const discountType = row.discountType || "Percentage";
+  const finalValue = discountType === "Flat"
+    ? Math.max(0, purchaseRate - discount)
+    : Math.max(0, purchaseRate - (purchaseRate * discount) / 100);
+
+  const rsp = finalValue * (1 + Number(row.markupRSP ?? 100) / 100);
+  const wsp = finalValue * (1 + Number(row.markupWSP ?? 15) / 100);
+  const dp = finalValue * (1 + Number(row.markupDP ?? 15) / 100);
+
+  return {
+    ...row,
+    finalPrice: round2(finalValue),
+    rsp: round2(rsp),
+    wsp: round2(wsp),
+    dp: round2(dp),
+  };
+}
+
+function AddItemModal({ open, onClose, onSubmit, onSubmitAndPrint, rowCount = 0, barcodeFormat, sequenceRef }) {
+  const createBlankForm = (overrides = {}) => ({
+    itemCode: "",
+    itemName: "",
+    itemId: "",
+    itemLabel: "",
+    hsnId: "",
+    hsn: "",
+    gst: "5",
+    goodsType: "",
+    printDescription: "",
+    uniqueBarcode: true,
+    isMtr: false,
+    qty: "",
+    noOfCuts: "",
+    totalMtr: "",
+    purchaseRate: "",
+    discountType: "Percentage",
+    discount: "5",
+    finalPrice: "0.00",
+    markupRSP: 100,
+    rspPrice: "0.00",
+    markupWSP: 15,
+    wspPrice: "0.00",
+    markupDP: 15,
+    dpPrice: "0.00",
+    rspOfferPct: 0,
+    rspOfferPrice: "0.00",
+    wspOfferPct: 0,
+    wspOfferPrice: "0.00",
+    dpOfferPct: 0,
+    dpOfferPrice: "0.00",
+    serialNo: 1,
+    ...overrides,
+  });
+
+  const [form, setForm] = useState(() => createBlankForm());
+  const [itemOptions, setItemOptions] = useState([]);
+  const [hsnOptions, setHsnOptions] = useState([]);
+  const [cutRows, setCutRows] = useState([{ id: 1, value: "" }]);
+  const [focusedCutIndex, setFocusedCutIndex] = useState(0);
+  const cutTargetRef = useRef(0);
+
+  const readOnlyClass = "border border-[#dfe4eb] bg-[#f3f5f9] text-gray-700";
+  const editableClass = "border border-[#dfe4eb] bg-white text-gray-700";
 
   useEffect(() => {
-    const query = itemSearch.query.trim();
-    if (query.length < 3 || itemSearch.rowId === null) {
-      setItemSearch((current) => ({ ...current, options: [], labels: {}, loading: false }));
-      return undefined;
-    }
-    let cancelled = false;
-    setItemSearch((current) => ({ ...current, loading: true }));
-    const params = new URLSearchParams({
-      search: query,
-      perPage: "20",
-      page: "1",
-      business: scope.business || "",
+    if (!open) return;
+    setForm((current) => ({
+      ...current,
+      serialNo: Number(rowCount || 0) + 1,
+    }));
+
+    setCutRows((current) => {
+      if (!form.isMtr) return [{ id: 1, value: "" }];
+      const count = Math.max(1, Number(form.noOfCuts || current.length || 1));
+      return makeMeterCutRows(count, Number(form.totalMtr || 0));
     });
-    fetch("/api/item?" + params, { cache: "no-store" })
+
+    fetch('/api/item?perPage=200')
       .then((response) => response.json())
       .then((result) => {
-        if (!cancelled) setItemSearch((current) => ({ ...current, options: result.rows || [], labels: result.labels || {} }));
+        const rows = (result.rows || []).map((row) => ({
+          value: String(row._id),
+          label: `${row.name || 'Unnamed item'}${row.itemCode ? ` (${row.itemCode})` : ''}`,
+          itemCode: row.itemCode || '',
+          name: row.name || '',
+          subGroupId: row.subGroupId || '',
+          description: row.description || '',
+        }));
+        setItemOptions(rows);
       })
-      .catch(() => {
-        if (!cancelled) setItemSearch((current) => ({ ...current, options: [], labels: {} }));
+      .catch(() => setItemOptions([]));
+
+    fetch('/api/hsn?perPage=200')
+      .then((response) => response.json())
+      .then((result) => {
+        const rows = (result.rows || []).map((row) => ({
+          value: String(row._id),
+          label: `${row.code || 'HSN'}${row.description ? ` - ${row.description}` : ''}`,
+          code: row.code || '',
+          description: row.description || '',
+          taxSlabs: Array.isArray(row.taxSlabs) ? row.taxSlabs : [],
+        }));
+        setHsnOptions(rows);
       })
-      .finally(() => {
-        if (!cancelled) setItemSearch((current) => ({ ...current, loading: false }));
-      });
-    return () => { cancelled = true; };
-  }, [itemSearch.query, itemSearch.rowId, scope.business]);
+      .catch(() => setHsnOptions([]));
+  }, [open]);
 
   useEffect(() => {
-    const query = new URLSearchParams({
+    const purchaseRate = Number(form.purchaseRate || 0);
+    const discount = Number(form.discount || 0);
+    const finalValue = form.discountType === "Flat"
+      ? Math.max(0, purchaseRate - discount)
+      : Math.max(0, purchaseRate - (purchaseRate * discount) / 100);
+
+    setForm((current) => {
+      const rspPrice = finalValue * (1 + Number(current.markupRSP || 0) / 100);
+      const wspPrice = finalValue * (1 + Number(current.markupWSP || 0) / 100);
+      const dpPrice = finalValue * (1 + Number(current.markupDP || 0) / 100);
+      const rspOfferPct = Number(current.rspOfferPct || 0);
+      const wspOfferPct = Number(current.wspOfferPct || 0);
+      const dpOfferPct = Number(current.dpOfferPct || 0);
+
+      return {
+        ...current,
+        finalPrice: finalValue.toFixed(2),
+        rspPrice: rspPrice.toFixed(2),
+        wspPrice: wspPrice.toFixed(2),
+        dpPrice: dpPrice.toFixed(2),
+        rspOfferPrice: (rspPrice * (1 - rspOfferPct / 100)).toFixed(2),
+        wspOfferPrice: (wspPrice * (1 - wspOfferPct / 100)).toFixed(2),
+        dpOfferPrice: (dpPrice * (1 - dpOfferPct / 100)).toFixed(2),
+      };
+    });
+  }, [form.purchaseRate, form.discount, form.discountType]);
+
+  if (!open) return null;
+
+  const updateField = (key, value) => setForm((current) => ({ ...current, [key]: value }));
+
+  const resolveProductGroup = async (subGroupId) => {
+    if (!subGroupId) {
+      setForm((current) => ({ ...current, subGroupName: "", groupName: "" }));
+      return;
+    }
+
+    try {
+      const response = await fetch(`/api/product-group/${subGroupId}`);
+      const payload = await response.json();
+      const subGroup = payload?.doc || null;
+      if (!subGroup) {
+        setForm((current) => ({ ...current, subGroupName: "", groupName: "" }));
+        return;
+      }
+
+      let groupName = "";
+      if (subGroup.parentId) {
+        const groupResponse = await fetch(`/api/product-group/${subGroup.parentId}`);
+        const groupPayload = await groupResponse.json();
+        groupName = groupPayload?.doc?.name || "";
+      }
+
+      setForm((current) => ({
+        ...current,
+        subGroupName: subGroup.name || "",
+        groupName,
+      }));
+    } catch (error) {
+      console.error(error);
+      setForm((current) => ({ ...current, subGroupName: "", groupName: "" }));
+    }
+  };
+
+  const resolveHsnGst = async (hsnDoc) => {
+    const code = hsnDoc?.code || hsnDoc?.label || "";
+    const taxId = hsnDoc?.taxSlabs?.[0]?.gstTaxNameId || "";
+
+    setForm((current) => ({ ...current, hsn: code, hsnId: hsnDoc?.value || current.hsnId }));
+
+    if (!taxId) {
+      setForm((current) => ({ ...current, gst: "5" }));
+      return;
+    }
+
+    try {
+      const response = await fetch(`/api/tax/${taxId}`);
+      const payload = await response.json();
+      const taxRecord = payload?.doc || payload || {};
+      const gstValue = Number(taxRecord.igst ?? taxRecord.cgst ?? taxRecord.sgst ?? taxRecord.gst ?? 5);
+      setForm((current) => ({ ...current, gst: String(gstValue || 5) }));
+    } catch (error) {
+      setForm((current) => ({ ...current, gst: "5" }));
+    }
+  };
+
+  const handleItemSelection = async (selectedValue) => {
+    const selected = itemOptions.find((option) => String(option.value) === String(selectedValue));
+    if (!selected) {
+      setForm((current) => ({ ...current, itemId: "", itemName: "", itemCode: "", subGroupName: "", groupName: "", printDescription: "" }));
+      return;
+    }
+
+    const itemCode = selected.itemCode || "";
+    const itemName = selected.name || selected.label || "";
+    setForm((current) => ({
+      ...current,
+      itemId: selected.value,
+      itemCode,
+      itemName,
+      printDescription: selected.description || "",
+    }));
+    await resolveProductGroup(selected.subGroupId || "");
+  };
+
+  const handleHsnSelection = async (selectedValue) => {
+    const selected = hsnOptions.find((option) => String(option.value) === String(selectedValue));
+    if (!selected) {
+      setForm((current) => ({ ...current, hsnId: "", hsn: "", gst: "5" }));
+      return;
+    }
+
+    await resolveHsnGst(selected);
+  };
+
+  const updateMarkupValue = (key, value) => {
+    setForm((current) => {
+      const next = { ...current, [key]: value };
+      const netPrice = Number(current.finalPrice || 0);
+
+      if (key === "markupRSP") {
+        const pct = Number(value || 0);
+        next.rspPrice = (netPrice * (1 + pct / 100)).toFixed(2);
+        next.rspOfferPrice = (Number(next.rspPrice) * (1 - Number(current.rspOfferPct || 0) / 100)).toFixed(2);
+      }
+      if (key === "rspPrice") {
+        const price = Number(value || 0);
+        next.markupRSP = netPrice > 0 ? (((price / netPrice) - 1) * 100) : 0;
+        next.rspOfferPrice = (price * (1 - Number(current.rspOfferPct || 0) / 100)).toFixed(2);
+      }
+      if (key === "markupWSP") {
+        const pct = Number(value || 0);
+        next.wspPrice = (netPrice * (1 + pct / 100)).toFixed(2);
+        next.wspOfferPrice = (Number(next.wspPrice) * (1 - Number(current.wspOfferPct || 0) / 100)).toFixed(2);
+      }
+      if (key === "wspPrice") {
+        const price = Number(value || 0);
+        next.markupWSP = netPrice > 0 ? (((price / netPrice) - 1) * 100) : 0;
+        next.wspOfferPrice = (price * (1 - Number(current.wspOfferPct || 0) / 100)).toFixed(2);
+      }
+      if (key === "markupDP") {
+        const pct = Number(value || 0);
+        next.dpPrice = (netPrice * (1 + pct / 100)).toFixed(2);
+        next.dpOfferPrice = (Number(next.dpPrice) * (1 - Number(current.dpOfferPct || 0) / 100)).toFixed(2);
+      }
+      if (key === "dpPrice") {
+        const price = Number(value || 0);
+        next.markupDP = netPrice > 0 ? (((price / netPrice) - 1) * 100) : 0;
+        next.dpOfferPrice = (price * (1 - Number(current.dpOfferPct || 0) / 100)).toFixed(2);
+      }
+
+      return next;
+    });
+  };
+
+  const updateOfferValue = (key, value) => {
+    setForm((current) => {
+      const next = { ...current, [key]: value };
+      const rspBase = Number(current.rspPrice || 0);
+      const wspBase = Number(current.wspPrice || 0);
+      const dpBase = Number(current.dpPrice || 0);
+
+      if (key === "rspOfferPct") {
+        const pct = Number(value || 0);
+        next.rspOfferPrice = (rspBase * (1 - pct / 100)).toFixed(2);
+      }
+      if (key === "rspOfferPrice") {
+        const offerPrice = Number(value || 0);
+        next.rspOfferPct = rspBase > 0 ? (((rspBase - offerPrice) / rspBase) * 100) : 0;
+      }
+      if (key === "wspOfferPct") {
+        const pct = Number(value || 0);
+        next.wspOfferPrice = (wspBase * (1 - pct / 100)).toFixed(2);
+      }
+      if (key === "wspOfferPrice") {
+        const offerPrice = Number(value || 0);
+        next.wspOfferPct = wspBase > 0 ? (((wspBase - offerPrice) / wspBase) * 100) : 0;
+      }
+      if (key === "dpOfferPct") {
+        const pct = Number(value || 0);
+        next.dpOfferPrice = (dpBase * (1 - pct / 100)).toFixed(2);
+      }
+      if (key === "dpOfferPrice") {
+        const offerPrice = Number(value || 0);
+        next.dpOfferPct = dpBase > 0 ? (((dpBase - offerPrice) / dpBase) * 100) : 0;
+      }
+
+      return next;
+    });
+  };
+
+  const addCutRow = () => {
+    const currentCount = Number(form.noOfCuts || cutRows.length || 1);
+    const nextCount = Number.isFinite(currentCount) && currentCount > 0 ? currentCount + 1 : 1;
+    updateField("noOfCuts", String(nextCount));
+    setCutRows(makeMeterCutRows(nextCount, Number(form.totalMtr || 0)));
+  };
+
+  const removeCutRow = (index) => {
+    setCutRows((current) => {
+      if (current.length <= 1) return current;
+      const next = current.filter((_, rowIndex) => rowIndex !== index);
+      updateField("noOfCuts", String(next.length));
+      return next;
+    });
+  };
+
+  const updateCutValue = (index, value) => {
+    const trimmed = value === "" ? "" : String(value);
+    const nextCuts = cutRows.map((row, rowIndex) => rowIndex === index ? { ...row, value: trimmed } : row);
+    setCutRows(nextCuts);
+    const enteredTotal = nextCuts.reduce((sum, row) => sum + (Number(row.value || 0) || 0), 0);
+    if (enteredTotal > cutTargetRef.current) cutTargetRef.current = enteredTotal;
+    updateField("totalMtr", enteredTotal ? String(enteredTotal) : "");
+  };
+
+  const commitCutValue = (index) => {
+    const countValue = form.noOfCuts === "" ? cutRows.length : form.noOfCuts;
+    const count = Number.isFinite(Number(countValue)) && Number(countValue) > 0 ? Number(countValue) : cutRows.length || 1;
+    const nextCuts = recalcMeterCutRows({
+      count,
+      totalMtr: cutTargetRef.current || Number(form.totalMtr || 0),
+      rows: cutRows,
+      changedIndex: index,
+      changedValue: cutRows[index]?.value || "",
+    });
+    setCutRows(nextCuts);
+    const committedTotal = nextCuts.reduce((sum, row) => sum + (Number(row.value || 0) || 0), 0);
+    updateField("totalMtr", committedTotal ? String(committedTotal) : "");
+  };
+
+  const submit = (printAfterSubmit = false) => {
+    if (!form.itemName?.trim()) return;
+
+    const generatedRows = [];
+    const baseSerial = String(form.serialNo || 1).trim();
+    const finalPriceValue = Number(form.finalPrice || 0);
+    const purchaseRateValue = Number(form.purchaseRate || 0);
+    const barcodePlan = buildBarcodePlan({
+      uom: form.isMtr ? "MTR" : "PC",
+      uniqueBarcode: Boolean(form.uniqueBarcode),
+      qtyOrCuts: form.isMtr ? (cutRows.length || Number(form.noOfCuts || 1)) : Number(form.qty || 1),
+      totalMtr: Number(form.totalMtr || 0),
+      cutRows,
+    });
+
+    barcodePlan.forEach((planItem, index) => {
+      const sampleBarcode = computeSampleBarcode(
+        barcodeFormat.prefix,
+        sequenceRef.current + index,
+        barcodeFormat.suffix,
+        barcodeFormat.numberLenght,
+      );
+      const distinctBarcode = form.isMtr && Boolean(form.uniqueBarcode)
+        ? sampleBarcode
+        : (barcodePlan.length > 1 ? sampleBarcode : sampleBarcode);
+
+      generatedRows.push(calculatePrices({
+        ...emptyRow(`${Date.now()}-${index}`),
+        itemCode: form.itemCode || form.itemName.replace(/\s+/g, "-").toUpperCase(),
+        itemName: form.itemName,
+        hsn: form.hsn,
+        gst: form.gst,
+        uom: form.isMtr ? "MTR" : "PC",
+        qty: String(planItem.qty || 0),
+        noOfCuts: form.isMtr ? String(cutRows.length || Number(form.noOfCuts || 1)) : "",
+        purchaseRate: String(purchaseRateValue),
+        discountType: form.discountType,
+        discount: String(form.discount || 0),
+        finalPrice: String(finalPriceValue),
+        retailPrice: String(form.rspPrice || 0),
+        uniqueBarcode: Boolean(form.uniqueBarcode) ? "Yes" : "No",
+        barcodeNo: distinctBarcode,
+        supplierDescription: form.itemName,
+        printDescription: form.printDescription,
+        mode: Boolean(form.uniqueBarcode) ? "unique" : "batch",
+        groupId: planItem.groupId || null,
+        groupSize: planItem.groupSize || 1,
+        billSlNo: String(baseSerial),
+        rsp: String(form.rspPrice || 0),
+        wsp: String(form.wspPrice || 0),
+        dp: String(form.dpPrice || 0),
+        offerPrice: String(form.rspOfferPrice || form.rspPrice || 0),
+        wspPrice: String(form.wspOfferPrice || form.wspPrice || 0),
+        dpPrice: String(form.dpOfferPrice || form.dpPrice || 0),
+        rspOfferPct: form.rspOfferPct,
+        wspOfferPct: form.wspOfferPct,
+        dpOfferPct: form.dpOfferPct,
+        markupRSP: form.markupRSP,
+        markupWSP: form.markupWSP,
+        markupDP: form.markupDP,
+      }));
+    });
+
+    if (printAfterSubmit && onSubmitAndPrint) onSubmitAndPrint(generatedRows);
+    else onSubmit(generatedRows);
+    sequenceRef.current += generatedRows.length;
+
+    const nextSerial = incrementSerial(baseSerial);
+    setForm((current) => createBlankForm({
+      itemId: current.itemId,
+      itemName: current.itemName,
+      itemCode: current.itemCode,
+      hsnId: current.hsnId,
+      hsn: current.hsn,
+      gst: current.gst,
+      goodsType: current.goodsType,
+      printDescription: current.printDescription,
+      uniqueBarcode: current.uniqueBarcode,
+      isMtr: current.isMtr,
+      discountType: current.discountType,
+      discount: current.discount,
+      markupRSP: current.markupRSP,
+      markupWSP: current.markupWSP,
+      markupDP: current.markupDP,
+      serialNo: nextSerial,
+    }));
+    setCutRows([{ id: 1, value: "" }]);
+    onClose();
+  };
+
+  return (
+    <div className="mt-4 w-full rounded-[8px] border border-slate-200 bg-white shadow-sm">
+      <div className="px-5 py-4">
+          <div className="grid grid-cols-1 gap-3 md:grid-cols-5">
+            <div className="space-y-1 md:col-span-2">
+              <label className="block text-[11px] font-semibold text-gray-700">Item Name *</label>
+              <select value={form.itemId} onChange={(event) => handleItemSelection(event.target.value)} className={`w-full rounded-md px-2 py-2 text-sm ${editableClass}`}>
+                <option value="">Select...</option>
+                {itemOptions.map((option) => (
+                  <option key={option.value} value={option.value}>{option.label}</option>
+                ))}
+              </select>
+            </div>
+
+            <div className="space-y-1">
+              <label className="block text-[11px] font-semibold text-gray-700">HSN *</label>
+              <select value={form.hsnId} onChange={(event) => handleHsnSelection(event.target.value)} className={`w-full rounded-md px-2 py-2 text-sm ${editableClass}`}>
+                <option value="">Select...</option>
+                {hsnOptions.map((option) => (
+                  <option key={option.value} value={option.value}>{option.label}</option>
+                ))}
+              </select>
+            </div>
+
+            <div className="space-y-1">
+              <label className="block text-[11px] font-semibold text-gray-700">GST% *</label>
+              <input value={form.gst} readOnly className={`w-full rounded-md px-2 py-2 text-sm ${readOnlyClass}`} />
+            </div>
+
+            <div className="space-y-1">
+              <label className="block text-[11px] font-semibold text-gray-700">Goods Type</label>
+              <select value={form.goodsType} onChange={(event) => updateField("goodsType", event.target.value)} className={`w-full rounded-md px-2 py-2 text-sm ${editableClass}`}>
+                <option value="">Select...</option>
+                <option value="Fabric">Fabric</option>
+                <option value="Yarn">Yarn</option>
+                <option value="Thread">Thread</option>
+                <option value="Accessory">Accessory</option>
+              </select>
+            </div>
+          </div>
+
+          <div className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-5">
+            <div className="space-y-1 md:col-span-3">
+              <label className="block text-[11px] font-semibold text-gray-700">Print Item Description</label>
+              <input value={form.printDescription} onChange={(event) => updateField("printDescription", event.target.value)} className={`w-full rounded-md px-2 py-2 text-sm ${editableClass}`} />
+            </div>
+
+            <div className="space-y-1 flex items-end md:col-span-2">
+              <label className="flex w-full items-center justify-start gap-3 rounded-md border border-[#dfe4eb] bg-white px-3 py-2 text-sm text-gray-700">
+                <input type="checkbox" checked={form.uniqueBarcode} onChange={(event) => updateField("uniqueBarcode", event.target.checked)} className="h-4 w-4 accent-[#0d5ddc]" /> Unique Barcode
+              </label>
+              <label className="flex w-full items-center justify-start gap-3 rounded-md border border-[#dfe4eb] bg-white px-3 py-2 text-sm text-gray-700">
+                <input type="checkbox" checked={form.isMtr} onChange={(event) => {
+                  const checked = event.target.checked;
+                  updateField("isMtr", checked);
+                  if (checked) {
+                    const count = Math.max(1, Number(form.noOfCuts || 1));
+                    updateField("noOfCuts", String(count));
+                    cutTargetRef.current = Number(form.totalMtr || 0);
+                    setCutRows(makeMeterCutRows(count, Number(form.totalMtr || 0)));
+                  } else {
+                    cutTargetRef.current = 0;
+                    setFocusedCutIndex(0);
+                    setCutRows([{ id: 1, value: "" }]);
+                  }
+                }} className="h-4 w-4 accent-[#0d5ddc]" /> MTR
+              </label>
+            </div>
+          </div>
+
+          <div className="mt-5">
+            <div className="mb-4 text-center text-[15px] font-bold uppercase tracking-wide underline decoration-[1.5px] underline-offset-4">Price Calculation</div>
+
+            <div className="grid grid-cols-1 gap-3 md:grid-cols-6">
+              <div className="space-y-1">
+                <label className="block text-[11px] font-semibold text-gray-700">Serial No. *</label>
+                <input value={form.serialNo} onChange={(event) => updateField("serialNo", event.target.value)} className={`w-full rounded-md px-2 py-2 text-sm ${editableClass}`} />
+              </div>
+
+              <div className="space-y-1">
+                <label className="block text-[11px] font-semibold text-gray-700">{form.isMtr ? "No. of Cuts *" : "Quantity *"}</label>
+                {form.isMtr ? (
+                  <input type="number" min={1} value={form.noOfCuts} onChange={(event) => {
+                    const raw = event.target.value;
+                    updateField("noOfCuts", raw);
+
+                    if (raw === "") {
+                      setCutRows((current) => Array.from({ length: Math.max(1, current.length || 1) }, (_, index) => ({
+                        id: current[index]?.id ?? index + 1,
+                        value: "",
+                      })));
+                      return;
+                    }
+
+                    const count = Number(raw);
+                    if (!Number.isFinite(count) || count <= 0) {
+                      setCutRows((current) => Array.from({ length: Math.max(1, current.length || 1) }, (_, index) => ({
+                        id: current[index]?.id ?? index + 1,
+                        value: "",
+                      })));
+                      return;
+                    }
+
+                    setCutRows(makeMeterCutRows(count, Number(form.totalMtr || 0)));
+                  }} className={`w-full rounded-md px-2 py-2 text-sm ${editableClass}`} />
+                ) : (
+                  <input type="number" min={1} value={form.qty} onChange={(event) => updateField("qty", event.target.value)} className={`w-full rounded-md px-2 py-2 text-sm ${editableClass}`} />
+                )}
+              </div>
+
+              {form.isMtr && (
+                <div className="space-y-1">
+                  <label className="block text-[11px] font-semibold text-gray-700">Total MTR *</label>
+                  <input type="number" min={0} step="0.01" value={form.totalMtr} onChange={(event) => {
+                    const totalValue = event.target.value;
+                    updateField("totalMtr", totalValue);
+
+                    if (totalValue === "") {
+                      setCutRows((current) => current.map((row) => ({ ...row, value: "" })));
+                      return;
+                    }
+
+                    const numeric = Number(totalValue);
+                    if (!Number.isFinite(numeric) || numeric < 0) return;
+                    cutTargetRef.current = numeric;
+
+                    setCutRows((current) => {
+                      const count = Math.max(1, Number(form.noOfCuts || current.length || 1));
+                      return recalcMeterCutRows({
+                        count,
+                        totalMtr: numeric,
+                        rows: current,
+                        changedIndex: 0,
+                        changedValue: String(numeric),
+                      });
+                    });
+                  }} className={`w-full rounded-md px-2 py-2 text-sm ${editableClass}`} />
+                </div>
+              )}
+
+              <div className="space-y-1">
+                <label className="block text-[11px] font-semibold text-gray-700">Purchase Rate *</label>
+                <input type="number" step="0.01" min={0} value={form.purchaseRate} onChange={(event) => updateField("purchaseRate", event.target.value)} className={`w-full rounded-md px-2 py-2 text-sm ${editableClass}`} />
+              </div>
+
+              <div className="space-y-1">
+                <label className="block text-[11px] font-semibold text-gray-700">Discount Type</label>
+                <select value={form.discountType} onChange={(event) => updateField("discountType", event.target.value)} className={`w-full rounded-md px-2 py-2 text-sm ${editableClass}`}>
+                  <option value="Percentage">Percentage</option>
+                  <option value="Flat">Flat</option>
+                </select>
+              </div>
+
+              <div className="space-y-1">
+                <label className="block text-[11px] font-semibold text-gray-700">Discount *</label>
+                <input type="number" step="0.01" min={0} value={form.discount} onChange={(event) => updateField("discount", event.target.value)} className={`w-full rounded-md px-2 py-2 text-sm ${editableClass}`} />
+              </div>
+
+              {!form.isMtr && (
+                <div className="space-y-1">
+                  <label className="block text-[11px] font-semibold text-gray-700">Final price *</label>
+                  <input value={form.finalPrice} readOnly className={`w-full rounded-md px-2 py-2 text-sm font-semibold ${readOnlyClass}`} />
+                </div>
+              )}
+            </div>
+
+            <div className="mt-5 text-center text-[15px] font-bold uppercase tracking-wide underline decoration-[1.5px] underline-offset-4">Mark up on Net Price</div>
+            <div className="mt-4 grid grid-cols-1 gap-3 md:grid-cols-6">
+              <div className="space-y-1">
+                <label className="block text-[11px] font-semibold text-gray-700">Markup RSP % *</label>
+                <input type="number" min={0} value={form.markupRSP} onChange={(event) => updateMarkupValue("markupRSP", event.target.value)} className={`w-full rounded-md px-2 py-2 text-sm ${editableClass}`} />
+              </div>
+              <div className="space-y-1">
+                <label className="block text-[11px] font-semibold text-gray-700">RSP Price *</label>
+                <input type="number" step="0.01" min={0} value={form.rspPrice} onChange={(event) => updateMarkupValue("rspPrice", event.target.value)} className={`w-full rounded-md px-2 py-2 text-sm ${editableClass}`} />
+              </div>
+              <div className="space-y-1">
+                <label className="block text-[11px] font-semibold text-gray-700">Markup WSP % *</label>
+                <input type="number" min={0} value={form.markupWSP} onChange={(event) => updateMarkupValue("markupWSP", event.target.value)} className={`w-full rounded-md px-2 py-2 text-sm ${editableClass}`} />
+              </div>
+              <div className="space-y-1">
+                <label className="block text-[11px] font-semibold text-gray-700">WSP Price *</label>
+                <input type="number" step="0.01" min={0} value={form.wspPrice} onChange={(event) => updateMarkupValue("wspPrice", event.target.value)} className={`w-full rounded-md px-2 py-2 text-sm ${editableClass}`} />
+              </div>
+              <div className="space-y-1">
+                <label className="block text-[11px] font-semibold text-gray-700">Markup DP % *</label>
+                <input type="number" min={0} value={form.markupDP} onChange={(event) => updateMarkupValue("markupDP", event.target.value)} className={`w-full rounded-md px-2 py-2 text-sm ${editableClass}`} />
+              </div>
+              <div className="space-y-1">
+                <label className="block text-[11px] font-semibold text-gray-700">DP Price *</label>
+                <input type="number" step="0.01" min={0} value={form.dpPrice} onChange={(event) => updateMarkupValue("dpPrice", event.target.value)} className={`w-full rounded-md px-2 py-2 text-sm ${editableClass}`} />
+              </div>
+            </div>
+
+            <div className="mt-5 text-center text-[15px] font-bold uppercase tracking-wide underline decoration-[1.5px] underline-offset-4">Offer Price /Mark Down</div>
+            <div className="mt-4 grid grid-cols-1 gap-3 md:grid-cols-6">
+              <div className="space-y-1">
+                <label className="block text-[11px] font-semibold text-gray-700">RSP Offer %</label>
+                <input type="number" min={0} value={form.rspOfferPct} onChange={(event) => updateOfferValue("rspOfferPct", event.target.value)} className={`w-full rounded-md px-2 py-2 text-sm ${editableClass}`} />
+              </div>
+              <div className="space-y-1">
+                <label className="block text-[11px] font-semibold text-gray-700">RSP Offer Price</label>
+                <input type="number" step="0.01" min={0} value={form.rspOfferPrice} onChange={(event) => updateOfferValue("rspOfferPrice", event.target.value)} className={`w-full rounded-md px-2 py-2 text-sm ${editableClass}`} />
+              </div>
+              <div className="space-y-1">
+                <label className="block text-[11px] font-semibold text-gray-700">WSP Offer %</label>
+                <input type="number" min={0} value={form.wspOfferPct} onChange={(event) => updateOfferValue("wspOfferPct", event.target.value)} className={`w-full rounded-md px-2 py-2 text-sm ${editableClass}`} />
+              </div>
+              <div className="space-y-1">
+                <label className="block text-[11px] font-semibold text-gray-700">WSP Offer Price</label>
+                <input type="number" step="0.01" min={0} value={form.wspOfferPrice} onChange={(event) => updateOfferValue("wspOfferPrice", event.target.value)} className={`w-full rounded-md px-2 py-2 text-sm ${editableClass}`} />
+              </div>
+              <div className="space-y-1">
+                <label className="block text-[11px] font-semibold text-gray-700">DP Offer %</label>
+                <input type="number" min={0} value={form.dpOfferPct} onChange={(event) => updateOfferValue("dpOfferPct", event.target.value)} className={`w-full rounded-md px-2 py-2 text-sm ${editableClass}`} />
+              </div>
+              <div className="space-y-1">
+                <label className="block text-[11px] font-semibold text-gray-700">DP Offer Price</label>
+                <input type="number" step="0.01" min={0} value={form.dpOfferPrice} onChange={(event) => updateOfferValue("dpOfferPrice", event.target.value)} className={`w-full rounded-md px-2 py-2 text-sm ${editableClass}`} />
+              </div>
+            </div>
+
+            {form.isMtr && (
+              <div className="mt-5 rounded-md border border-[#dfe4eb] bg-[#f8fafc] p-3">
+                <div className="grid grid-cols-[70px_1fr_48px] items-center gap-2">
+                  <div className="text-center text-xs font-semibold uppercase tracking-wide text-gray-600">SL</div>
+                  <div className="text-center text-xs font-semibold uppercase tracking-wide text-gray-600">Cuts(mtr)</div>
+                  <div />
+                </div>
+
+                {cutRows.map((cut, index) => (
+                  <div key={cut.id ?? index} className={`mt-2 grid grid-cols-[70px_1fr_48px] items-center gap-2 rounded-md p-1 ${index === focusedCutIndex ? "bg-orange-50" : ""}`}>
+                    <div className={`flex h-10 items-center justify-center rounded-md border border-gray-300 text-sm font-medium text-gray-700 ${index === focusedCutIndex ? "bg-orange-100" : "bg-[#f3f5f9]"}`}>{index + 1}</div>
+                    <input
+                      type="number"
+                      min={0}
+                      step="0.01"
+                      value={cut.value}
+                      onFocus={() => setFocusedCutIndex(index)}
+                      onChange={(event) => updateCutValue(index, event.target.value)}
+                      onBlur={() => commitCutValue(index)}
+                      className={`h-10 rounded-md px-2 text-sm ${index === focusedCutIndex ? "border border-orange-300 bg-orange-50" : editableClass} focus:border-[#0d5ddc] focus:outline-none focus:ring-2 focus:ring-[#0d5ddc]/20`}
+                    />
+                    <div className="flex h-10 items-center justify-center gap-2">
+                      {index === cutRows.length - 1 ? (
+                        <button type="button" onClick={addCutRow} className="flex h-8 w-8 items-center justify-center rounded-md bg-[#2fbf6c] text-lg font-bold text-white">+</button>
+                      ) : (
+                        <button type="button" onClick={() => removeCutRow(index)} className="flex h-8 w-8 items-center justify-center rounded-md bg-[#e34a3a] text-xl font-bold text-white">−</button>
+                      )}
+                    </div>
+                  </div>
+                ))}
+
+                <div className="mt-3 flex items-center justify-between gap-3 border-t border-gray-200 pt-3">
+                  <div className="text-sm font-medium text-gray-600">Total Cuts(mtr)</div>
+                  <input
+                    value={cutRows.reduce((sum, row) => sum + (Number(row.value || 0) || 0), 0).toFixed(2)}
+                    readOnly
+                    className={`w-40 rounded-md px-2 py-2 text-sm ${readOnlyClass}`}
+                  />
+                </div>
+              </div>
+            )}
+          </div>
+
+          <div className="mt-6 flex items-center justify-end gap-2">
+            <button type="button" onClick={() => submit(false)} className="rounded-md bg-[#0d5ddc] px-7 py-3 text-[15px] font-semibold text-white shadow-[0_2px_8px_rgba(13,93,220,0.35)] transition hover:bg-[#0b4bb6]">Submit</button>
+            <button type="button" onClick={() => submit(true)} className="rounded-md bg-[#198754] px-7 py-3 text-[15px] font-semibold text-white shadow-[0_2px_8px_rgba(25,135,84,0.3)] transition hover:bg-[#146c43]">Submit &amp; Print Label</button>
+          </div>
+      </div>
+    </div>
+  );
+}
+
+function PrintLabelPicker({ rows, open, onClose }) {
+  const [selected, setSelected] = useState([]);
+  const [copies, setCopies] = useState({});
+
+  useEffect(() => {
+    if (!open) return;
+    const next = {};
+    rows.forEach((row) => {
+      if (row.barcodeNo) next[row.barcodeNo] = Number(row.qty || 1) || 1;
+    });
+    setCopies(next);
+    setSelected(Object.keys(next));
+  }, [open, rows]);
+
+  if (!open) return null;
+
+  const selectedRows = rows.filter((row) => selected.includes(row.barcodeNo));
+
+  return (
+    <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/40 p-4">
+      <div className="w-full max-w-[960px] rounded-lg bg-white shadow-xl">
+        <div className="flex items-center justify-between border-b border-gray-200 px-4 py-3">
+          <h3 className="text-lg font-semibold">Print Label Picker</h3>
+          <button type="button" onClick={onClose} className="text-2xl leading-none text-gray-500">×</button>
+        </div>
+
+        <div className="grid gap-4 p-4 md:grid-cols-2">
+          <div>
+            {rows.filter((row) => row.barcodeNo).length === 0 && <div className="rounded border border-dashed border-gray-300 p-4 text-sm text-gray-500">No barcode generated yet.</div>}
+            {rows.filter((row) => row.barcodeNo).map((row, index) => (
+              <div key={row.barcodeNo || index} className="mb-3 flex items-center gap-3 rounded border border-gray-200 p-2">
+                <input type="checkbox" checked={selected.includes(row.barcodeNo)} onChange={() => setSelected((prev) => prev.includes(row.barcodeNo) ? prev.filter((item) => item !== row.barcodeNo) : [...prev, row.barcodeNo])} />
+                <div className="flex-1">
+                  <div className="font-medium">{row.itemName || row.supplierDescription || "Item"}</div>
+                  <div className="text-xs text-gray-600">{row.barcodeNo}</div>
+                </div>
+                <input type="number" min={1} value={copies[row.barcodeNo] || 1} onChange={(e) => setCopies((prev) => ({ ...prev, [row.barcodeNo]: Number(e.target.value) || 1 }))} className="w-[90px] rounded border border-gray-300 px-2 py-1 text-sm" />
+              </div>
+            ))}
+          </div>
+
+          <div className="rounded border border-gray-200 bg-gray-50 p-4">
+            <div className="mb-3 text-sm font-semibold">Preview</div>
+            {selectedRows.length === 0 ? (
+              <div className="rounded border border-dashed border-gray-300 bg-white p-8 text-center text-sm text-gray-500">Select a barcode to preview.</div>
+            ) : (
+              <div className="space-y-4">
+                {selectedRows.map((row) => (
+                  <div key={row.barcodeNo} className="rounded border border-gray-300 bg-white p-3">
+                    <div className="text-lg font-semibold">{row.itemName || row.supplierDescription}</div>
+                    <div className="text-sm text-gray-600">{row.barcodeNo}</div>
+                    <div className="mt-3 h-10 rounded border border-gray-700 bg-[repeating-linear-gradient(90deg,#000_0,#000_2px,transparent_2px,transparent_4px)]" />
+                    <div className="mt-3 flex items-center justify-between text-sm"><span>RSP</span><span>{money(row.rsp || row.retailPrice || 0)}</span></div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+
+        <div className="flex items-center justify-end gap-2 border-t border-gray-200 px-4 py-3">
+          <button type="button" onClick={() => window.print()} className="rounded-lg border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-700">Print</button>
+          <button type="button" onClick={onClose} className="rounded-lg border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-700">Close</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+export default function GCRBarcodeGeneration({ grcId = null, initialRows = [] }) {
+  const router = useRouter();
+  const scope = useScope();
+
+  const [rows, setRows] = useState([]);
+  const [activeTab, setActiveTab] = useState("items");
+  const [showSaveConfirm, setShowSaveConfirm] = useState(false);
+  const [showPrint, setShowPrint] = useState(false);
+  const [printRows, setPrintRows] = useState([]);
+  const [showAddItem, setShowAddItem] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [barcodeFormat, setBarcodeFormat] = useState({ prefix: "", suffix: "", startNumber: 1, numberLenght: 4 });
+  const sequenceRef = useRef(1);
+
+  useEffect(() => {
+    if (!Array.isArray(initialRows) || initialRows.length === 0) {
+      setRows([]);
+      return;
+    }
+
+    const normalized = initialRows.map((row, index) => ({
+      ...row,
+      id: row._id || row.id || `${row.itemCode || row.itemName || 'saved-row'}-${index}`,
+      itemCode: row.itemCode || '',
+      itemName: row.itemName || row.supplierDescription || row.printDescription || '',
+      hsn: row.hsn || '',
+      gst: row.gst || '',
+      qty: row.qty || '',
+      noOfCuts: row.noOfCuts || '',
+      purchaseRate: row.purchaseRate || row.purRate || '',
+      finalPrice: row.finalPrice || row.finalNet || '',
+      retailPrice: row.retailPrice || row.rsp || '',
+      offerPrice: row.offerPrice || '',
+      uniqueBarcode: row.uniqueBarcode || (row.batchUnique === 'unique' ? 'Yes' : 'No') || 'No',
+      uom: row.uom || '',
+      barcodeNo: row.barcodeGenerated || row.barcodeNo || '',
+      supplierDescription: row.supplierDescription || row.itemName || '',
+      printDescription: row.printDescription || '',
+      mode: row.mode || row.batchUnique || '',
+      groupId: row.groupId || null,
+      groupSize: row.groupSize || 1,
+      billSlNo: row.billSlNo || '',
+      rsp: row.rsp || row.retailPrice || '',
+      wsp: row.wspPrice || row.wsp || '',
+      dp: row.dpPrice || row.dp || '',
+    }));
+    setRows(normalized);
+  }, [initialRows]);
+
+  useEffect(() => {
+    const params = new URLSearchParams({
       business: scope.business || "",
       finYear: scope.finYear || "",
       page: "1",
-      perPage: "500",
+      perPage: "50",
     });
-    fetch("/api/barcode-setting?" + query)
+
+    fetch("/api/barcode-setting?" + params)
       .then((response) => response.json())
       .then((result) => {
-        const today = new Date();
-        const active = (result.rows || []).find((row) => {
-          const from = row.effectiveDate ? new Date(row.effectiveDate) : null;
-          const to = row.expiryDate ? new Date(row.expiryDate) : null;
-          return (!from || today >= from) && (!to || today <= to);
-        }) || result.rows?.[0] || null;
-        setBarcodeSetting(active);
-        barcodeSequenceRef.current = active ? Number(active.startNumber) || 1 : null;
+        const rows = Array.isArray(result.rows) ? result.rows : [];
+        const active = rows
+          .filter((row) => isDateActive(row))
+          .sort((a, b) => new Date(b.effectiveDate || 0) - new Date(a.effectiveDate || 0))[0]
+          || rows[0]
+          || null;
+
+        if (active) {
+          const format = {
+            prefix: active.prefix || "",
+            suffix: active.suffix || "",
+            startNumber: Number(active.startNumber) || 1,
+            numberLenght: Number(active.numberLenght) || 4,
+          };
+          setBarcodeFormat(format);
+          sequenceRef.current = format.startNumber;
+        }
       })
-      .catch(() => setBarcodeSetting(null));
+      .catch(() => {});
   }, [scope.business, scope.finYear]);
 
-  useEffect(() => {
-    if (!Array.isArray(initialRows) || initialRows.length === 0) return;
-    const loaded = initialRows.map((row) =>
-      computeCalculated({
-        ...emptyRow(makeId()),
-        ...row,
-        id: row.id || row._id || makeId(),
-        itemCode: row.itemCode || "",
-        mode:
-          String(row.batchUnique || "").toLowerCase() === "batch"
-            ? "batch"
-            : row.mode || "unique",
-        barcodeNo: row.barcodeNo || row.barcodeGenerated || null,
-        disc1: row.disc1 ?? row.disc ?? "",
-        wsp: row.wsp ?? row.wspPrice ?? 0,
-        dp: row.dp ?? row.dpPrice ?? 0,
-      }),
-    );
-    setRows((current) =>
-      current.some((row) => row.itemCode || row.barcodeNo)
-        ? current
-        : [...loaded, ...current.slice(loaded.length)],
-    );
-  }, [initialRows]);
+  const validRows = useMemo(() => rows.filter((row) => String(row.itemCode || row.itemName || "").trim()), [rows]);
 
-  async function saveRows() {
+  const totals = useMemo(() => validRows.reduce((acc, row) => {
+    const qty = Number(row.qty || 0);
+    const beforeTax = Number(row.finalPrice || 0) * qty;
+    const gstAmount = beforeTax * (Number(row.gst || 0) / 100);
+    acc.taxable += beforeTax;
+    acc.gst += gstAmount;
+    acc.net += beforeTax + gstAmount;
+    acc.pcs += pcRegex.test(String(row.uom || "")) ? qty : 0;
+    acc.mtr += meterRegex.test(String(row.uom || "")) ? qty : 0;
+    return acc;
+  }, { taxable: 0, gst: 0, net: 0, pcs: 0, mtr: 0 }), [validRows]);
+
+  const summaryRows = useMemo(() => {
+    const map = new Map();
+    validRows.forEach((row) => {
+      const key = `${row.itemCode || row.itemName || "item"}-${row.hsn || ""}-${row.gst || ""}-${row.uom || ""}`;
+      if (!map.has(key)) {
+        map.set(key, {
+          id: key,
+          itemName: row.itemName || row.supplierDescription || row.itemCode,
+          qty: 0,
+          beforeTax: 0,
+          gst: 0,
+          net: 0,
+        });
+      }
+      const entry = map.get(key);
+      const qty = Number(row.qty || 0);
+      const beforeTax = Number(row.finalPrice || 0) * qty;
+      entry.qty += qty;
+      entry.beforeTax += beforeTax;
+      entry.gst += beforeTax * (Number(row.gst || 0) / 100);
+      entry.net += beforeTax + beforeTax * (Number(row.gst || 0) / 100);
+    });
+    return Array.from(map.values());
+  }, [validRows]);
+
+  function appendRows(items) {
+    setRows((current) => [...current, ...items]);
+  }
+
+  async function saveRows(rowsToSave = validRows, printAfterSave = false) {
     setSaving(true);
     try {
+      const saveTotals = rowsToSave.reduce((result, row) => {
+        const qty = Number(row.qty || 0);
+        const beforeTax = Number(row.finalPrice || 0) * qty;
+        const gstAmount = beforeTax * (Number(row.gst || 0) / 100);
+        result.count += qty;
+        result.value += beforeTax + gstAmount;
+        return result;
+      }, { count: 0, value: 0 });
       const response = await fetch("/api/barcode-generation", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          rows: validRows,
-          grcId: grcId || undefined,
+          rows: rowsToSave,
+          grcId: grcId || null,
           business: scope.business,
           location: scope.location,
           finYear: scope.finYear,
-          supplierId: initialRows[0]?.supplierId || "",
+          supplierId: scope.supplierId || null,
           totals: {
-            count: totals.taxable
-              ? validRows.reduce(
-                  (sum, row) => sum + (parseFloat(row.qty) || 0),
-                  0,
-                )
-              : 0,
-            value: grandTotal,
+            count: saveTotals.count,
+            value: saveTotals.value,
           },
         }),
       });
-      const result = await response.json();
-      if (!response.ok)
-        throw new Error(result.error || "Could not save barcode rows.");
-      setShowModal(false);
-      setJustSubmitted(true);
-      if (editMode && grcId) {
-        router.push("/admin/transaction/purchase/grc/" + grcId);
-      } else {
-        setTimeout(() => setJustSubmitted(false), 3000);
-      }
+      if (!response.ok) throw new Error("Save failed");
+      setShowSaveConfirm(false);
+      if (printAfterSave) setShowPrint(true);
+      router.refresh?.();
     } catch (error) {
-      setJustSubmitted(error.message || "Could not save barcode rows.");
+      console.error(error);
     } finally {
       setSaving(false);
     }
   }
 
-  async function fetchItem(code) {
-    const response = await fetch(
-      "/api/item?perPage=5&search=" + encodeURIComponent(code),
-    );
-    const result = await response.json();
-    const hit =
-      (result.rows || []).find(
-        (item) =>
-          String(item.itemCode || "").toLowerCase() ===
-          String(code).trim().toLowerCase(),
-      ) || result.rows?.[0];
-    if (!hit) return null;
-    const labels = result.labels || {};
-    return itemValuesFromMaster(hit, labels, code);
-  }
-
-  function itemValuesFromMaster(hit, labels = {}, fallbackCode = "") {
-    const uomLabel = labels[String(hit.uomId)] || "";
-    return {
-      itemCode: hit.itemCode || fallbackCode,
-      itemName: hit.name || "",
-      uniqueBarcode: hit.uniqueBarcode || "No",
-      supplierDescription: hit.name || "",
-      uom: uomLabel,
-      hsn: labels[String(hit.hsnId)] || "",
-      gst: "",
-      printDescription: hit.description || hit.name || "",
-      retailPrice: hit.rsp != null ? String(hit.rsp) : "",
-      disc1: "",
-      mode: modeFromUom(uomLabel, hit.uniqueBarcode),
-    };
-  }
-
-  async function handleItemCodeEnter(rowId, code) {
-    const item = await fetchItem(code).catch(() => null);
-    if (!item) return;
-    setRows((prev) =>
-      prev.map((row) =>
-        row.id === rowId ? computeCalculated({ ...row, ...item }) : row,
-      ),
-    );
-  }
-
-  function selectItem(rowId, item) {
-    const values = itemValuesFromMaster(item, itemSearch.labels, item.itemCode || item.name);
-    setRows((prev) => prev.map((row) => (
-      row.id === rowId ? computeCalculated({ ...row, ...values }) : row
-    )));
-    setItemSearch({ rowId: null, query: '', options: [], labels: {}, loading: false });
-  }
-
-  async function loadSavedRows(supplier = savedSupplier) {
-    const query = new URLSearchParams({
-      page: "1",
-      perPage: "100",
-      business: scope.business || "",
-      location: scope.location || "",
-      finYear: scope.finYear || "",
-    });
-    if (supplier) query.set("supplier", supplier);
-    const result = await fetch("/api/barcode-generation?" + query).then(
-      (response) => response.json(),
-    );
-    setSavedRows(result.rows || []);
-  }
-
-  // ---- row management -------------------------------------------------
-  const addRows = (count = ROW_INCREMENT) => {
-    setRows((prev) => [
-      ...prev,
-      ...Array.from({ length: count }, () => emptyRow(makeId())),
-    ]);
-  };
-
-  const handleScroll = (e) => {
-    const { scrollTop, scrollHeight, clientHeight } = e.currentTarget;
-    if (extendingRef.current) return;
-    if (scrollHeight - scrollTop - clientHeight < EXTEND_THRESHOLD_PX) {
-      extendingRef.current = true;
-      addRows(ROW_INCREMENT);
-      setTimeout(() => {
-        extendingRef.current = false;
-      }, 400);
-    }
-  };
-
-  // ---- item code -> master lookup + reset of any duplicate group ------
-  const updateItemCode = (rowId, value) => {
-    setRows((prev) => {
-      const cleaned = prev.filter((r) => r.groupId !== rowId);
-      return cleaned.map((r) => {
-        if (r.id !== rowId) return r;
-        const master = ITEM_MASTER[value.trim().toUpperCase()];
-         let updated = { ...r, itemCode: value, itemName: '', qty: '', groupId: null, groupSize: 1 }; // ✅ reset itemName
-        
-        if (master) {
-          updated = {
-            ...updated,
-            itemName: master.description,
-            supplierDescription: master.description,
-            uom: master.uom,
-            hsn: master.hsn,
-            gst: String(master.gst),
-            printDescription: master.printDescription,
-            retailPrice: String(master.retailPrice),
-            disc1: String(master.disc),
-            uniqueBarcode: master.uniqueBarcode || "No",
-            mode: modeFromUom(master.uom, master.uniqueBarcode),
-          };
-        }
-        return computeCalculated(updated);
-      });
-    });
-  };
-
-  // ---- batch/unique mode switch (clears any existing duplicate group) -
-  const updateMode = (rowId, newMode) => {
-    setRows((prev) => {
-      const cleaned = prev.filter((r) => r.groupId !== rowId);
-      return cleaned.map((r) =>
-        r.id === rowId
-          ? computeCalculated({
-              ...r,
-              mode: newMode,
-              qty: "",
-              groupId: null,
-              groupSize: 1,
-            })
-          : r,
-      );
-    });
-  };
-
-  // ---- QTY: drives duplication in UNIQUE mode --------------------------
-  const updateQty = (rowId, rawValue) => {
-    setRows((prev) => {
-      const cleaned = prev.filter((r) => r.groupId !== rowId);
-      const idx = cleaned.findIndex((r) => r.id === rowId);
-      if (idx === -1) return prev;
-      const row = cleaned[idx];
-      const qty = Math.max(0, parseInt(rawValue, 10) || 0);
-
-      if ((row.mode === "unique" || usesMeterCuts(row)) && qty > 0) {
-        const leader = computeCalculated({
-          ...row,
-          qty: 1,
-          groupSize: qty,
-          groupId: null,
-          billSlNo: "1",
-          seqDummy: "1",
-        });
-        const duplicates = Array.from({ length: Math.max(0, qty - 1) }, (_, duplicateIndex) =>
-          computeCalculated({
-            ...leader,
-            id: makeId(),
-            groupId: leader.id,
-            billSlNo: "1",
-            seqDummy: String(duplicateIndex + 2),
-            barcodeNo: null,
-          }),
-        );
-        const next = [...cleaned];
-        next.splice(idx, 1, leader, ...duplicates);
-        return next;
-      }
-
-      const next = [...cleaned];
-      next[idx] = computeCalculated({
-        ...row,
-        qty: rawValue,
-        groupSize: 1,
-        groupId: null,
-      });
-      return next;
-    });
-  };
-
-  // ---- generic field update (with leader -> group propagation) --------
-  const updateField = (rowId, field, rawValue) => {
-    setRows((prev) => {
-      const idx = prev.findIndex((r) => r.id === rowId);
-      if (idx === -1) return prev;
-      const row = prev[idx];
-      const hasDuplicates =
-        row.groupId === null && prev.some((r) => r.groupId === row.id);
-
-      let next = [...prev];
-
-      if ((row.mode === "unique" || usesMeterCuts(row)) && hasDuplicates) {
-        const groupIdx = next.reduce((acc, r, i) => {
-          if (r.id === row.id || r.groupId === row.id) acc.push(i);
-          return acc;
-        }, []);
-        groupIdx.forEach((i) => {
-          let updated = { ...next[i] };
-          if (field === "purRate") {
-            updated.purRate = rawValue;
-          } else if (field !== "billSlNo") {
-            updated[field] = rawValue;
-          }
-          next[i] = computeCalculated(updated);
-        });
-      } else {
-        next[idx] = computeCalculated({ ...row, [field]: rawValue });
-      }
-
-      return next;
-    });
-  };
-
-  // ---- barcode generation ----------------------------------------------
-  const generateBarcode = (rowId) => {
-    if (!barcodeSetting || barcodeSequenceRef.current === null) return;
-    const serial = barcodeSequenceRef.current;
-    barcodeSequenceRef.current += 1;
-    setRows((prev) =>
-      prev.map((r) =>
-        r.id === rowId && !r.barcodeNo
-          ? {
-              ...r,
-              barcodeNo: computeSampleBarcode(
-                barcodeSetting.prefix,
-                serial,
-                barcodeSetting.suffix,
-                barcodeSetting.numberLenght,
-              ),
-            }
-          : r,
-      ),
-    );
-  };
-
-  const generateAllBarcodes = () => {
-    if (!barcodeSetting || barcodeSequenceRef.current === null) return;
-    setRows((prev) => prev.map((row) => {
-      if (!row.itemCode.trim() || row.barcodeNo) return row;
-      const serial = barcodeSequenceRef.current;
-      barcodeSequenceRef.current += 1;
-      return {
-        ...row,
-        barcodeNo: computeSampleBarcode(
-          barcodeSetting.prefix,
-          serial,
-          barcodeSetting.suffix,
-          barcodeSetting.numberLenght,
-        ),
-      };
-    }));
-  };
-
-  // ---- totals -----------------------------------------------------------
-  const validRows = useMemo(
-    () => rows.filter((r) => r.itemCode.trim() !== ""),
-    [rows],
-  );
-
-  const totals = useMemo(() => {
-    return validRows.reduce(
-      (acc, r) => {
-        const qty = parseFloat(r.qty) || 0;
-        const taxable = (r.finalNet || 0) * qty;
-        const gstAmt = taxable * ((parseFloat(r.gst) || 0) / 100);
-        acc.taxable += taxable;
-        acc.gst += gstAmt;
-        return acc;
-      },
-      { taxable: 0, gst: 0 },
-    );
-  }, [validRows]);
-  const grandTotal = totals.taxable + totals.gst;
-  const modalTotals = useMemo(() => validRows.reduce((acc, row) => {
-    const qty = parseFloat(row.qty) || 0;
-    const purRate = parseFloat(row.purRate) || 0;
-    const finalNet = parseFloat(row.finalNet) || 0;
-    const taxable = finalNet * qty;
-    const gstAmount = taxable * ((parseFloat(row.gst) || 0) / 100);
-    acc.qty += qty;
-    acc.purRate += purRate * qty;
-    acc.finalNet += taxable;
-    acc.taxable += taxable;
-    acc.gstAmount += gstAmount;
-    acc.gstBase += taxable * (parseFloat(row.gst) || 0);
-    return acc;
-  }, { qty: 0, purRate: 0, finalNet: 0, taxable: 0, gstAmount: 0, gstBase: 0 }), [validRows]);
-  const modalGstRate = modalTotals.taxable ? modalTotals.gstBase / modalTotals.taxable : 0;
-
-  const colTotalWidth = COLUMNS.reduce((sum, c) => sum + c.width, 0);
-
   return (
-    <div className="min-h-screen bg-gray-100 p-4 md:p-6 flex flex-col gap-4">
-      {/* Header / toolbar */}
-      <div className="flex flex-wrap items-center justify-between gap-3">
+    <div className="min-h-screen bg-gray-100 p-4 md:p-6">
+      <div className="flex items-center justify-between gap-4 pb-3">
         <div>
-          <h1 className="text-lg font-semibold text-gray-800">
-            GRC Barcode Generation
-          </h1>
-          <p className="text-xs text-gray-500">
-            {rows.length} rows &middot; {validRows.length} filled &middot;
-            scroll to bottom to auto-add {ROW_INCREMENT} more rows
-          </p>
+          <h1 className="text-xl font-semibold text-gray-800">GRC Barcode Generation</h1>
         </div>
-        <div className="flex items-center gap-2">
-          <button
-            onClick={() => addRows(ROW_INCREMENT)}
-            className="px-3 py-1.5 text-sm font-medium rounded-md border border-gray-300 bg-white text-gray-700 hover:bg-gray-50 shadow-sm"
-          >
-            + {ROW_INCREMENT} Rows
-          </button>
-          <button
-            type="button"
-            onClick={generateAllBarcodes}
-            disabled={!validRows.length || !barcodeSetting || validRows.every((row) => row.barcodeNo)}
-            className="px-3 py-1.5 text-sm font-medium rounded-md border border-indigo-300 bg-indigo-50 text-indigo-700 hover:bg-indigo-100 disabled:bg-gray-300 disabled:text-gray-500 disabled:cursor-not-allowed shadow-sm"
-          >
-            Generate All
-          </button>
-          <button
-            onClick={() => setShowModal(true)}
-            disabled={validRows.length === 0}
-            className="px-4 py-1.5 text-sm font-semibold rounded-md bg-indigo-600 text-white hover:bg-indigo-700 disabled:bg-gray-300 disabled:cursor-not-allowed shadow-sm"
-          >
-            Submit ({validRows.length})
-          </button>
-        </div>
+        <div className="text-sm text-gray-500">Barcode labels are ready after submit</div>
       </div>
 
-      {/* Grid */}
-      <div className="flex-1 rounded-lg border border-gray-300 bg-white shadow-sm overflow-hidden flex flex-col">
-        <div className="overflow-auto max-h-[70vh]" onScroll={handleScroll}>
-          <table
-            className="border-collapse text-xs"
-            style={{ tableLayout: "fixed", width: colTotalWidth }}
-          >
-            <colgroup>
-              {COLUMNS.map((c) => (
-                <col key={c.key} style={{ width: c.width }} />
-              ))}
-            </colgroup>
-            <thead>
-              <tr>
-                {COLUMNS.map((c, i) => (
-                  <th
-                    key={c.key}
-                    className={`sticky top-0 z-20 bg-gray-100 border border-gray-300 px-2 py-2 text-left font-semibold text-gray-600 uppercase tracking-wide ${
-                      i === 0 ? "sticky left-0 z-30" : ""
-                    }`}
-                    style={{ fontSize: "10px" }}
-                  >
-                    {c.label}
-                  </th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map((row, index) => {
-                const isDuplicate = row.groupId !== null;
-                const isLeaderOfGroup =
-                  row.groupId === null &&
-                  rows.some((r) => r.groupId === row.id);
-                const groupLeaderIndex = row.groupId === null
-                  ? index
-                  : rows.findIndex((r) => r.id === row.groupId);
-                const serialNumber = row.groupId === null
-                  ? (isLeaderOfGroup ? 1 : index + 1)
-                  : index - groupLeaderIndex + 1;
-                const rowBg = isDuplicate
-                  ? "bg-indigo-50/50"
-                  : index % 2 === 0
-                    ? "bg-white"
-                    : "bg-gray-50";
+      <AddItemModal
+        open={showAddItem}
+        rowCount={rows.length}
+        barcodeFormat={barcodeFormat}
+        sequenceRef={sequenceRef}
+        onClose={() => setShowAddItem(true)}
+        onSubmit={(items) => appendRows(items)}
+        onSubmitAndPrint={(items) => {
+          const nextRows = [...rows, ...items];
+          setRows(nextRows);
+          setPrintRows(nextRows);
+          saveRows(nextRows, true);
+        }}
+      />
 
-                return (
-                  <tr key={row.id} className={rowBg}>
-                    {/* row number */}
-                    <td
-                      className={`sticky left-0 z-10 border border-gray-200 px-1 py-1 text-center text-gray-400 font-medium ${rowBg}`}
-                    >
-                      {serialNumber}
-                    </td>
-
-                    {/* Old Barcode */}
-                    <td className="border border-gray-200 p-0">
-                      <input
-                        type="text"
-                        value={row.oldBarcode}
-                        onChange={(e) =>
-                          updateField(row.id, "oldBarcode", e.target.value)
-                        }
-                        className="w-full h-full px-1.5 py-1 bg-transparent outline-none focus:ring-2 focus:ring-inset focus:ring-indigo-400"
-                      />
-                    </td>
-
-                    {/* Item Code */}
-                    <td className="border border-gray-200 p-0">
-                      <div className="relative flex h-full items-stretch">
-                        <input
-                          type="text"
-                          value={row.itemName || row.itemCode}
-                          disabled={isDuplicate}
-                          placeholder="SK-10"
-                          onChange={(e) =>
-                            (updateItemCode(row.id, e.target.value), setItemSearch({
-                              rowId: row.id,
-                              query: e.target.value,
-                              options: [],
-                              labels: {},
-                              loading: false,
-                            }))
-                          }
-                          onFocus={() => {
-                            if (row.itemCode) setItemSearch((current) => ({ ...current, rowId: row.id, query: row.itemCode }));
-                          }}
-                          onKeyDown={(e) => {
-                            if (e.key === "Enter")
-                              handleItemCodeEnter(row.id, row.itemCode);
-                          }}
-                          className="min-w-0 flex-1 px-1.5 py-1 bg-transparent outline-none focus:ring-2 focus:ring-inset focus:ring-indigo-400 disabled:bg-gray-100 disabled:text-gray-400 font-medium"
-                        />
-                        {itemSearch.rowId === row.id && itemSearch.query.trim().length >= 3 && (
-                          <div className="absolute left-0 right-8 top-full z-40 max-h-56 overflow-auto border border-gray-300 bg-white shadow-lg">
-                            {itemSearch.loading && <div className="px-2 py-2 text-xs text-gray-500">Searching items...</div>}
-                            {!itemSearch.loading && itemSearch.options.length === 0 && (
-                              <div className="px-2 py-2 text-xs text-gray-500">No matching items</div>
-                            )}
-                            {!itemSearch.loading && itemSearch.options.map((item) => (
-                              <button
-                                key={item._id}
-                                type="button"
-                                className="block w-full border-b border-gray-100 px-2 py-2 text-left text-xs hover:bg-indigo-50"
-                                onMouseDown={(e) => e.preventDefault()}
-                                onClick={() => selectItem(row.id, item)}
-                              >
-                                <span className="font-semibold">{item.itemCode || "-"}</span>
-                                <span className="ml-2 text-gray-600">{item.name || item.description || "Unnamed item"}</span>
-                              </button>
-                            ))}
-                          </div>
-                        )}
-                        {!isDuplicate && (
-                          <button
-                            type="button"
-                            title="Add Item"
-                            onClick={() => setItemModalRowId(row.id)}
-                            className="shrink-0 border-l border-gray-200 px-1.5 text-indigo-600 hover:bg-indigo-50"
-                          >
-                            +
-                          </button>
-                        )}
-                      </div>
-                    </td>
-
-                    {/* Batch / Unique */}
-                    <td className="border border-gray-200 p-0">
-                      <select
-                        value={row.mode}
-                        disabled={isDuplicate}
-                        onChange={(e) => updateMode(row.id, e.target.value)}
-                        className="w-full h-full px-1 py-1 bg-transparent outline-none focus:ring-2 focus:ring-inset focus:ring-indigo-400 disabled:bg-gray-100 disabled:text-gray-400"
-                      >
-                        <option value="unique">UNIQUE</option>
-                        <option value="batch">BATCH</option>
-                      </select>
-                    </td>
-
-                    {/* Bill Sl No. */}
-                    <td className="border border-gray-200 p-0">
-                      <input
-                        type="text"
-                        value={row.billSlNo}
-                        onChange={(e) =>
-                          updateField(row.id, "billSlNo", e.target.value)
-                        }
-                        className="w-full h-full px-1.5 py-1 bg-transparent outline-none focus:ring-2 focus:ring-inset focus:ring-indigo-400"
-                      />
-                    </td>
-
-                    {/* SEQ Dummy */}
-                    <td className="border border-gray-200 p-0">
-                      <input
-                        type="text"
-                        value={row.seqDummy}
-                        onChange={(e) =>
-                          updateField(row.id, "seqDummy", e.target.value)
-                        }
-                        className="w-full h-full px-1.5 py-1 bg-transparent outline-none focus:ring-2 focus:ring-inset focus:ring-indigo-400"
-                      />
-                    </td>
-
-                    {/* Supplier Description */}
-                    <td className="border border-gray-200 p-0">
-                      <input
-                        type="text"
-                        value={row.supplierDescription}
-                        onChange={(e) =>
-                          updateField(
-                            row.id,
-                            "supplierDescription",
-                            e.target.value,
-                          )
-                        }
-                        className="w-full h-full px-1.5 py-1 bg-transparent outline-none focus:ring-2 focus:ring-inset focus:ring-indigo-400"
-                      />
-                    </td>
-
-                    {/* QTY */}
-                    <td className="border border-gray-200 p-0">
-                      <input
-                        type="number"
-                        min={0}
-                        placeholder={usesMeterCuts(row) ? "No. Of Cuts" : "QTY"}
-                        title={usesMeterCuts(row) ? "No. Of Cuts" : "QTY"}
-                        value={isLeaderOfGroup && qtyEditingRowId === row.id ? row.groupSize : row.qty}
-                        disabled={isDuplicate}
-                        onChange={(e) => updateQty(row.id, e.target.value)}
-                        onFocus={() => setQtyEditingRowId(row.id)}
-                        onBlur={() => setQtyEditingRowId(null)}
-                        onKeyDown={(e) => {
-                          if (e.key === "Enter") {
-                            e.preventDefault();
-                            e.currentTarget.blur();
-                          }
-                        }}
-                        className="no-spinner w-full h-full px-1.5 py-1 bg-transparent outline-none focus:ring-2 focus:ring-inset focus:ring-indigo-400 disabled:bg-gray-100 disabled:text-gray-400 text-right font-mono"
-                      />
-                    </td>
-
-                    {/* UOM */}
-                    <td className="border border-gray-200 p-0">
-                      <input
-                        type="text"
-                        value={row.uom}
-                        onChange={(e) =>
-                          updateField(row.id, "uom", e.target.value)
-                        }
-                        className="w-full h-full px-1.5 py-1 bg-transparent outline-none focus:ring-2 focus:ring-inset focus:ring-indigo-400"
-                      />
-                    </td>
-
-                    {/* HSN */}
-                    <td className="border border-gray-200 p-0">
-                      <input
-                        type="text"
-                        value={row.hsn}
-                        onChange={(e) =>
-                          updateField(row.id, "hsn", e.target.value)
-                        }
-                        className="w-full h-full px-1.5 py-1 bg-transparent outline-none focus:ring-2 focus:ring-inset focus:ring-indigo-400 font-mono"
-                      />
-                    </td>
-
-                    {/* Pur Rate */}
-                    <td className="border border-gray-200 p-0">
-                      <input
-                        type="number"
-                        value={row.purRate}
-                        onKeyDown={(e) => {
-                          if (e.key === "Enter") {
-                            e.preventDefault();
-                            e.currentTarget.blur();
-                          }
-                        }}
-                        onChange={(e) =>
-                          updateField(row.id, "purRate", e.target.value)
-                        }
-                        className="w-full h-full px-1.5 py-1 bg-transparent outline-none focus:ring-2 focus:ring-inset focus:ring-indigo-400 text-right font-mono"
-                      />
-                    </td>
-
-                    {/* Disc 1 */}
-                    <td className="border border-gray-200 p-0">
-                      <input
-                        type="number"
-                        value={row.disc1}
-                        onChange={(e) =>
-                          updateField(row.id, "disc1", e.target.value)
-                        }
-                        className="w-full h-full px-1.5 py-1 bg-transparent outline-none focus:ring-2 focus:ring-inset focus:ring-indigo-400 text-right font-mono"
-                      />
-                    </td>
-
-                    {/* Final NET (calculated) */}
-                    <td className="border border-gray-200 px-1.5 py-1 text-right font-mono bg-gray-50 text-gray-700">
-                      {inr(row.finalNet)}
-                    </td>
-
-                    {/* GST % */}
-                    <td className="border border-gray-200 p-0">
-                      <input
-                        type="number"
-                        value={row.gst}
-                        onChange={(e) =>
-                          updateField(row.id, "gst", e.target.value)
-                        }
-                        className="w-full h-full px-1.5 py-1 bg-transparent outline-none focus:ring-2 focus:ring-inset focus:ring-indigo-400 text-right font-mono"
-                      />
-                    </td>
-
-                    {/* Print Description */}
-                    <td className="border border-gray-200 p-0">
-                      <input
-                        type="text"
-                        value={row.printDescription}
-                        onChange={(e) =>
-                          updateField(
-                            row.id,
-                            "printDescription",
-                            e.target.value,
-                          )
-                        }
-                        className="w-full h-full px-1.5 py-1 bg-transparent outline-none focus:ring-2 focus:ring-inset focus:ring-indigo-400"
-                      />
-                    </td>
-
-                    {/* Retail Price */}
-                    <td className="border border-gray-200 p-0">
-                      <input
-                        type="number"
-                        value={row.retailPrice}
-                        onChange={(e) =>
-                          updateField(row.id, "retailPrice", e.target.value)
-                        }
-                        className="w-full h-full px-1.5 py-1 bg-transparent outline-none focus:ring-2 focus:ring-inset focus:ring-indigo-400 text-right font-mono"
-                      />
-                    </td>
-
-                    {/* Disc 2 */}
-                    <td className="border border-gray-200 p-0">
-                      <input
-                        type="number"
-                        value={row.disc2}
-                        onChange={(e) =>
-                          updateField(row.id, "disc2", e.target.value)
-                        }
-                        className="w-full h-full px-1.5 py-1 bg-transparent outline-none focus:ring-2 focus:ring-inset focus:ring-indigo-400 text-right font-mono"
-                      />
-                    </td>
-
-                    {/* Offer Price (calculated) */}
-                    <td className="border border-gray-200 px-1.5 py-1 text-right font-mono bg-gray-50 text-gray-700">
-                      {inr(row.offerPrice)}
-                    </td>
-
-                    {/* WSP (calculated) */}
-                    <td className="border border-gray-200 px-1.5 py-1 text-right font-mono bg-gray-50 text-gray-700">
-                      {inr(row.wsp)}
-                    </td>
-
-                    {/* DP (calculated) */}
-                    <td className="border border-gray-200 px-1.5 py-1 text-right font-mono bg-gray-50 text-gray-700">
-                      {inr(row.dp)}
-                    </td>
-
-                    {/* FMA (calculated) */}
-                    <td className="border border-gray-200 px-1.5 py-1 text-right font-mono bg-gray-50 text-gray-700">
-                      {inr(row.fma)}
-                    </td>
-
-                    {/* Silk Mark */}
-                    <td className="border border-gray-200 px-1.5 py-1 text-center">
-                      <input
-                        type="checkbox"
-                        checked={row.silkMark === true || row.silkMark === "true" || row.silkMark === 1 || row.silkMark === "1"}
-                        onChange={(e) =>
-                          updateField(row.id, "silkMark", e.target.checked)
-                        }
-                        className="h-3.5 w-3.5 accent-indigo-600"
-                      />
-                    </td>
-
-                    {/* Barcode generation */}
-                    <td className="border border-gray-200 px-1.5 py-1">
-                      {row.barcodeNo ? (
-                        <div className="flex flex-col gap-0.5">
-                          <div
-                            className="h-4 w-full rounded-sm"
-                            style={{
-                              backgroundImage:
-                                "repeating-linear-gradient(90deg, #111 0px, #111 2px, transparent 2px, transparent 4px)",
-                            }}
-                          />
-                          <span className="font-mono text-[10px] text-gray-700 select-all">
-                            {row.barcodeNo}
-                          </span>
-                        </div>
-                      ) : (
-                        <button
-                          onClick={() => generateBarcode(row.id)}
-                          disabled={!row.itemCode.trim() || !barcodeSetting}
-                          className="w-full text-[11px] font-medium px-2 py-1 rounded border border-indigo-300 text-indigo-600 bg-indigo-50 hover:bg-indigo-100 disabled:opacity-40 disabled:cursor-not-allowed"
-                        >
-                          Generate
-                        </button>
-                      )}
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
-      </div>
-
-      {/* Totals bar */}
-      <div className="rounded-lg border border-gray-300 bg-white p-3 shadow-sm">
-        <div className="mb-2 text-sm font-semibold text-gray-700">
-          Saved Barcode Rows
-        </div>
-        <div className="flex flex-wrap items-end gap-2">
-          <div className="min-w-[220px]">
-            <label className="mb-1 block text-xs text-gray-500">Supplier</label>
-            <select
-              className="w-full rounded-md border border-gray-300 px-2 py-1.5 text-sm"
-              value={savedSupplier}
-              onChange={(e) => setSavedSupplier(e.target.value)}
-            >
-              <option value="">All suppliers</option>
-              {supplierOptions.map((option) => (
-                <option key={option.value} value={option.value}>
-                  {option.label}
-                </option>
-              ))}
-            </select>
+      <div className="mt-4 rounded-lg border border-gray-300 bg-white shadow-sm">
+        <div className="flex items-center justify-between border-b border-gray-300 px-4 py-3">
+          <div className="flex gap-6 text-sm font-semibold">
+            {[
+              { key: "items", label: "ITEMS" },
+              { key: "summary", label: "ITEM SUMMARY" },
+              { key: "withBarcode", label: "ITEM WITH BARCODE" },
+            ].map((tab) => (
+              <button key={tab.key} type="button" onClick={() => setActiveTab(tab.key)} className={activeTab === tab.key ? "border-b-2 border-blue-600 pb-1 text-blue-700" : "pb-1 text-gray-600"}>{tab.label}</button>
+            ))}
           </div>
-          <button
-            type="button"
-            className="rounded-md bg-indigo-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-indigo-700"
-            onClick={() => loadSavedRows()}
-          >
-            Search
-          </button>
+          <div className="flex items-center gap-2 text-sm font-medium text-gray-700">
+            <span className="rounded border border-gray-300 bg-gray-50 px-2 py-1">Pc(s) {totals.pcs}</span>
+          </div>
         </div>
-        {savedRows.length > 0 && (
-          <div className="mt-3 overflow-auto">
-            <table className="w-full text-xs">
+
+        <div className="overflow-auto">
+          {activeTab === "items" && (
+            <table className="min-w-[1200px] w-full border-collapse text-xs">
               <thead>
-                <tr className="bg-gray-50 text-left">
-                  <th className="px-2 py-1">Item Code</th>
-                  <th className="px-2 py-1">Barcode</th>
-                  <th className="px-2 py-1">Supplier</th>
+                <tr className="bg-gray-100 text-left text-gray-700">
+                  <th className="border border-gray-300 px-2 py-2">Sl No</th>
+                  <th className="border border-gray-300 px-2 py-2">Item Code</th>
+                  <th className="border border-gray-300 px-2 py-2">Item</th>
+                  <th className="border border-gray-300 px-2 py-2">HSN</th>
+                  <th className="border border-gray-300 px-2 py-2">GST%</th>
+                  <th className="border border-gray-300 px-2 py-2">QTY/MTR</th>
+                  <th className="border border-gray-300 px-2 py-2">No. of Cut</th>
+                  <th className="border border-gray-300 px-2 py-2">Rate</th>
+                  <th className="border border-gray-300 px-2 py-2">GST Amount</th>
                 </tr>
               </thead>
               <tbody>
-                {savedRows.map((row) => (
-                  <tr key={row._id} className="border-t border-gray-100">
-                    <td className="px-2 py-1">{row.itemCode}</td>
-                    <td className="px-2 py-1 font-mono">
-                      {row.barcodeGenerated}
-                    </td>
-                    <td className="px-2 py-1">{row.supplierId}</td>
+                {validRows.length === 0 ? (
+                  <tr><td colSpan={9} className="px-3 py-8 text-center text-gray-500">No data found</td></tr>
+                ) : validRows.map((row, index) => (
+                  <tr key={row.id || index} className="odd:bg-white even:bg-gray-50">
+                    <td className="border border-gray-300 px-2 py-2">{index + 1}</td>
+                    <td className="border border-gray-300 px-2 py-2">{row.itemCode || "-"}</td>
+                    <td className="border border-gray-300 px-2 py-2">{row.itemName || row.supplierDescription || "-"}</td>
+                    <td className="border border-gray-300 px-2 py-2">{row.hsn || "-"}</td>
+                    <td className="border border-gray-300 px-2 py-2">{row.gst || "-"}</td>
+                    <td className="border border-gray-300 px-2 py-2">{row.qty || "-"}</td>
+                    <td className="border border-gray-300 px-2 py-2">{row.noOfCuts || "-"}</td>
+                    <td className="border border-gray-300 px-2 py-2">{money(row.purchaseRate || 0)} / {money(row.finalPrice || 0)}</td>
+                    <td className="border border-gray-300 px-2 py-2">{money((Number(row.finalPrice || 0) * Number(row.qty || 0)) * (Number(row.gst || 0) / 100))}</td>
                   </tr>
                 ))}
               </tbody>
             </table>
-          </div>
-        )}
-      </div>
+          )}
 
-      <div className="flex flex-wrap items-center justify-end gap-6 rounded-lg border border-gray-300 bg-white px-4 py-3 shadow-sm text-sm">
-        <div className="flex items-baseline gap-2">
-          <span className="text-gray-500">Total Taxable</span>
-          <span className="font-mono font-semibold text-gray-800">
-            ₹ {inr(totals.taxable)}
-          </span>
-        </div>
-        <div className="flex items-baseline gap-2">
-          <span className="text-gray-500">Total GST</span>
-          <span className="font-mono font-semibold text-gray-800">
-            ₹ {inr(totals.gst)}
-          </span>
-        </div>
-        <div className="flex items-baseline gap-2">
-          <span className="text-gray-500">Grand Total</span>
-          <span className="font-mono font-bold text-indigo-700 text-base">
-            ₹ {inr(grandTotal)}
-          </span>
-        </div>
-      </div>
-
-      {/* Submit confirmation modal */}
-      {showModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
-          <div className="w-full max-w-6xl max-h-[85vh] rounded-lg bg-white shadow-xl flex flex-col">
-            <div className="flex items-center justify-between px-5 py-3 border-b border-gray-200">
-              <h2 className="text-base font-semibold text-gray-800">
-                Confirm Barcode Generation &mdash; {validRows.length} item
-                {validRows.length !== 1 ? "s" : ""}
-              </h2>
-              <button
-                onClick={() => setShowModal(false)}
-                className="text-gray-400 hover:text-gray-600 text-xl leading-none"
-              >
-                &times;
-              </button>
-            </div>
-
-            <div className="overflow-auto px-5 py-3">
-              <table className="w-full text-xs border-collapse">
-                <thead>
-                  <tr className="bg-gray-100 text-gray-600 uppercase text-[10px]">
-                    <th className="border border-gray-200 px-2 py-1.5 text-left">
-                      Item Code
-                    </th>
-                    <th className="border border-gray-200 px-2 py-1.5 text-left">
-                      Description
-                    </th>
-                    <th className="border border-gray-200 px-2 py-1.5 text-left">
-                      Mode
-                    </th>
-                    <th className="border border-gray-200 px-2 py-1.5 text-right">
-                      Qty
-                    </th>
-                    <th className="border border-gray-200 px-2 py-1.5 text-right">
-                      Pur Rate
-                    </th>
-                    <th className="border border-gray-200 px-2 py-1.5 text-right">
-                      Final NET
-                    </th>
-                    <th className="border border-gray-200 px-2 py-1.5 text-right">
-                      GST %
-                    </th>
-                    <th className="border border-gray-200 px-2 py-1.5 text-right">
-                      Taxable
-                    </th>
-                    <th className="border border-gray-200 px-2 py-1.5 text-right">
-                      GST Amt
-                    </th>
-                    <th className="border border-gray-200 px-2 py-1.5 text-left">
-                      Barcode No.
-                    </th>
+          {activeTab === "summary" && (
+            <table className="min-w-[1000px] w-full border-collapse text-xs">
+              <thead>
+                <tr className="bg-gray-100 text-left text-gray-700">
+                  <th className="border border-gray-300 px-2 py-2">Sl No</th>
+                  <th className="border border-gray-300 px-2 py-2">Bill Sl No.</th>
+                  <th className="border border-gray-300 px-2 py-2">Item Name</th>
+                  <th className="border border-gray-300 px-2 py-2">QTY</th>
+                  <th className="border border-gray-300 px-2 py-2">Before GST Amount</th>
+                  <th className="border border-gray-300 px-2 py-2">GST Amount</th>
+                  <th className="border border-gray-300 px-2 py-2">Net Amount</th>
+                </tr>
+              </thead>
+              <tbody>
+                {summaryRows.length === 0 ? (
+                  <tr><td colSpan={7} className="px-3 py-8 text-center text-gray-500">No data found</td></tr>
+                ) : summaryRows.map((row, index) => (
+                  <tr key={row.id} className="odd:bg-white even:bg-gray-50">
+                    <td className="border border-gray-300 px-2 py-2">{index + 1}</td>
+                    <td className="border border-gray-300 px-2 py-2">{index + 1}</td>
+                    <td className="border border-gray-300 px-2 py-2">{row.itemName}</td>
+                    <td className="border border-gray-300 px-2 py-2">{money(row.qty)}</td>
+                    <td className="border border-gray-300 px-2 py-2">{money(row.beforeTax)}</td>
+                    <td className="border border-gray-300 px-2 py-2">{money(row.gst)}</td>
+                    <td className="border border-gray-300 px-2 py-2">{money(row.net)}</td>
                   </tr>
-                </thead>
-                <tbody>
-                  {validRows.map((r) => {
-                    const qty = parseFloat(r.qty) || 0;
-                    const taxable = (r.finalNet || 0) * qty;
-                    const gstAmt = taxable * ((parseFloat(r.gst) || 0) / 100);
-                    return (
-                      <tr key={r.id} className="odd:bg-white even:bg-gray-50">
-                        <td className="border border-gray-200 px-2 py-1 font-medium">
-                          {r.itemCode}
-                        </td>
-                        <td className="border border-gray-200 px-2 py-1">
-                          {r.supplierDescription}
-                        </td>
-                        <td className="border border-gray-200 px-2 py-1 uppercase">
-                          {r.mode}
-                        </td>
-                        <td className="border border-gray-200 px-2 py-1 text-right font-mono">
-                          {qty}
-                        </td>
-                        <td className="border border-gray-200 px-2 py-1 text-right font-mono">
-                          {inr(parseFloat(r.purRate) || 0)}
-                        </td>
-                        <td className="border border-gray-200 px-2 py-1 text-right font-mono">
-                          {inr(r.finalNet)}
-                        </td>
-                        <td className="border border-gray-200 px-2 py-1 text-right font-mono">
-                          {r.gst || 0}
-                        </td>
-                        <td className="border border-gray-200 px-2 py-1 text-right font-mono">
-                          {inr(taxable)}
-                        </td>
-                        <td className="border border-gray-200 px-2 py-1 text-right font-mono">
-                          {inr(gstAmt)}
-                        </td>
-                        <td className="border border-gray-200 px-2 py-1 font-mono text-[10px]">
-                          {r.barcodeNo || (
-                            <span className="text-red-500">not generated</span>
-                          )}
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-                <tfoot>
+                ))}
+                {summaryRows.length > 0 && (
                   <tr className="bg-gray-100 font-semibold">
-                    <td
-                      colSpan={3}
-                      className="border border-gray-200 px-2 py-1.5 text-right"
-                    >
-                      Totals
-                    </td>
-                    <td className="border border-gray-200 px-2 py-1.5 text-right font-mono">
-                      {modalTotals.qty}
-                    </td>
-                    <td className="border border-gray-200 px-2 py-1.5 text-right font-mono">
-                      {inr(modalTotals.purRate)}
-                    </td>
-                    <td className="border border-gray-200 px-2 py-1.5 text-right font-mono">
-                      {inr(modalTotals.finalNet)}
-                    </td>
-                    <td className="border border-gray-200 px-2 py-1.5 text-right font-mono">
-                      {modalGstRate.toFixed(2)}%
-                    </td>
-                    <td className="border border-gray-200 px-2 py-1.5 text-right font-mono">
-                      {inr(modalTotals.taxable)}
-                    </td>
-                    <td className="border border-gray-200 px-2 py-1.5 text-right font-mono">
-                      {inr(modalTotals.gstAmount)}
-                    </td>
-                    <td className="border border-gray-200 px-2 py-1.5" />
+                    <td className="border border-gray-300 px-2 py-2" colSpan={3}>Total</td>
+                    <td className="border border-gray-300 px-2 py-2">{money(totals.pcs + totals.mtr)}</td>
+                    <td className="border border-gray-300 px-2 py-2">{money(totals.taxable)}</td>
+                    <td className="border border-gray-300 px-2 py-2">{money(totals.gst)}</td>
+                    <td className="border border-gray-300 px-2 py-2">{money(totals.net)}</td>
                   </tr>
-                </tfoot>
-              </table>
-            </div>
+                )}
+              </tbody>
+            </table>
+          )}
 
-            <div className="flex items-center justify-between px-5 py-3 border-t border-gray-200">
-              <div className="text-sm text-gray-600">
-                Grand Total:{" "}
-                <span className="font-mono font-bold text-indigo-700">
-                  ₹ {inr(grandTotal)}
-                </span>
-              </div>
-              <div className="flex gap-2">
-                <button
-                  onClick={() => setShowModal(false)}
-                  className="px-4 py-1.5 text-sm font-medium rounded-md border border-gray-300 text-gray-700 hover:bg-gray-50"
-                >
-                  Cancel
-                </button>
-                <button
-                  onClick={saveRows}
-                  disabled={saving}
-                  className="px-4 py-1.5 text-sm font-semibold rounded-md bg-indigo-600 text-white hover:bg-indigo-700"
-                >
-                  {saving
-                    ? "Saving..."
-                    : editMode
-                      ? "Update"
-                      : "Confirm Submit"}
-                </button>
-              </div>
+          {activeTab === "withBarcode" && (
+            <table className="min-w-[1400px] w-full border-collapse text-xs">
+              <thead>
+                <tr className="bg-gray-100 text-left text-gray-700">
+                  <th className="border border-gray-300 px-2 py-2">Sl No</th>
+                  <th className="border border-gray-300 px-2 py-2">Item</th>
+                  <th className="border border-gray-300 px-2 py-2">QTY/MTR</th>
+                  <th className="border border-gray-300 px-2 py-2">No. of Cuts</th>
+                  <th className="border border-gray-300 px-2 py-2">Purchase Rate</th>
+                  <th className="border border-gray-300 px-2 py-2">Discount</th>
+                  <th className="border border-gray-300 px-2 py-2">Final Rate</th>
+                  <th className="border border-gray-300 px-2 py-2">Before Tax</th>
+                  <th className="border border-gray-300 px-2 py-2">GST Amount</th>
+                  <th className="border border-gray-300 px-2 py-2">Net Amount</th>
+                  <th className="border border-gray-300 px-2 py-2">RSP</th>
+                  <th className="border border-gray-300 px-2 py-2">WSP</th>
+                  <th className="border border-gray-300 px-2 py-2">DP</th>
+                  <th className="border border-gray-300 px-2 py-2">Variant</th>
+                  <th className="border border-gray-300 px-2 py-2">Action</th>
+                </tr>
+              </thead>
+              <tbody>
+                {validRows.length === 0 ? (
+                  <tr><td colSpan={15} className="px-3 py-8 text-center text-gray-500">No data found</td></tr>
+                ) : validRows.map((row, index) => (
+                  <tr key={row.id || index} className="odd:bg-white even:bg-gray-50">
+                    <td className="border border-gray-300 px-2 py-2">{index + 1}</td>
+                    <td className="border border-gray-300 px-2 py-2">{row.itemCode || "-"} / {row.itemName || "-"} / {row.hsn || "-"} / {row.gst || "-"} / {row.uom || "-"}</td>
+                    <td className="border border-gray-300 px-2 py-2">{row.qty || "-"}</td>
+                    <td className="border border-gray-300 px-2 py-2">{row.noOfCuts || "-"}</td>
+                    <td className="border border-gray-300 px-2 py-2">{money(row.purchaseRate || 0)}</td>
+                    <td className="border border-gray-300 px-2 py-2">{row.discount || 0}</td>
+                    <td className="border border-gray-300 px-2 py-2">{money(row.finalPrice || 0)}</td>
+                    <td className="border border-gray-300 px-2 py-2">{money((Number(row.finalPrice || 0) * Number(row.qty || 0)))}</td>
+                    <td className="border border-gray-300 px-2 py-2">{money(((Number(row.finalPrice || 0) * Number(row.qty || 0)) * (Number(row.gst || 0) / 100)))}</td>
+                    <td className="border border-gray-300 px-2 py-2">{money(((Number(row.finalPrice || 0) * Number(row.qty || 0)) + ((Number(row.finalPrice || 0) * Number(row.qty || 0)) * (Number(row.gst || 0) / 100))))}</td>
+                    <td className="border border-gray-300 px-2 py-2">{money(row.rsp || row.retailPrice || 0)}</td>
+                    <td className="border border-gray-300 px-2 py-2">{money(row.wsp || 0)}</td>
+                    <td className="border border-gray-300 px-2 py-2">{money(row.dp || 0)}</td>
+                    <td className="border border-gray-300 px-2 py-2">{row.uniqueBarcode || "No"}</td>
+                    <td className="border border-gray-300 px-2 py-2"><div className="flex gap-2"><button type="button" className="text-blue-600 hover:underline">Edit</button><button type="button" onClick={() => setRows((current) => current.filter((item) => item.id !== row.id))} className="text-red-600 hover:underline">Delete</button></div></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+      </div>
+
+      <div className="mt-4 flex items-center justify-end gap-6 rounded-lg border border-gray-300 bg-white px-4 py-3 text-sm">
+        <div className="flex items-center gap-2"><span className="text-gray-500">Total Taxable</span><span className="font-mono font-semibold text-gray-800">₹ {money(totals.taxable)}</span></div>
+        <div className="flex items-center gap-2"><span className="text-gray-500">Total GST</span><span className="font-mono font-semibold text-gray-800">₹ {money(totals.gst)}</span></div>
+        <div className="flex items-center gap-2"><span className="text-gray-500">Grand Total</span><span className="font-mono font-bold text-indigo-700">₹ {money(totals.net)}</span></div>
+      </div>
+
+      <PrintLabelPicker rows={printRows.length ? printRows : validRows} open={showPrint} onClose={() => { setShowPrint(false); setPrintRows([]); }} />
+
+      {showSaveConfirm && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+          <div className="w-full max-w-[520px] rounded-lg bg-white p-5 shadow-xl">
+            <h3 className="text-lg font-semibold text-gray-800">Confirm submit</h3>
+            <p className="mt-2 text-sm text-gray-600">Do you want to save all generated barcode rows?</p>
+            <div className="mt-5 flex justify-end gap-2">
+              <button type="button" onClick={() => setShowSaveConfirm(false)} className="rounded-md border border-gray-300 px-4 py-2 text-sm font-medium text-gray-700">Cancel</button>
+              <button type="button" onClick={() => saveRows(validRows, false)} disabled={saving} className="rounded-md bg-blue-600 px-4 py-2 text-sm font-semibold text-white disabled:opacity-60">{saving ? "Saving..." : "Submit"}</button>
             </div>
           </div>
         </div>
       )}
 
-      {justSubmitted && (
-        <div className="fixed bottom-4 right-4 z-50 rounded-md bg-green-600 text-white text-sm px-4 py-2 shadow-lg">
-          Submitted (static demo — no backend wired yet).
-        </div>
-      )}
-
-      {itemModalRowId !== null && (
-        <ModalForm
-          cfg={{
-            title: "Items",
-            addTitle: "Add Item",
-            basePath: "/admin/inventory/",
-            slugPath: "item",
-            endpoint: "/api/item",
-            fields: ITEM_FIELDS.filter((field) => field.k !== "rsp"),
-            quickAdds: {
-              hsnId: {
-                label: "Add HSN",
-                title: "Add HSN Code",
-                slug: "hsn",
-                endpoint: "/api/hsn",
-                fields: HSN_FIELDS,
-              },
-            },
-            modalWide: true,
-          }}
-          slug="item"
-          onClose={() => setItemModalRowId(null)}
-          onSaved={async (result) => {
-            const item = result?.id
-              ? await fetch("/api/item/" + result.id)
-                  .then((response) => response.json())
-                  .then((data) => data.doc)
-                  .catch(() => null)
-              : null;
-            setItemModalRowId(null);
-            if (item?.itemCode)
-              handleItemCodeEnter(itemModalRowId, item.itemCode);
-          }}
-        />
-      )}
+      <div className="fixed bottom-4 right-4">
+        <button type="button" onClick={() => setShowSaveConfirm(true)} className="rounded-md bg-green-600 px-5 py-2 text-sm font-semibold text-white shadow hover:bg-green-700">Submit</button>
+      </div>
     </div>
   );
 }
+
+export { modeFromUom, usesMeterCuts, buildMeterCutPlan };
