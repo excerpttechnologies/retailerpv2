@@ -32,6 +32,11 @@ export function useOptions(ref, query = '', enabled = true) {
   const { business, location } = useScope();
   const [options, setOptions] = useState([]);
   const [loading, setLoading] = useState(false);
+  /* An empty list and a FAILED request are different things, and the picker
+     was showing "No options" for both - so a dropdown that could not reach
+     the server looked exactly like a company with no suppliers. The caller
+     needs to be able to tell them apart and say so. */
+  const [error, setError] = useState('');
   const [version, setVersion] = useState(() => versions.get(ref) || 0);
 
   useEffect(() => {
@@ -44,23 +49,33 @@ export function useOptions(ref, query = '', enabled = true) {
     if (!ref || !enabled) {
       setOptions([]);
       setLoading(false);
+      setError('');
       return undefined;
     }
     let off = false;
     setLoading(true);
+    setError('');
 
     const qs = new URLSearchParams({ ref, business: business || '', location: location || '', q: query });
     fetch('/api/options?' + qs, { cache: 'no-store' })
-      .then((r) => r.json())
+      .then(async (r) => {
+        const d = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(d.error || 'Request failed');
+        return d;
+      })
       .then((d) => { if (!off) setOptions(d.options || []); })
-      .catch(() => { if (!off) setOptions([]); })
+      .catch(() => {
+        if (off) return;
+        setOptions([]);
+        setError('Unable to load the list. Check your connection and try again.');
+      })
       .finally(() => { if (!off) setLoading(false); });
 
     /* a scope change mid-flight must not let the old list land last */
     return () => { off = true; };
   }, [ref, business, location, query, version, enabled]);
 
-  return { options, loading };
+  return { options, loading, error };
 }
 
 export function useCities(term) {

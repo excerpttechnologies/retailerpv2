@@ -164,9 +164,19 @@ const REFS = {
      the Agent form does not even ask for it - so fall back to the personal
      name rather than showing "(untitled)" in every picker. This mirrors what
      lib/refLabels.js resolveRefLabels already does for list columns. */
-  supplier:                  { load: () => import('@/models/Contact'), scoped: false, kind: 'Supplier', label: 'businessName', nameFallback: ['firstName', 'lastName'] },
-  agent:                     { load: () => import('@/models/Contact'), kind: 'Agent', label: 'businessName', nameFallback: ['firstName', 'lastName'] },
-  customer:                  { load: () => import('@/models/Contact'), kind: 'Customer', label: 'businessName', nameFallback: ['firstName', 'lastName'] },
+  /* codeField: the contact's own code - "G524", "PO8", "IC16" - which the
+     business calls the G-code and uses to identify a vendor on paper. It is
+     appended to the label, and searched, so typing either the name or the
+     code finds the supplier. Without it the code was invisible in every
+     picker and unsearchable, even though lists already showed it.
+
+     supplier is BUSINESS-SCOPED like the other two. It carried scoped:false,
+     which mixed every company's vendors into one list and then truncated
+     that list at 200 - so a company with 819 suppliers could not reach most
+     of its own, and could pick another company's. */
+  supplier:                  { load: () => import('@/models/Contact'), kind: 'Supplier', label: 'businessName', nameFallback: ['firstName', 'lastName'], codeField: 'contactId' },
+  agent:                     { load: () => import('@/models/Contact'), kind: 'Agent', label: 'businessName', nameFallback: ['firstName', 'lastName'], codeField: 'contactId' },
+  customer:                  { load: () => import('@/models/Contact'), kind: 'Customer', label: 'businessName', nameFallback: ['firstName', 'lastName'], codeField: 'contactId' },
  
   'product/filter':          { load: () => import('@/models/ProductFilter') },
   'product/group':           { load: () => import('@/models/ProductGroup') },
@@ -244,12 +254,23 @@ export async function GET(req) {
   const q = (sp.get('q') || '').trim();
   if (q) {
     const rx = { $regex: escapeRegex(q), $options: 'i' };
-    if (entry.nameFallback) {
-      /* search the fallback name fields too, or typing "DIRECT" finds nothing
-         for a contact whose businessName is empty. Wrapped in $and so it can't
-         collide with a ref that already uses $or in its own `where`. */
+    if (entry.nameFallback || entry.codeField) {
+      /* Search the label, the fallback name fields AND the code.
+
+         The fallbacks matter because businessName is empty on a contact
+         entered as a person - typing "DIRECT" found nothing for them. The
+         code matters because the business identifies a vendor by its G-code
+         as often as by its name: typing "G524" must find the same supplier
+         as typing "KARNATAKA".
+
+         Wrapped in $and so it cannot collide with a ref that already uses
+         $or in its own `where`. */
       (filter.$and ||= []).push({
-        $or: [{ [label]: rx }, ...entry.nameFallback.map((f) => ({ [f]: rx }))],
+        $or: [
+          { [label]: rx },
+          ...(entry.nameFallback || []).map((f) => ({ [f]: rx })),
+          ...(entry.codeField ? [{ [entry.codeField]: rx }] : []),
+        ],
       });
     } else {
       filter[label] = rx;
@@ -279,10 +300,25 @@ export async function GET(req) {
     return alt || '(untitled)';
   };
 
+  /* "KARNATAKA Saree Centre, MYSORE (G524)".
+
+     The code is appended for DISPLAY only - `value` stays the ObjectId, so
+     what gets stored is the reference and never the formatted text. A
+     supplier without a code simply shows its name. */
+  const labelOf = (r) => {
+    const name = textOf(r);
+    const code = entry.codeField ? String(r[entry.codeField] ?? '').trim() : '';
+    return code ? name + ' (' + code + ')' : name;
+  };
+
   return json({
     options: rows.map((r) => ({
       value: String(r._id),
-      label: textOf(r),
+      label: labelOf(r),
+      /* the parts, unformatted, for a caller that needs them on their own */
+      name: textOf(r),
+      ...(entry.codeField ? { code: String(r[entry.codeField] ?? '') } : {}),
+      ...(entry.codeField === 'contactId' ? { gstNo: String(r.gstNo ?? '') } : {}),
       ...(entry.defaultField && r[entry.defaultField] ? { isDefault: true } : {}),
     })),
   });

@@ -181,7 +181,22 @@ export default function EditTransactionPurchaseGrcPage() {
         <div className="card-body overflow-x-auto">
           {tab === 'items' ? (
             <table className="dt min-w-[1500px]"><thead><tr>{['Item Code', 'Batch/Unique', 'Bill Sl No', 'Supplier Description', 'Qty', 'UOM', 'HSN', 'Pur Rate', 'Final Net', 'GST %', 'Retail Price', 'Offer Price', 'Barcode Generated', ''].map((heading) => <th key={heading}>{heading}</th>)}</tr></thead><tbody>
-              {rows.length === 0 && <tr><td colSpan={14} className="dt-empty">No barcode items yet.</td></tr>}
+              {/* "No barcode items yet" is right for a GRC being built, but
+                  misleading for an IMPORTED one - it reads as "none exist",
+                  when the truth is the historical export carried no item
+                  detail for this GRC. The header knows how much was received,
+                  so say that rather than leaving the operator to wonder
+                  whether the import dropped something. Nothing is fabricated;
+                  the row count is still zero. */}
+              {rows.length === 0 && (
+                <tr><td colSpan={14} className="dt-empty">
+                  {data.importedFrom
+                    ? `No item detail was included for this GRC in the historical import${
+                      data.totalQuantity ? ` - its header records a total quantity of ${data.totalQuantity}` : ''
+                    }. Re-import once the source export includes this GRC's items.`
+                    : 'No barcode items yet.'}
+                </td></tr>
+              )}
               {rows.map((row) => <tr key={row._id}><td>{cell(row.itemCode)}</td><td>{cell(row.batchUnique)}</td><td>{cell(row.billSlNo)}</td><td>{cell(row.supplierDescription)}</td><td>{cell(row.qty)}</td><td>{cell(row.uom)}</td><td>{cell(row.hsn)}</td><td>{cell(row.purRate)}</td><td>{cell(row.finalNet)}</td><td>{cell(row.gst)}</td><td>{cell(row.retailPrice)}</td><td>{cell(row.offerPrice)}</td><td>{cell(row.barcodeGenerated)}</td><td><button type="button" className="text-brand-link underline" onClick={openBarcode}>Edit</button></td></tr>)}
             </tbody></table>
           ) : (
@@ -192,7 +207,13 @@ export default function EditTransactionPurchaseGrcPage() {
                 </tr>
               </thead>
               <tbody>
-                {summaryRows.length === 0 && <tr><td colSpan={7} className="dt-empty">No summary items yet.</td></tr>}
+                {summaryRows.length === 0 && (
+                  <tr><td colSpan={7} className="dt-empty">
+                    {data.importedFrom
+                      ? 'The summary is derived from the barcode items, and none were included for this GRC in the historical import.'
+                      : 'No summary items yet.'}
+                  </td></tr>
+                )}
                 {summaryRows.map((row, index) => (
                   <tr key={row._id || `${row.billSlNo}-${index}`}>
                     <td>{index + 1}</td>

@@ -8,6 +8,7 @@ import ModalForm from './ModalForm';
 import { useScope } from './ScopeContext';
 import { refreshOptions } from './useOptions';
 import { fmt } from '@/lib/format';
+import { sourceLabel } from '@/lib/sourceLabel';
 
 /* Renders the Purchase add screens from the registry `form.cards` spec:
    fields | info | scan | source | grid | totals   (see purchaseRegistry.js) */
@@ -69,41 +70,103 @@ function ScanRow({ onFound }) {
 
 function SourceSelect({ card, supplierId, value, onChange, onSelect }) {
   const [options, setOptions] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+  const [selectedLabel, setSelectedLabel] = useState('');
   const scope = useScope();
 
+  /* A source card that narrows by vendor cannot list anything until one is
+     chosen. Saying so is the difference between "pick a vendor first" and
+     "this vendor has no transactions" - the screen used to show the same
+     empty box for both. */
+  const needsSupplier = Boolean(card.withSupplier) && !supplierId;
+
   useEffect(() => {
+    if (needsSupplier) { setOptions([]); setError(''); setLoading(false); return undefined; }
+
+    let off = false;
+    setLoading(true);
+    setError('');
+
     const qs = new URLSearchParams({
       perPage: '200', unconverted: card.unconvertedBy || '', availableLr: card.availableLr ? '1' : '',
       business: scope.business || '', location: scope.location || '', finYear: scope.finYear || '',
     });
     if (card.withSupplier && supplierId) qs.set('supplierId', supplierId);
+
     fetch(card.endpoint + '?' + qs)
-      .then((r) => r.json())
-      .then((d) => setOptions((d.rows || []).map((r) => ({
-        value: r._id,
-        label: card.sourceLabel ? (r[card.sourceLabel] || r._id) : (r.grcNumber || r.grtNo || r._id),
-        row: r,
-      }))))
-      .catch(() => setOptions([]));
+      .then(async (r) => {
+        const d = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(d.error || 'Request failed');
+        return d;
+      })
+      .then((d) => {
+        if (off) return;
+        const mappedOptions = (d.rows || []).map((r) => ({ 
+          value: r._id, 
+          label: sourceLabel(card, r), 
+          row: r 
+        }));
+        setOptions(mappedOptions);
+        
+        // Preserve the selected label if value exists
+        if (value) {
+          const selected = mappedOptions.find((opt) => opt.value === value);
+          if (selected) setSelectedLabel(selected.label);
+        }
+      })
+      .catch(() => {
+        if (off) return;
+        setOptions([]);
+        setError('Unable to load transactions. Check your connection and try again.');
+      })
+      .finally(() => { if (!off) setLoading(false); });
+
+    /* a vendor change mid-flight must not let the old vendor's list land last */
+    return () => { off = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [card.endpoint, supplierId, scope.business, scope.location, scope.finYear]);
+  }, [card.endpoint, supplierId, needsSupplier, scope.business, scope.location, scope.finYear]);
+
+  // Add selected value to options if it's not already there
+  const displayOptions = value && selectedLabel && !options.find((o) => o.value === value)
+    ? [{ value, label: selectedLabel, row: {} }, ...options]
+    : options;
 
   return (
     <div>
       <label className="f-label">{card.label}{card.req && <span className="f-req">*</span>}</label>
       <MultiSelect
         mode={card.multi ? 'multi' : 'single'}
-        options={options}
+        options={displayOptions}
+        loading={loading}
+        error={error}
+        disabled={needsSupplier}
+        emptyText={needsSupplier ? 'Select a vendor first' : 'No open transactions for this vendor'}
+        placeholder={needsSupplier ? 'Select a vendor first' : (card.placeholder || 'Select...')}
         value={card.multi ? (value || []) : (value || '')}
         onChange={(next) => {
           onChange(next);
-          if (card.multi) onSelect?.(options.filter((option) => next.includes(option.value)).map((option) => option.row));
-          else onSelect?.(options.find((option) => option.value === next)?.row);
+          if (card.multi) {
+            onSelect?.(options.filter((option) => next.includes(option.value)).map((option) => option.row));
+          } else {
+            const selected = options.find((option) => option.value === next);
+            if (selected) {
+              setSelectedLabel(selected.label);
+              onSelect?.(selected.row);
+            }
+          }
         }}
       />
+      {!loading && !error && !needsSupplier && options.length === 0 && (
+        <span className="mt-0.5 block text-[11px] text-inkmuted">
+          Every LR for this vendor already has a GRC, or none has been raised yet.
+        </span>
+      )}
     </div>
   );
 }
+
+
 
 function Grid({ card, rows, onRemove }) {
   const total = rows.reduce((result, row) => {
@@ -454,10 +517,25 @@ export default function TransactionFormView({ cfg, id, slug }) {
     setData((d) => ({ ...d, [k]: v }));
     setErrors((e) => ({ ...e, [k]: undefined }));
 
+    const spec = allFields.find((f) => f.k === k);
+
+    /* `clears` names the fields that BELONG to the old value and must not
+       survive it.
+
+       Changing the vendor left the previously chosen LR - and the invoice
+       number copied off it - sitting in the form while the LR dropdown
+       reloaded with a different vendor's transactions. The GRC could then be
+       submitted with vendor B and vendor A's LR. The server rejects that (it
+       re-checks the LR belongs to the vendor), but the operator only found
+       out at submit, with no indication of which field was wrong. */
+    if (spec?.clears?.length) {
+      setData((d) => spec.clears.reduce((next, target) => ({ ...next, [target]: '' }), d));
+      setErrors((e) => spec.clears.reduce((next, target) => ({ ...next, [target]: undefined }), e));
+    }
+
     /* `fillFrom` lets a ref field copy details off the record it points at.
        Vendor GST No is read-only and has no other source - without this it
        renders as a permanently empty box. */
-    const spec = allFields.find((f) => f.k === k);
     if (!spec?.fillFrom) return;
 
     const { endpoint, map } = spec.fillFrom;

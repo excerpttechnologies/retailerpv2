@@ -2,6 +2,7 @@ import { isValidObjectId } from 'mongoose';
 import dbConnect from '@/lib/db';
 import Grc from '@/models/Grc';
 import Delivery from '@/models/Delivery';
+import Contact from '@/models/Contact';
 import { requireSession } from '@/lib/session';
 import { resolveRefLabels } from '@/lib/refLabels';
 import { validate, escapeRegex } from '@/lib/validate';
@@ -51,7 +52,46 @@ export async function GET(req) {
     }).select('lrTransactionId').lean();
     deliveryFilter._id = { $nin: used.map((r) => r.lrTransactionId) };
     const rows = await Delivery.find(deliveryFilter).sort({ createdAt: -1 }).limit(500).lean();
-    return json({ rows: rows.map((r) => ({ ...r, _id: String(r._id) })) });
+
+    /* ---- attach the vendor each LR belongs to -------------------------
+
+       The LR dropdown shows "LR/26/011 | 64187 | G524 | KARNATAKA Saree
+       Centre, MYSORE", so it needs the vendor's number and name. The
+       delivery stores only supplierId, and that stays the case - the name is
+       NOT copied onto the delivery, because a vendor renamed tomorrow would
+       leave every stored copy wrong.
+
+       Resolved in ONE query for the whole page rather than one per row: 500
+       LRs would otherwise be 500 lookups. */
+    const supplierIds = [...new Set(
+      rows.map((r) => r.supplierId).filter((s) => s && isValidObjectId(String(s))).map(String)
+    )];
+    const suppliers = supplierIds.length
+      ? await Contact.find({ _id: { $in: supplierIds } })
+        .select('contactId businessName firstName middleName lastName').lean()
+      : [];
+
+    const supplierById = new Map(suppliers.map((s) => [String(s._id), s]));
+
+    /* businessName is empty on a vendor entered as a person, so fall back to
+       the personal name - the same rule /api/options and lib/refLabels use. */
+    const vendorNameOf = (s) => String(s.businessName || '').trim()
+      || [s.firstName, s.middleName, s.lastName].map((p) => String(p || '').trim()).filter(Boolean).join(' ');
+
+    return json({
+      rows: rows.map((r) => {
+        const s = supplierById.get(String(r.supplierId));
+        return {
+          ...r,
+          _id: String(r._id),
+          /* nested, so the caller can read the vendor as one thing; the
+             delivery's own supplierId is untouched and still the reference */
+          supplier: s
+            ? { vendorNo: String(s.contactId || ''), vendorName: vendorNameOf(s) }
+            : null,
+        };
+      }),
+    });
   }
 
   const page = Math.max(1, Number(sp.get('page') || 1));
@@ -114,16 +154,84 @@ export async function POST(req) {
   if (Array.isArray(body.data?.items)) doc.items = body.data.items;
   if (Array.isArray(body.data?.voucherRows)) doc.voucherRows = body.data.voucherRows;
 
-  const duplicate = await Grc.exists({ lrTransactionId: doc.lrTransactionId });
-  if (duplicate) return json({ errors: { lrTransactionId: 'This LR / Transaction already has a GRC.' } }, 422);
+  /* ---- the vendor and the LR are re-established from the DATABASE --------
 
-  const delivery = await Delivery.findById(doc.lrTransactionId).select('supplierId transactionNo invPmNumber').lean();
+     Everything below re-reads what the browser sent and checks it against the
+     masters. The form is a convenience; it is not a source of truth, and a
+     request that names a vendor and an LR belonging to someone else has to be
+     refused whether it came from a mistake or a hand-rolled POST.
+
+     The order matters: each check produces a message naming the field the
+     operator has to correct. */
+
+  if (!doc.supplierId || !isValidObjectId(String(doc.supplierId))) {
+    return json({ errors: { supplierId: 'Choose a vendor.' } }, 422);
+  }
+  if (!doc.lrTransactionId || !isValidObjectId(String(doc.lrTransactionId))) {
+    return json({ errors: { lrTransactionId: 'Choose an LR / Transaction.' } }, 422);
+  }
+
+  /* the vendor must exist, be a supplier, and belong to this business - not
+     another company's vendor list */
+  const supplier = await Contact.findById(doc.supplierId)
+    .select('contactKind businessName firstName lastName contactId gstNo businessId').lean();
+  if (!supplier) {
+    return json({ errors: { supplierId: 'That vendor no longer exists.' } }, 422);
+  }
+  if (supplier.contactKind !== 'Supplier') {
+    return json({ errors: { supplierId: 'That contact is not a vendor.' } }, 422);
+  }
+  if (doc.businessId && supplier.businessId && String(supplier.businessId) !== String(doc.businessId)) {
+    return json({ errors: { supplierId: 'That vendor belongs to a different business.' } }, 422);
+  }
+
+  const delivery = await Delivery.findById(doc.lrTransactionId)
+    .select('supplierId transactionNo invPmNumber businessId freightAmount').lean();
   if (!delivery) return json({ errors: { lrTransactionId: 'Selected LR / Transaction was not found.' } }, 422);
+
   if (String(delivery.supplierId) !== String(doc.supplierId)) {
     return json({ errors: { lrTransactionId: 'Selected LR does not belong to this vendor.' } }, 422);
   }
+  if (doc.businessId && delivery.businessId && String(delivery.businessId) !== String(doc.businessId)) {
+    return json({ errors: { lrTransactionId: 'That LR belongs to a different business.' } }, 422);
+  }
+
+  /* One LR, one GRC. Scoped to the business so two companies cannot block
+     each other, and `$ne: null` so a row that somehow has no LR does not
+     match every incoming request and refuse them all. */
+  const duplicate = await Grc.findOne({
+    lrTransactionId: doc.lrTransactionId,
+    ...(doc.businessId ? { businessId: doc.businessId } : {}),
+  }).select('grcNumber').lean();
+  if (duplicate) {
+    return json({
+      errors: {
+        lrTransactionId: 'This LR already has a GRC'
+          + (duplicate.grcNumber ? ' (' + duplicate.grcNumber + ')' : '') + '.',
+      },
+    }, 422);
+  }
+
+  /* Copied off the delivery rather than trusted from the form, so the GRC
+     always agrees with the LR it was raised against. */
   doc.lrTransactionNo = delivery.transactionNo || '';
   if (!doc.vendorDocNo) doc.vendorDocNo = delivery.invPmNumber || '';
+  /* the vendor's GST is a snapshot of the master at the time of receipt */
+  if (!doc.vendorGstNo) doc.vendorGstNo = supplier.gstNo || '';
+
+  /* The invoice number is mandatory, but it is checked HERE - after the LR
+     has been read - rather than up front. Requiring it before the LR was
+     resolved rejected every GRC whose invoice the system was about to supply
+     itself, which is the opposite of "Auto fetched from LR". It is only a
+     real error when the LR carries no invoice number either. */
+  if (!String(doc.vendorDocNo || '').trim()) {
+    return json({
+      errors: {
+        vendorDocNo: 'LR ' + (delivery.transactionNo || '') +
+          ' has no invoice number recorded, so enter it here.',
+      },
+    }, 422);
+  }
 
   /* document number from the Doc Setup master */
   if (!doc.grcNumber) {

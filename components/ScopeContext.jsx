@@ -130,7 +130,21 @@ export function ScopeProvider({ children }) {
         const list = d.options || [];
         setLocations(list);
         const saved = localStorage.getItem('orbit.location');
-        const pick = list.find((o) => o.value === saved) ? saved : list[0]?.value || '';
+        
+        /* Auto-select TEMPLE FABRICS WAREHOUSE on first load, but allow
+           switching to other locations. The saved location is restored if
+           it exists in the current business's location list. Otherwise,
+           default to TEMPLE FABRICS WAREHOUSE if available, or fall back
+           to the first location. */
+        let pick = '';
+        if (saved && list.find((o) => o.value === saved)) {
+          pick = saved;
+        } else {
+          const warehouse = list.find((o) => 
+            o.label && o.label.toUpperCase().includes('TEMPLE FABRICS WAREHOUSE')
+          );
+          pick = warehouse?.value || list[0]?.value || '';
+        }
         setLocation(pick);
       })
       .catch(() => {});

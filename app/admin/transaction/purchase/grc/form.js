@@ -4,6 +4,35 @@
 export const FORM = {
     "cards": [
       {
+        "type": "source",
+        "endpoint": "/api/purchase-grc",
+        "availableLr": true,
+        "label": "LR / Transaction Number",
+        "req": true,
+        "sourceKey": "lrTransactionId",
+        "sourceLabel": "transactionNo",
+        "withSupplier": true,
+        "width": "full",
+        /* "LR/26/011 | G524 | KARNATAKA Saree Centre, MYSORE"
+
+           Transaction number, then the VENDOR NUMBER and VENDOR NAME - joined 
+           onto the row from supplierId by the API, never stored on the delivery 
+           itself. The vendor is what an operator checks before receiving goods, 
+           and the bare transaction number does not tell two consignments apart.
+
+           Any part the record does not carry is skipped rather than printed
+           blank - see sourceLabel() in TransactionFormView. */
+        "sourceSubLabel": ["supplier.vendorNo", "supplier.vendorName"],
+        /* everything the delivery already recorded is copied onto the GRC
+           rather than re-typed. freightAmount is the LR's own freight. */
+        "populate": {
+          "vendorDocNo": "invPmNumber",
+          "lrTransactionNo": "transactionNo",
+          "freightAmount": "freightAmount",
+          "supplierId": "supplierId"
+        }
+      },
+      {
         "type": "fields",
         "fields": [
           {
@@ -12,33 +41,58 @@ export const FORM = {
             "type": "ref",
             "ref": "supplier",
             "req": true,
-            "minSearch": 1,
-            "placeholder": "Select Supplier",
+            "width": "full",
+            /* minSearch: 1 used to be here. It meant the dropdown fetched
+               NOTHING until a character was typed, so opening it showed
+               "No options" - which reads as "this company has no suppliers"
+               rather than "type to search". The list now loads on open and
+               narrows as you type. Search matches the vendor name and the
+               G-code, so "KARNATAKA" and "G524" both find the same record. */
             /* picking a vendor fills the read-only Vendor GST No below it */
             "fillFrom": {
               "endpoint": "/api/supplier",
               "map": { "vendorGstNo": "gstNo" }
-            }
+            },
+            /* changing the vendor invalidates everything that came off the
+               previous vendor's LR - see `clears` in TransactionFormView */
+            "clears": ["lrTransactionId", "lrTransactionNo", "vendorDocNo"]
           },
           {
             "k": "vendorGstNo",
             "label": "Vendor GST No",
             "type": "text",
-            "readOnly": true
+            "readOnly": true,
+            "width": "full"
           },
           {
             "k": "grcDate",
             "label": "Transaction Date",
             "type": "date",
             "req": true,
-            "def": "today"
+            "def": "today",
+            "width": "full"
           },
           {
+            /* NOT req. The invoice number is copied off the selected LR by
+               the server, and marking it required here made validate() reject
+               the form BEFORE the LR was ever read - so a GRC could not be
+               saved at all unless the operator retyped a number the system
+               already had, which is exactly what "Auto fetched from LR"
+               promises it will not ask for.
+
+               It is still mandatory, just enforced where the answer is known:
+               the POST fills it from the delivery and only complains if the
+               LR itself carries no invoice number. */
             "k": "vendorDocNo",
             "label": "Invoice Number",
             "type": "text",
-            "req": true,
-            "placeholder": "Auto fetched from LR"
+            "width": "full"
+          },
+          {
+            "k": "vendorDocDate",
+            "label": "Invoice Date",
+            "type": "date",
+            "width": "full"
           },
           {
             "k": "purchaseGroupId",
@@ -105,7 +159,7 @@ export const FORM = {
               { "v": "Before Tax", "l": "Before Tax" },
               { "v": "After Tax", "l": "After Tax" }
             ]
-          },
+          }
         ]
       },
       {
@@ -119,18 +173,6 @@ export const FORM = {
           { "k": "totalAmount", "label": "Enter Total Amount", "type": "number" },
           { "k": "freightAmount", "label": "Freight", "type": "number", "req": true }
         ]
-      },
-      {
-        "type": "source",
-        "endpoint": "/api/purchase-grc",
-        "availableLr": true,
-        "inlineAfter": "supplierId",
-        "label": "LR / Transaction Number",
-        "req": true,
-        "sourceKey": "lrTransactionId",
-        "sourceLabel": "transactionNo",
-        "withSupplier": true,
-        "populate": { "vendorDocNo": "invPmNumber", "lrTransactionNo": "transactionNo" }
       }
     ]
   };
@@ -140,5 +182,5 @@ export const SUPPLIER_QUICK_FIELDS = [
   { "k": "businessName", "label": "Business Name", "type": "text" },
   { "k": "firstName", "label": "First Name", "type": "text", "req": true },
   { "k": "billingMobile", "label": "Mobile", "type": "text", "req": true },
-  { "k": "gstNo", "label": "GST No", "type": "text" },
+  { "k": "gstNo", "label": "GST No", "type": "text" }
 ];

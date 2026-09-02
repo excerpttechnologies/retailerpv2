@@ -202,7 +202,7 @@ function RefField({ f, value, onChange, multi, onOptionChange, selectedOption })
   const [query, setQuery] = useState('');
   const [lastSelectedOption, setLastSelectedOption] = useState(null);
   const meetsMinimum = !f.minSearch || query.trim().length >= f.minSearch;
-  const { options, loading } = useOptions(f.ref, query, meetsMinimum);
+  const { options, loading, error } = useOptions(f.ref, query, meetsMinimum);
   const currentSelectedOption = selectedOption || lastSelectedOption;
   const displayedOptions = currentSelectedOption && !options.some((option) => option.value === currentSelectedOption.value)
     ? [currentSelectedOption, ...options]
@@ -212,6 +212,14 @@ function RefField({ f, value, onChange, multi, onOptionChange, selectedOption })
       mode={multi ? 'multi' : 'single'}
       options={displayedOptions}
       loading={loading}
+      error={error}
+      /* A field that waits for typing must SAY so - otherwise an empty list
+         is indistinguishable from a master with no records in it. */
+      emptyText={!meetsMinimum
+        ? 'Type at least ' + f.minSearch + ' character' + (f.minSearch > 1 ? 's' : '') + ' to search'
+        : query.trim()
+          ? 'Nothing matches "' + query.trim() + '"'
+          : 'No records found'}
       value={multi ? (value || []) : (value || '')}
       placeholder={f.placeholder || 'Select...'}
       onChange={(next) => {

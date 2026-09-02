@@ -1,0 +1,714 @@
+{
+  "startedAt": "2026-09-02T12:25:00.636Z",
+  "mode": "apply",
+  "sheets": {
+    "GRC Summary": 102,
+    "Item With Barcode": 304,
+    "Item Summary": 77
+  },
+  "grc": {
+    "processed": 102,
+    "inserted": 0,
+    "updated": 0,
+    "skipped": 0
+  },
+  "barcodes": {
+    "processed": 294,
+    "inserted": 0,
+    "updated": 294,
+    "skipped": 10
+  },
+  "images": {
+    "onDisk": 98,
+    "matched": 0,
+    "missing": 294,
+    "missingList": [
+      "8A4286",
+      "8A4287",
+      "8A4288",
+      "8A4289",
+      "8A4290",
+      "8A4291",
+      "8A4292",
+      "8A4293",
+      "8A4294",
+      "8A4295",
+      "8A4296",
+      "8A4297",
+      "8A4298",
+      "8A4299",
+      "8A4243",
+      "8A4244",
+      "8A4245",
+      "8A4246",
+      "8A4247",
+      "8A4248",
+      "8A4249",
+      "8A4250",
+      "8A4251",
+      "8A4252",
+      "8A4253",
+      "8A4254",
+      "8A4255",
+      "8A4256",
+      "8A4257",
+      "8A4258",
+      "8A4259",
+      "8A4260",
+      "8A4261",
+      "8A4262",
+      "8A4263",
+      "8A4264",
+      "8A4265",
+      "8A4266",
+      "8A4267",
+      "8A4268",
+      "8A4269",
+      "8A4270",
+      "8A4271",
+      "8A4272",
+      "8A4273",
+      "8A4274",
+      "8A4275",
+      "8A4276",
+      "8A4277",
+      "8A4278",
+      "8A4279",
+      "8A4280",
+      "8A4281",
+      "8A4282",
+      "8A4283",
+      "8A4284",
+      "8A4285",
+      "8A4195",
+      "8A4196",
+      "8A4197",
+      "8A4198",
+      "8A4199",
+      "8A4200",
+      "8A4201",
+      "8A4202",
+      "8A4203",
+      "8A4204",
+      "8A4205",
+      "8A4206",
+      "8A4207",
+      "8A4208",
+      "8A4209",
+      "8A4210",
+      "8A4211",
+      "8A4212",
+      "8A4213",
+      "8A4214",
+      "8A4215",
+      "8A4216",
+      "8A4217",
+      "8A4218",
+      "8A4219",
+      "8A4220",
+      "8A4221",
+      "8A4222",
+      "8A4223",
+      "8A4224",
+      "8A4225",
+      "8A4226",
+      "8A4227",
+      "8A4228",
+      "8A4229",
+      "8A4230",
+      "8A4231",
+      "8A4232",
+      "8A4233",
+      "8A4234",
+      "8A4235",
+      "8A4236",
+      "8A4237",
+      "8A4238",
+      "8A4239",
+      "8A4240",
+      "8A4241",
+      "8A4242",
+      "8A4155",
+      "8A4156",
+      "8A4157",
+      "8A4158",
+      "8A4159",
+      "8A4160",
+      "8A4161",
+      "8A4162",
+      "8A4163",
+      "8A4164",
+      "8A4165",
+      "8A4166",
+      "8A4167",
+      "8A4168",
+      "8A4169",
+      "8A4170",
+      "8A4171",
+      "8A4172",
+      "8A4173",
+      "8A4174",
+      "8A4175",
+      "8A4176",
+      "8A4177",
+      "8A4178",
+      "8A4179",
+      "8A4180",
+      "8A4181",
+      "8A4182",
+      "8A4183",
+      "8A4184",
+      "8A4185",
+      "8A4186",
+      "8A4187",
+      "8A4188",
+      "8A4189",
+      "8A4190",
+      "8A4191",
+      "8A4192",
+      "8A4193",
+      "8A4194",
+      "8A4114",
+      "8A4115",
+      "8A4116",
+      "8A4117",
+      "8A4118",
+      "8A4119",
+      "8A4120",
+      "8A4121",
+      "8A4122",
+      "8A4123",
+      "8A4124",
+      "8A4125",
+      "8A4126",
+      "8A4127",
+      "8A4128",
+      "8A4129",
+      "8A4130",
+      "8A4131",
+      "8A4132",
+      "8A4133",
+      "8A4134",
+      "8A4135",
+      "8A4136",
+      "8A4137",
+      "8A4138",
+      "8A4139",
+      "8A4140",
+      "8A4141",
+      "8A4142",
+      "8A4143",
+      "8A4144",
+      "8A4145",
+      "8A4146",
+      "8A4147",
+      "8A4148",
+      "8A4149",
+      "8A4150",
+      "8A4151",
+      "8A4152",
+      "8A4153",
+      "8A4154",
+      "8A4108",
+      "8A4109",
+      "8A4110",
+      "8A4111",
+      "8A4112",
+      "8A4113",
+      "8A4088",
+      "8A4089",
+      "8A4090",
+      "8A4091",
+      "8A4092",
+      "8A4093",
+      "8A4094",
+      "8A4095",
+      "8A4096",
+      "8A4097",
+      "8A4098",
+      "8A4099",
+      "8A4100",
+      "8A4101",
+      "8A4102",
+      "8A4103",
+      "8A4104",
+      "8A4105",
+      "8A4106",
+      "8A4107",
+      "8A4050",
+      "8A4051",
+      "8A4052",
+      "8A4053",
+      "8A4054",
+      "8A4055",
+      "8A4056",
+      "8A4057",
+      "8A4058",
+      "8A4059",
+      "8A4060",
+      "8A4061",
+      "8A4062",
+      "8A4063",
+      "8A4064",
+      "8A4065",
+      "8A4066",
+      "8A4067",
+      "8A4068",
+      "8A4069",
+      "8A4070",
+      "8A4071",
+      "8A4072",
+      "8A4073",
+      "8A4074",
+      "8A4075",
+      "8A4076",
+      "8A4077",
+      "8A4078",
+      "8A4079",
+      "8A4080",
+      "8A4081",
+      "8A4082",
+      "8A4083",
+      "8A4084",
+      "8A4085",
+      "8A4086",
+      "8A4087",
+      "8A4023",
+      "8A4024",
+      "8A4025",
+      "8A4026",
+      "8A4027",
+      "8A4028",
+      "8A4029",
+      "8A4030",
+      "8A4031",
+      "8A4032",
+      "8A4033",
+      "8A4034",
+      "8A4035",
+      "8A4036",
+      "8A4037",
+      "8A4038",
+      "8A4039",
+      "8A4040",
+      "8A4041",
+      "8A4042",
+      "8A4043",
+      "8A4044",
+      "8A4045",
+      "8A4046",
+      "8A4047",
+      "8A4048",
+      "8A4049",
+      "8A3987",
+      "8A3988",
+      "8A3989",
+      "8A3990",
+      "8A3991",
+      "8A3992",
+      "8A3993",
+      "8A3994",
+      "8A3995",
+      "8A3996",
+      "8A3997",
+      "8A3998",
+      "8A3999",
+      "8A4000",
+      "8A4001",
+      "8A4002",
+      "8A4003"
+    ],
+    "unused": 98
+  },
+  "vendors": {
+    "matched": 102,
+    "unmatched": 0,
+    "unmatchedList": []
+  },
+  "duplicates": {
+    "grcNumbers": [],
+    "barcodes": []
+  },
+  "summaryCheck": {
+    "compared": 10,
+    "agreed": 10,
+    "mismatched": []
+  },
+  "coverage": {
+    "withItems": 10,
+    "withoutItems": 92,
+    "missingList": [
+      {
+        "grcNumber": "05159",
+        "totalQuantity": 175
+      },
+      {
+        "grcNumber": "05148",
+        "totalQuantity": 166
+      },
+      {
+        "grcNumber": "05147",
+        "totalQuantity": 2245.2
+      },
+      {
+        "grcNumber": "05146",
+        "totalQuantity": 205
+      },
+      {
+        "grcNumber": "05145",
+        "totalQuantity": 66
+      },
+      {
+        "grcNumber": "05144",
+        "totalQuantity": 195.25
+      },
+      {
+        "grcNumber": "05143",
+        "totalQuantity": 8
+      },
+      {
+        "grcNumber": "05142",
+        "totalQuantity": 34.5
+      },
+      {
+        "grcNumber": "05141",
+        "totalQuantity": 51.6
+      },
+      {
+        "grcNumber": "05140",
+        "totalQuantity": 77
+      },
+      {
+        "grcNumber": "05139",
+        "totalQuantity": 161.5
+      },
+      {
+        "grcNumber": "05138",
+        "totalQuantity": 26
+      },
+      {
+        "grcNumber": "05137",
+        "totalQuantity": 8
+      },
+      {
+        "grcNumber": "05136",
+        "totalQuantity": 103
+      },
+      {
+        "grcNumber": "05135",
+        "totalQuantity": 1100
+      },
+      {
+        "grcNumber": "05134",
+        "totalQuantity": 1000
+      },
+      {
+        "grcNumber": "05133",
+        "totalQuantity": 267
+      },
+      {
+        "grcNumber": "05132",
+        "totalQuantity": 99.75
+      },
+      {
+        "grcNumber": "05131",
+        "totalQuantity": 30
+      },
+      {
+        "grcNumber": "05130",
+        "totalQuantity": 160
+      },
+      {
+        "grcNumber": "05129",
+        "totalQuantity": 179.5
+      },
+      {
+        "grcNumber": "05128",
+        "totalQuantity": 208.05
+      },
+      {
+        "grcNumber": "05127",
+        "totalQuantity": 132
+      },
+      {
+        "grcNumber": "05126",
+        "totalQuantity": 500
+      },
+      {
+        "grcNumber": "05125",
+        "totalQuantity": 180
+      },
+      {
+        "grcNumber": "05124",
+        "totalQuantity": 21
+      },
+      {
+        "grcNumber": "05123",
+        "totalQuantity": 20.25
+      },
+      {
+        "grcNumber": "05122",
+        "totalQuantity": 840
+      },
+      {
+        "grcNumber": "05121",
+        "totalQuantity": 25
+      },
+      {
+        "grcNumber": "05120",
+        "totalQuantity": 252
+      },
+      {
+        "grcNumber": "05119",
+        "totalQuantity": 516
+      },
+      {
+        "grcNumber": "05118",
+        "totalQuantity": 1579
+      },
+      {
+        "grcNumber": "05117",
+        "totalQuantity": 575
+      },
+      {
+        "grcNumber": "05116",
+        "totalQuantity": 1350
+      },
+      {
+        "grcNumber": "05115",
+        "totalQuantity": 894
+      },
+      {
+        "grcNumber": "04953",
+        "totalQuantity": 649.55
+      },
+      {
+        "grcNumber": "04952",
+        "totalQuantity": 45.8
+      },
+      {
+        "grcNumber": "04951",
+        "totalQuantity": 40.2
+      },
+      {
+        "grcNumber": "05110",
+        "totalQuantity": 77
+      },
+      {
+        "grcNumber": "05109",
+        "totalQuantity": 359
+      },
+      {
+        "grcNumber": "05108",
+        "totalQuantity": 7
+      },
+      {
+        "grcNumber": "05107",
+        "totalQuantity": 177
+      },
+      {
+        "grcNumber": "05106",
+        "totalQuantity": 198
+      },
+      {
+        "grcNumber": "05105",
+        "totalQuantity": 154.1
+      },
+      {
+        "grcNumber": "05104",
+        "totalQuantity": 100.25
+      },
+      {
+        "grcNumber": "05103",
+        "totalQuantity": 10
+      },
+      {
+        "grcNumber": "05102",
+        "totalQuantity": 11
+      },
+      {
+        "grcNumber": "05101",
+        "totalQuantity": 13
+      },
+      {
+        "grcNumber": "05100",
+        "totalQuantity": 23
+      },
+      {
+        "grcNumber": "05099",
+        "totalQuantity": 489.5
+      },
+      {
+        "grcNumber": "05098",
+        "totalQuantity": 421.75
+      },
+      {
+        "grcNumber": "05097",
+        "totalQuantity": 451
+      },
+      {
+        "grcNumber": "05096",
+        "totalQuantity": 15
+      },
+      {
+        "grcNumber": "05095",
+        "totalQuantity": 164.5
+      },
+      {
+        "grcNumber": "05094",
+        "totalQuantity": 11
+      },
+      {
+        "grcNumber": "05093",
+        "totalQuantity": 45
+      },
+      {
+        "grcNumber": "05092",
+        "totalQuantity": 267
+      },
+      {
+        "grcNumber": "05091",
+        "totalQuantity": 54
+      },
+      {
+        "grcNumber": "05090",
+        "totalQuantity": 6
+      },
+      {
+        "grcNumber": "05089",
+        "totalQuantity": 649
+      },
+      {
+        "grcNumber": "05088",
+        "totalQuantity": 19.2
+      },
+      {
+        "grcNumber": "05087",
+        "totalQuantity": 11
+      },
+      {
+        "grcNumber": "05086",
+        "totalQuantity": 721
+      },
+      {
+        "grcNumber": "05085",
+        "totalQuantity": 520
+      },
+      {
+        "grcNumber": "05084",
+        "totalQuantity": 80.65
+      },
+      {
+        "grcNumber": "05083",
+        "totalQuantity": 756.05
+      },
+      {
+        "grcNumber": "05082",
+        "totalQuantity": 64
+      },
+      {
+        "grcNumber": "05081",
+        "totalQuantity": 194
+      },
+      {
+        "grcNumber": "05080",
+        "totalQuantity": 32
+      },
+      {
+        "grcNumber": "05079",
+        "totalQuantity": 7
+      },
+      {
+        "grcNumber": "05078",
+        "totalQuantity": 25
+      },
+      {
+        "grcNumber": "05077",
+        "totalQuantity": 121
+      },
+      {
+        "grcNumber": "05076",
+        "totalQuantity": 20
+      },
+      {
+        "grcNumber": "05075",
+        "totalQuantity": 86
+      },
+      {
+        "grcNumber": "05074",
+        "totalQuantity": 62
+      },
+      {
+        "grcNumber": "05073",
+        "totalQuantity": 35
+      },
+      {
+        "grcNumber": "05072",
+        "totalQuantity": 111
+      },
+      {
+        "grcNumber": "05071",
+        "totalQuantity": 26
+      },
+      {
+        "grcNumber": "05070",
+        "totalQuantity": 10
+      },
+      {
+        "grcNumber": "05069",
+        "totalQuantity": 44
+      },
+      {
+        "grcNumber": "05068",
+        "totalQuantity": 441.85
+      },
+      {
+        "grcNumber": "05067",
+        "totalQuantity": 80
+      },
+      {
+        "grcNumber": "05066",
+        "totalQuantity": 63
+      },
+      {
+        "grcNumber": "05065",
+        "totalQuantity": 1151.4
+      },
+      {
+        "grcNumber": "05064",
+        "totalQuantity": 25.3
+      },
+      {
+        "grcNumber": "05063",
+        "totalQuantity": 89
+      },
+      {
+        "grcNumber": "05062",
+        "totalQuantity": 106.25
+      },
+      {
+        "grcNumber": "05061",
+        "totalQuantity": 149.7
+      },
+      {
+        "grcNumber": "05060",
+        "totalQuantity": 97
+      },
+      {
+        "grcNumber": "05059",
+        "totalQuantity": 180
+      },
+      {
+        "grcNumber": "05058",
+        "totalQuantity": 95.1
+      },
+      {
+        "grcNumber": "05057",
+        "totalQuantity": 265
+      }
+    ]
+  },
+  "errors": [],
+  "warnings": [],
+  "finishedAt": "2026-09-02T12:25:22.044Z"
+}
