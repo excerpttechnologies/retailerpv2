@@ -394,6 +394,20 @@ export default function ReportView({ spec }) {
           {/* ---------------------------------------------------- tabs --- */}
           {spec.tabsPosition !== 'top' && tabStrip}
 
+          {/* A report may report on its own limits. The stock reports use
+              this to say, when a window reaches back before the movement
+              ledger existed, that the earlier period was never recorded -
+              so an empty month reads as missing data rather than as a month
+              with no trade. Stating the gap is the alternative to filling
+              it with numbers nobody captured. */}
+          {data?.coverage?.note && (
+            <div className="card">
+              <div className="card-body">
+                <div className="flash flash-err">{data.coverage.note}</div>
+              </div>
+            </div>
+          )}
+
           {/* --------------------------------------------------- tiles --- */}
           {tiles.length > 0 && (
             <div

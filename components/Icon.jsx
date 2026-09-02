@@ -41,6 +41,8 @@ const P = {
   chevL: 'M15 6l-6 6 6 6',
   x: 'M6 6l12 12M18 6L6 18',
   check: 'M5 12l4 4L19 6',
+  /* stock going back the way it came - returns, on the transfer screens */
+  undo: 'M4 9h11a5 5 0 010 10h-6M4 9l4-4M4 9l4 4',
 };
 
 export default function Icon({ name, size = 18, className = '', stroke = 1.7 }) {

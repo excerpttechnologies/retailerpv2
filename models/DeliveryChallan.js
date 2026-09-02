@@ -29,6 +29,16 @@ const DeliveryChallanSchema = new mongoose.Schema(
     roundOff: { type: Number, default: null },
     netValue: { type: Number, default: null },
     deliveryChallanNo: { type: String, default: '' },
+    stockTransferLocationId: {
+      type: mongoose.Schema.Types.ObjectId, ref: 'stockTransferLocation', default: null, index: true,
+    },
+    stockTransferReceivedId: {
+      type: mongoose.Schema.Types.ObjectId, ref: 'stockTransferReceived', default: null, index: true,
+    },
+    sourceDocNo: { type: String, default: '' },
+    totalQty: { type: Number, default: 0 },
+    totalAmount: { type: Number, default: 0 },
+    status: { type: String, default: 'generated' },
     customerMobile: { type: String, default: '' },
     /* set when this document is converted downstream; null = still available */
     salesInvoiceId: { type: mongoose.Schema.Types.ObjectId, default: null, index: true },

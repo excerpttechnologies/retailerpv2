@@ -4,6 +4,9 @@ import StockAdjustment from '@/models/StockAdjustment';
 import { requireSession } from '@/lib/session';
 import { resolveRefLabels } from '@/lib/refLabels';
 import { validate, escapeRegex } from '@/lib/validate';
+import { handler } from '@/lib/apiError';
+import { requirePermission, PERMISSIONS } from '@/lib/rbac';
+import { withTransaction, adjustStock } from '@/lib/inventory';
 import { FORM } from '@/app/admin/inventory/stock-adjustment/form';
 
 /* header fields AND the totals rows - the totals card holds real stored
@@ -63,9 +66,8 @@ export async function GET(req) {
   });
 }
 
-export async function POST(req) {
-  const session = await requireSession();
-  if (!session) return json({ error: 'Unauthorized' }, 401);
+export const POST = handler(async (req) => {
+  const session = await requirePermission(PERMISSIONS.MASTERS_MANAGE, { locationId: null });
 
   const body = await req.json();
   await dbConnect();
@@ -80,6 +82,34 @@ export async function POST(req) {
   if (Array.isArray(body.data?.items)) doc.items = body.data.items;
   if (body.data?.type) doc.type = String(body.data.type);
 
-  const created = await StockAdjustment.create(doc);
+  /* An adjustment is a stock movement like any other, so it is written to the
+     ledger in the same transaction as the document. Without this the stock
+     reports and the adjustment register would tell two different stories -
+     which is the exact failure the ledger exists to prevent.
+
+     Stock Addition adds, Stock Subtraction removes; the screen's tab is
+     stored in `type`. */
+  const created = await withTransaction(async (dbSession) => {
+    const [adjustment] = await StockAdjustment.create(
+      [doc], dbSession ? { session: dbSession } : {}
+    );
+
+    if (Array.isArray(doc.items) && doc.items.length) {
+      await adjustStock({
+        lines: doc.items,
+        direction: String(doc.type || '').toLowerCase().startsWith('sub') ? 'out' : 'in',
+        businessId: doc.businessId,
+        locationId: doc.locationId,
+        finYear: doc.finYear,
+        ref: adjustment,
+        reason: doc.adjustmentReason || '',
+        user: session,
+        session: dbSession,
+      });
+    }
+
+    return adjustment;
+  });
+
   return json({ ok: true, id: String(created._id) });
-}
+});

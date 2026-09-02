@@ -8,14 +8,19 @@
     "start": "next start",
     "seed": "node scripts/seed.mjs",
     "seed:groups": "node --env-file=.env scripts/seedProductGroups.mjs",
-      "update:groups-business": "node --env-file=.env scripts/updateProductGroupsBusinessId.mjs",
-      "seed:items": "node --env-file=.env scripts/seedItems.mjs",
+    "update:groups-business": "node --env-file=.env scripts/updateProductGroupsBusinessId.mjs",
+    "seed:items": "node --env-file=.env scripts/seedItems.mjs",
     "seed:barcodes": "node scripts/seedBarcodeDump.mjs",
     "seed:barcodes:apply": "node scripts/seedBarcodeDump.mjs --apply",
     "delete:barcodes": "node scripts/deleteBarcodeDump.mjs",
-    "delete:barcodes:apply": "node scripts/deleteBarcodeDump.mjs --apply"
+    "delete:barcodes:apply": "node scripts/deleteBarcodeDump.mjs --apply",
+    "test:inventory": "node --env-file=.env scripts/testInventoryFlow.mjs",
+    "migrate:barcodes": "node --env-file=.env scripts/migrateBarcodeLifecycle.mjs",
+    "migrate:barcodes:apply": "node --env-file=.env scripts/migrateBarcodeLifecycle.mjs --apply",
+    "smoke": "node --env-file=.env scripts/smokeAllRoutes.mjs",
+    "backfill:history": "node --env-file=.env scripts/backfillMovementHistory.mjs",
+    "backfill:history:apply": "node --env-file=.env scripts/backfillMovementHistory.mjs --apply"
   },
-  
   "dependencies": {
     "jsbarcode": "^3.12.3",
     "lucide-react": "^1.33.0",
@@ -24,7 +29,8 @@
     "next": "15.1.6",
     "react": "19.0.0",
     "react-dom": "19.0.0",
-    "react-icons": "^5.7.0"
+    "react-icons": "^5.7.0",
+    "xlsx": "^0.18.5"
   },
   "devDependencies": {
     "autoprefixer": "10.4.20",

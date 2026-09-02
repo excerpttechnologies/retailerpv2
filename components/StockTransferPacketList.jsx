@@ -44,6 +44,8 @@ export default function StockTransferPacketList() {
   const [range, setRange] = useState({ startDate: '', endDate: '' });
   const [applied, setApplied] = useState({ startDate: '', endDate: '' });
   const [viewing, setViewing] = useState(null);
+  const [challanStatus, setChallanStatus] = useState({}); /* id -> challan data */
+  const [creatingChallan, setCreatingChallan] = useState(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -61,6 +63,15 @@ export default function StockTransferPacketList() {
         rows: d.rows || [], labels: d.labels || {},
         page: d.page || 1, pages: d.pages || 1, total: d.total || 0,
       });
+
+      /* Check for existing challans on consolidated packets */
+      if (d.rows) {
+        d.rows.forEach((row) => {
+          if (row.stockTransferLocationId) {
+            checkChallan(String(row.stockTransferLocationId));
+          }
+        });
+      }
     } finally {
       setLoading(false);
     }
@@ -101,6 +112,48 @@ export default function StockTransferPacketList() {
       return;
     }
     load();
+  }
+
+  async function checkChallan(stlId) {
+    try {
+      const r = await fetch(`/api/stock-transfer-delivery-challan?stockTransferLocationId=${stlId}`);
+      const d = await r.json();
+      if (d.challan) {
+        setChallanStatus((s) => ({ ...s, [stlId]: d.challan }));
+      }
+    } catch (error) {
+      console.error('Error checking challan:', error);
+    }
+  }
+
+  async function createChallan(stlId) {
+    if (!window.confirm('Create delivery challan for this transfer?')) return;
+    setCreatingChallan(stlId);
+    try {
+      const r = await fetch('/api/stock-transfer-delivery-challan', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ stockTransferLocationId: stlId }),
+      });
+      const d = await r.json();
+      if (!r.ok) {
+        window.alert(d.error || 'Could not create delivery challan.');
+        return;
+      }
+      setChallanStatus((s) => ({ ...s, [stlId]: d.challan }));
+      window.alert('Delivery challan created successfully.');
+    } catch (error) {
+      console.error('Error creating challan:', error);
+      window.alert('Error creating delivery challan.');
+    } finally {
+      setCreatingChallan(null);
+    }
+  }
+
+  function downloadChallan(challan) {
+    if (!challan) return;
+    /* Navigate to preview page or generate PDF - for now just show challan details */
+    router.push(`/admin/transaction/stocktransfers/delivery-challan/${challan._id}`);
   }
 
   return (
@@ -227,6 +280,34 @@ export default function StockTransferPacketList() {
                             >
                               <Icon name="trash" size={12} />
                             </button>
+                          </>
+                        )}
+
+                        {/* Consolidated packet - show challan options */}
+                        {row.stockTransferLocationId && (
+                          <>
+                            {challanStatus[String(row.stockTransferLocationId)] ? (
+                              <button
+                                className="act-btn bg-okgreen"
+                                title="Download Delivery Challan"
+                                onClick={() => downloadChallan(challanStatus[String(row.stockTransferLocationId)])}
+                              >
+                                <Icon name="download" size={12} />
+                              </button>
+                            ) : (
+                              <button
+                                className="act-btn bg-[#ff9800]"
+                                title="Create Delivery Challan"
+                                disabled={creatingChallan === String(row.stockTransferLocationId)}
+                                onClick={() => createChallan(String(row.stockTransferLocationId))}
+                              >
+                                {creatingChallan === String(row.stockTransferLocationId) ? (
+                                  <span className="spin" />
+                                ) : (
+                                  <Icon name="file" size={12} />
+                                )}
+                              </button>
+                            )}
                           </>
                         )}
                       </span>

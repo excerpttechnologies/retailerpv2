@@ -36,6 +36,13 @@ const codeMatch = (code) => ({
   $options: 'i',
 });
 
+const barcodeOrItemCodeFilter = (code) => ({
+  $or: [
+    { itemCode: codeMatch(code) },
+    { barcodeGenerated: codeMatch(code) },
+  ],
+});
+
 /* BarcodeLabel stores businessId / locationId as plain strings defaulting to
    '' (see lib/barcodeLabel.js), and the barcode screen writes whatever the
    top bar happened to hold - which is '' when a row is saved before the
@@ -109,13 +116,13 @@ export async function GET(req) {
   /* rule 1 - the code must exist in this business's GRC item list */
   const rx = codeMatch(code);
   const barcodeRow = await BarcodeLabel.findOne({
-    itemCode: rx,
+    ...barcodeOrItemCodeFilter(code),
     ...stockScope(scope.businessId),
   }).lean();
 
   if (!barcodeRow) {
     /* distinguish "never received anywhere" from "not received HERE" */
-    const elsewhere = await BarcodeLabel.findOne({ itemCode: rx }).lean();
+    const elsewhere = await BarcodeLabel.findOne(barcodeOrItemCodeFilter(code)).lean();
     return json({
       error: elsewhere
         ? 'No stock of "' + code + '" at this business. Receive it here first.'
@@ -123,21 +130,27 @@ export async function GET(req) {
     }, 404);
   }
 
+  /* BarcodeLabel from GRC has all the item data we need. Item master lookup is
+     optional - use it only if present to enhance, but proceed with GRC data alone. */
+  const itemCode = barcodeRow.itemCode || code;
   const item = await Item.findOne({
-    itemCode: rx,
+    itemCode: codeMatch(itemCode),
     ...(scope.businessId ? { businessId: scope.businessId } : {}),
   }).lean()
-    || await Item.findOne({ itemCode: rx }).lean();
+    || await Item.findOne({ itemCode: codeMatch(itemCode) }).lean();
 
-  if (!item) return json({ error: 'No item master record for "' + code + '".' }, 404);
+  /* Try HSN lookup from Item master if available, otherwise use direct GRC fields */
+  let hsn = null;
+  if (item?.hsnId) {
+    hsn = await Hsn.findById(item.hsnId).lean();
+  }
 
-  const [hsn, uom] = await Promise.all([
-    item.hsnId ? Hsn.findById(item.hsnId).lean() : null,
-    item.uomId ? Uom.findById(item.uomId).lean() : null,
-  ]);
+  let uom = null;
+  if (item?.uomId) {
+    uom = await Uom.findById(item.uomId).lean();
+  }
 
-  /* GST chain: HSN -> taxSlabs[].gstTaxNameId -> Tax.igst/cgst/sgst, the same
-     join /api/item/[id]/detail already does */
+  /* GST slab from HSN if available, otherwise use GRC's stored gst percentage directly */
   let slab = null;
   if (hsn && Array.isArray(hsn.taxSlabs) && hsn.taxSlabs.length) {
     const taxIds = hsn.taxSlabs.map((s) => s.gstTaxNameId).filter(Boolean);
@@ -155,22 +168,23 @@ export async function GET(req) {
     }
   }
 
-  /* Inter-state movement carries IGST, intra-state splits into CGST + SGST.
-     Decided from the two LOCATIONS' GSTINs - the first two digits are the
-     state code. Both locations belong to the same business here, so it is the
-     location GSTINs that differ, not the business's. */
+  /* Fallback: if no HSN slab, use GRC's stored GST as both CGST+SGST. When state codes
+     differ, this will be overridden to IGST below. */
+  const grcGst = num(barcodeRow.gst || 0);
   let igstPct = 0;
-  let cgstPct = slab ? slab.cgst : 0;
-  let sgstPct = slab ? slab.sgst : 0;
+  let cgstPct = slab ? slab.cgst : grcGst / 2;
+  let sgstPct = slab ? slab.sgst : grcGst / 2;
 
-  if (slab && scope.fromLocationId && toLocation && isValidObjectId(toLocation)) {
+  /* Inter-state movement carries IGST, intra-state splits into CGST + SGST.
+     Decided from the two LOCATIONS' GSTINs. */
+  if (scope.fromLocationId && toLocation && isValidObjectId(toLocation)) {
     const [from, to] = await Promise.all([
       CompanyLocation.findById(scope.fromLocationId).select('gstin').lean(),
       CompanyLocation.findById(toLocation).select('gstin').lean(),
     ]);
     const stateOf = (g) => String(g || '').slice(0, 2);
     if (from?.gstin && to?.gstin && stateOf(from.gstin) !== stateOf(to.gstin)) {
-      igstPct = slab.igst;
+      igstPct = slab ? slab.igst : grcGst;
       cgstPct = 0;
       sgstPct = 0;
     }
@@ -178,20 +192,18 @@ export async function GET(req) {
 
   return json({
     item: {
-      itemId: String(item._id),
-      itemCode: item.itemCode || code,
-      itemName: item.name || '',
-      hsn: hsn ? hsn.code || '' : '',
-      slabName: slab ? slab.name : '',
-      uom: uom ? uom.shortName || uom.name || '' : '',
-      /* a stock transfer moves goods at cost, so the line opens at the item's
-         retail price only because nothing else on the item master represents
-         a transfer rate - override it on the row if your costing differs */
-      netRate: num(item.rsp),
+      itemId: item ? String(item._id) : '',
+      itemCode: itemCode,
+      barcode: barcodeRow.barcodeGenerated || '',
+      itemName: item?.name || barcodeRow.itemName || barcodeRow.supplierDescription || '',
+      hsn: hsn?.code || barcodeRow.hsn || '',
+      slabName: slab?.name || '',
+      uom: uom?.shortName || uom?.name || barcodeRow.uom || '',
+      netRate: num(item?.rsp || barcodeRow.finalPrice || 0),
       igstPct,
       cgstPct,
       sgstPct,
-      maxQty: await availableQty(item.itemCode || code, scope),
+      maxQty: await availableQty(itemCode, scope),
     },
   });
 }

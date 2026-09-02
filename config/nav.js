@@ -77,6 +77,14 @@ export const NAV = [
     label: 'Masters',
     icon: LuSettings,
     children: [
+      /* Accounts, roles and the locations each may work at. This is what
+         makes the permission model in lib/rbac.js configurable - without it
+         every account stays unrestricted. */
+      {
+        label: 'Users & Permissions',
+        icon: LuUsers,
+        href: '/admin/setting/users',
+      },
       {
         label: 'Business Masters',
         icon: LuBuilding2,
@@ -369,11 +377,15 @@ export const NAV = [
     label: 'Sell',
     icon: LuShoppingBag,
     children: [
-      // {
-      //   label: 'Delivery Challan',
-      //   icon: LuFileCheck,
-      //   href: '/admin/transaction/sell/deliverychallan',
-      // },
+      /* Re-enabled: this module now has a printed challan with the
+         Qty / PC / MTR summary and the detailed / non-detailed formats.
+         It was list-and-edit only before, with no way to print the
+         document the goods travel with. */
+      {
+        label: 'Delivery Challan',
+        icon: LuFileCheck,
+        href: '/admin/transaction/sell/deliverychallan',
+      },
       // {
       //   label: 'Sales Invoice',
       //   icon: LuFileText,
@@ -394,11 +406,14 @@ export const NAV = [
         icon: LuMonitor,
         href: '/admin/transaction/sell/pos',
       },
-      // {
-      //   label: 'POS Return',
-      //   icon: LuUndo2,
-      //   href: '/admin/transaction/sell/pos-return',
-      // },
+      /* Re-enabled: the return/refund flow is implemented end to end and
+         puts stock back. It was an empty stub before, which is presumably
+         why it was hidden. */
+      {
+        label: 'POS Return',
+        icon: LuUndo2,
+        href: '/admin/transaction/sell/pos-return',
+      },
       // {
       //   label: 'B2B Invoice',
       //   icon: LuFileText,
@@ -411,6 +426,15 @@ export const NAV = [
     label: 'Stock Transfers',
     icon: LuShuffle,
     children: [
+      /* The barcode-driven transfer: scan out, receive in, return, bill.
+         This is the one that moves stock. The three Packet/Location/Received
+         screens below it are the earlier document flow and are kept for the
+         records already raised on them. */
+      { label: 'Stock Transfer', icon: LuShuffle,
+        href: '/admin/transaction/stocktransfers/transfer' },
+      { label: 'Incoming Transfers', icon: LuPackageCheck,
+        href: '/admin/transaction/stocktransfers/incoming' },
+
       { label: 'Transfer Stock Packet', icon: LuPackage,
         href: '/admin/transaction/stocktransfers/transferstockpacket' },
       { label: 'Transfer Stock Location', icon: LuMapPinned,
@@ -460,6 +484,11 @@ export const NAV = [
         href: '/admin/reports/pos-credit-note' },
       { label: 'Item Stock', icon: LuWarehouse,
         href: '/admin/reports/item-stock' },
+      /* Daily stock transactions from the movement ledger - received,
+         transferred, returned, sold - by day, type, location, barcode
+         and document. */
+      { label: 'Stock Movement', icon: LuShuffle,
+        href: '/admin/reports/stock-movement' },
       { label: 'Supplier Bill Report', icon: LuReceipt,
         href: '/admin/reports/supplier-bill' },
       { label: 'Supplier Outstanding Report', icon: LuCreditCard,
@@ -572,6 +601,10 @@ export const NAV = [
     icon: LuShoppingCart,
     children: [
       { label: 'Products', icon: LuTag, href: '/admin/ecommerce/product' },
+      /* The same transfer engine as Stock Transfers, raised from the
+         e-commerce side - not a separate inventory path. */
+      { label: 'Direct Stock Transfer', icon: LuShuffle,
+        href: '/admin/ecommerce/direct-stock-transfer' },
       /* Orders and Coupons are on the deployed sidebar but have no screen
          here yet. Left out rather than shipped as dead links - the same call
          Staff Management's three entries got. */

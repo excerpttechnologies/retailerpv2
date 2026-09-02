@@ -30,7 +30,7 @@ export const TOTAL_KEYS = [
    adds the GST split beside it. The label is kept as the deployed app prints
    it; the stored field is named beforeTax so the code stays honest. */
 export const GRID_COLS = [
-  'Sl No', 'Item Code', 'Item Name', 'HSN', 'GST', 'Max QTY', 'QTY',
+  'Sl No', 'Barcode', 'Item Code', 'Item Name', 'HSN', 'GST', 'Max QTY', 'QTY',
   'Net Rate', 'Net Amount', 'Action',
 ];
 
@@ -94,7 +94,7 @@ export function computeTotals(rows) {
    stock ceiling, so the Max QTY cell renders empty rather than a misleading
    zero on a row added before the lookup answered. */
 export const BLANK_ROW = {
-  itemId: '', itemCode: '', itemName: '', hsn: '', slabName: '',
+  itemId: '', itemCode: '', barcode: '', itemName: '', hsn: '', slabName: '',
   igstPct: 0, cgstPct: 0, sgstPct: 0,
   uom: '', maxQty: null, qty: '', netRate: '',
 };

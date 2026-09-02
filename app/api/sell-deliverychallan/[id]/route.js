@@ -2,6 +2,7 @@ import dbConnect from '@/lib/db';
 import DeliveryChallan from '@/models/DeliveryChallan';
 import { requireSession } from '@/lib/session';
 import { validate } from '@/lib/validate';
+import { resolveRefLabels } from '@/lib/refLabels';
 import { FORM } from '@/app/admin/transaction/sell/deliverychallan/form';
 
 /* header fields AND the totals rows - the totals card holds real stored
@@ -31,7 +32,15 @@ export async function GET(req, { params }) {
 
   const doc = await DeliveryChallan.findById(id).lean();
   if (!doc) return json({ doc: null }, 404);
-  return json({ doc: { ...doc, _id: String(doc._id) } });
+
+  /* The printed challan shows the customer, the location and the logistics
+     provider by NAME; the document stores only their ids. The list route
+     already resolves them this way - the detail route did not, so the print
+     view had nothing to print. */
+  return json({
+    doc: { ...doc, _id: String(doc._id) },
+    labels: await resolveRefLabels([doc]),
+  });
 }
 
 export async function PUT(req, { params }) {

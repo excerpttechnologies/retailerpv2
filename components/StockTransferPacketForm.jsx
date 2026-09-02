@@ -145,14 +145,14 @@ export default function StockTransferPacketForm({ cfg, id }) {
         /* scanning a code already on the packet adds ONE to that line rather
            than opening a second line for the same item - which is what a
            barcode gun repeating a scan produces */
-        const at = prev.findIndex(
-          (x) => String(x.itemCode).trim().toLowerCase()
-            === String(it.itemCode).trim().toLowerCase()
-        );
+        const at = prev.findIndex((x) => {
+          if (it.barcode) return String(x.barcode || '').trim().toLowerCase() === String(it.barcode).trim().toLowerCase();
+          return String(x.itemCode).trim().toLowerCase() === String(it.itemCode).trim().toLowerCase();
+        });
         if (at >= 0) {
           return prev.map((x, xi) => (xi === at ? { ...x, qty: num(x.qty) + 1 } : x));
         }
-        return [...prev, { ...BLANK_ROW, ...it, qty: 1 }];
+        return [...prev, { ...BLANK_ROW, ...it, barcode: it.barcode || '', qty: 1 }];
       });
       setScan('');
     } catch {
@@ -171,7 +171,7 @@ export default function StockTransferPacketForm({ cfg, id }) {
       const lines = rows.map((r, i) => {
         const c = totals.calc[i];
         return {
-          itemId: r.itemId, itemCode: r.itemCode, itemName: r.itemName,
+          itemId: r.itemId, itemCode: r.itemCode, barcode: r.barcode || '', itemName: r.itemName,
           hsn: r.hsn, slabName: r.slabName, uom: r.uom,
           maxQty: r.maxQty ?? null,
           qty: num(r.qty), netRate: num(r.netRate),
@@ -299,7 +299,7 @@ export default function StockTransferPacketForm({ cfg, id }) {
         <div className="mb-3 flex max-w-[760px]">
           <input
             className="f-input rounded-r-none"
-            placeholder="Enter item code"
+            placeholder="Scan barcode or enter item code"
             value={scan}
             onChange={(e) => setScan(e.target.value)}
             onKeyDown={(e) => {
@@ -334,6 +334,7 @@ export default function StockTransferPacketForm({ cfg, id }) {
                 return (
                   <tr key={i}>
                     <td className="text-center">{i + 1}</td>
+                    <td>{r.barcode || ''}</td>
                     <td>{r.itemCode}</td>
                     <td>{r.itemName}</td>
                     <td>{r.hsn}</td>

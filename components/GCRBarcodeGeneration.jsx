@@ -4,7 +4,9 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useScope } from "./ScopeContext";
 import { useOptions } from "./useOptions";
+import Icon from "./Icon";
 import { computeSampleBarcode } from "@/lib/barcodeFormat";
+import * as XLSX from "xlsx";
 
 const money = (value) => {
   const n = Number(value || 0);
@@ -17,6 +19,87 @@ const round2 = (value) => Math.round((Number(value || 0) + Number.EPSILON) * 100
 
 const meterRegex = /(mtr|meter|metre|meters|metres)/i;
 const pcRegex = /(pc|pcs|piece|pieces)/i;
+
+const exportFieldLabels = {
+  itemCode: "Item Code",
+  itemName: "Item Name",
+  goodsType: "Goods Type",
+  hsn: "HSN",
+  gst: "GST",
+  uom: "UOM",
+  qty: "Quantity",
+  noOfCuts: "No. of Cuts",
+  totalMtr: "Total MTR",
+  billSlNo: "Serial No",
+  purchaseRate: "Purchase Rate",
+  discountType: "Discount Type",
+  discount: "Discount",
+  finalPrice: "Final Price",
+  retailPrice: "Retail Price",
+  disc1: "Disc 1",
+  uniqueBarcode: "Unique Barcode",
+  barcodeNo: "Barcode No",
+  supplierDescription: "Supplier Description",
+  printDescription: "Print Description",
+  rsp: "RSP",
+  wsp: "WSP",
+  dp: "DP",
+  offerPrice: "Offer Price",
+  wspPrice: "WSP Offer Price",
+  dpPrice: "DP Offer Price",
+  rspOfferPct: "RSP Offer %",
+  wspOfferPct: "WSP Offer %",
+  dpOfferPct: "DP Offer %",
+  markupRSP: "Markup RSP %",
+  markupWSP: "Markup WSP %",
+  markupDP: "Markup DP %",
+};
+
+const normalizeExportHeader = (value) => String(value || "").trim().toLowerCase().replace(/[^a-z0-9]/g, "");
+
+function readExcelFile(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        const workbook = XLSX.read(reader.result, { type: "array", cellDates: true });
+        const sheet = workbook.Sheets[workbook.SheetNames[0]];
+        const sheetRows = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: "", raw: false });
+        const headers = (sheetRows.shift() || []).map((header) => String(header || "").trim());
+        if (headers.length === 0) throw new Error("The Excel file does not contain a header row.");
+        const headerMap = new Map(Object.entries(exportFieldLabels).map(([key, label]) => [normalizeExportHeader(label), key]));
+        const rows = sheetRows.map((values) => headers.reduce((result, header, index) => {
+          const value = values[index] ?? "";
+          const key = headerMap.get(normalizeExportHeader(header));
+          if (key) result[key] = value;
+          else if (header) result.customFields = { ...(result.customFields || {}), [header]: value };
+          return result;
+        }, {})).filter((row) => Object.keys(row).some((key) => key !== "customFields" && row[key] !== "") || Object.values(row.customFields || {}).some((value) => value !== ""));
+        resolve(rows);
+      } catch (error) {
+        reject(error);
+      }
+    };
+    reader.onerror = () => reject(new Error("Unable to read the Excel file."));
+    reader.readAsArrayBuffer(file);
+  });
+}
+
+function rowMatchKey(row) {
+  const barcode = String(row?.barcodeNo || "").trim();
+  if (barcode) return `barcode:${barcode}`;
+  return rowItemKey(row);
+}
+
+function rowItemKey(row) {
+  const itemCode = String(row?.itemCode || "").trim();
+  const serial = String(row?.billSlNo || "").trim();
+  return itemCode || serial ? `item:${itemCode}|serial:${serial}` : null;
+}
+
+function customFieldNames(rows) {
+  return Array.from(new Set(rows.flatMap((row) => Object.keys(row?.customFields || {}))));
+}
 
 function incrementSerial(value) {
   const serial = String(value ?? '').trim();
@@ -138,11 +221,13 @@ function emptyRow(id) {
     id,
     itemCode: "",
     itemName: "",
+    goodsType: "",
     hsn: "",
     gst: "",
     uom: "",
     qty: "",
     noOfCuts: "",
+    totalMtr: "",
     purchaseRate: "",
     discountType: "Percentage",
     discount: "5",
@@ -236,7 +321,7 @@ function calculatePrices(row) {
   };
 }
 
-function AddItemModal({ open, onClose, onSubmit, onSubmitAndPrint, rowCount = 0, barcodeFormat, sequenceRef }) {
+function AddItemModal({ open, onClose, onSubmit, onSubmitAndPrint, rowCount = 0, barcodeFormat, reserveNumbers }) {
   const createBlankForm = (overrides = {}) => ({
     itemCode: "",
     itemName: "",
@@ -273,6 +358,10 @@ function AddItemModal({ open, onClose, onSubmit, onSubmitAndPrint, rowCount = 0,
   });
 
   const [form, setForm] = useState(() => createBlankForm());
+  /* the reservation round trip - the Add buttons are disabled while it runs
+     so a double-click cannot burn a second block of numbers */
+  const [reserving, setReserving] = useState(false);
+  const [reserveError, setReserveError] = useState("");
   const [itemOptions, setItemOptions] = useState([]);
   const [hsnOptions, setHsnOptions] = useState([]);
   const [cutRows, setCutRows] = useState([{ id: 1, value: "" }]);
@@ -557,8 +646,20 @@ function AddItemModal({ open, onClose, onSubmit, onSubmitAndPrint, rowCount = 0,
     updateField("totalMtr", committedTotal ? String(committedTotal) : "");
   };
 
-  const submit = (printAfterSubmit = false) => {
+  /* Barcode numbers are RESERVED FROM THE SERVER, not counted in the browser.
+
+     This used to read a running number out of sequenceRef, which starts from
+     whatever the Barcode Setting says and advances locally. Two operators
+     generating at the same time therefore both started from the same place
+     and printed overlapping numbers - and once two garments carry the same
+     label there is no way to tell them apart again.
+
+     The reservation happens here, when the row is created, so the number the
+     operator sees in the grid is the number that will be saved and the number
+     on the label they may print immediately. */
+  const submit = async (printAfterSubmit = false) => {
     if (!form.itemName?.trim()) return;
+    if (reserving) return;                       // guards the double-click
 
     const generatedRows = [];
     const baseSerial = String(form.serialNo || 1).trim();
@@ -572,26 +673,40 @@ function AddItemModal({ open, onClose, onSubmit, onSubmitAndPrint, rowCount = 0,
       cutRows,
     });
 
+    setReserving(true);
+    let numbers = [];
+    try {
+      numbers = await reserveNumbers({
+        uom: form.isMtr ? "MTR" : "PC",
+        batchType: form.uniqueBarcode ? "unique" : "batch",
+        qty: form.isMtr
+          ? Number(form.totalMtr || 0) || (cutRows.length || Number(form.noOfCuts || 1))
+          : Number(form.qty || 1),
+        cuts: form.isMtr ? cutRows.map((c) => Number(c.value || 0)).filter((n) => n > 0) : [],
+        count: barcodePlan.length,
+      });
+    } catch (error) {
+      setReserveError(error.message || "Could not reserve barcode numbers.");
+      setReserving(false);
+      return;
+    }
+    setReserving(false);
+    setReserveError("");
+
     barcodePlan.forEach((planItem, index) => {
-      const sampleBarcode = computeSampleBarcode(
-        barcodeFormat.prefix,
-        sequenceRef.current + index,
-        barcodeFormat.suffix,
-        barcodeFormat.numberLenght,
-      );
-      const distinctBarcode = form.isMtr && Boolean(form.uniqueBarcode)
-        ? sampleBarcode
-        : (barcodePlan.length > 1 ? sampleBarcode : sampleBarcode);
+      const distinctBarcode = numbers[index];
 
       generatedRows.push(calculatePrices({
         ...emptyRow(`${Date.now()}-${index}`),
         itemCode: form.itemCode || form.itemName.replace(/\s+/g, "-").toUpperCase(),
         itemName: form.itemName,
+        goodsType: form.goodsType,
         hsn: form.hsn,
         gst: form.gst,
         uom: form.isMtr ? "MTR" : "PC",
         qty: String(planItem.qty || 0),
         noOfCuts: form.isMtr ? String(cutRows.length || Number(form.noOfCuts || 1)) : "",
+        totalMtr: form.isMtr ? String(form.totalMtr || 0) : "",
         purchaseRate: String(purchaseRateValue),
         discountType: form.discountType,
         discount: String(form.discount || 0),
@@ -622,7 +737,6 @@ function AddItemModal({ open, onClose, onSubmit, onSubmitAndPrint, rowCount = 0,
 
     if (printAfterSubmit && onSubmitAndPrint) onSubmitAndPrint(generatedRows);
     else onSubmit(generatedRows);
-    sequenceRef.current += generatedRows.length;
 
     const nextSerial = incrementSerial(baseSerial);
     setForm((current) => createBlankForm({
@@ -913,8 +1027,9 @@ function AddItemModal({ open, onClose, onSubmit, onSubmitAndPrint, rowCount = 0,
           </div>
 
           <div className="mt-6 flex items-center justify-end gap-2">
-            <button type="button" onClick={() => submit(false)} className="rounded-md bg-[#0d5ddc] px-7 py-3 text-[15px] font-semibold text-white shadow-[0_2px_8px_rgba(13,93,220,0.35)] transition hover:bg-[#0b4bb6]">Submit</button>
-            <button type="button" onClick={() => submit(true)} className="rounded-md bg-[#198754] px-7 py-3 text-[15px] font-semibold text-white shadow-[0_2px_8px_rgba(25,135,84,0.3)] transition hover:bg-[#146c43]">Submit &amp; Print Label</button>
+            {reserveError && <div className="mb-2 w-full rounded border border-[#f5c2c7] bg-[#f8d7da] px-3 py-2 text-[13px] text-[#842029]">{reserveError}</div>}
+            <button type="button" disabled={reserving} onClick={() => submit(false)} className="rounded-md bg-[#0d5ddc] px-7 py-3 text-[15px] font-semibold text-white shadow-[0_2px_8px_rgba(13,93,220,0.35)] transition hover:bg-[#0b4bb6] disabled:opacity-60">{reserving ? "Reserving barcodes..." : "Submit"}</button>
+            <button type="button" disabled={reserving} onClick={() => submit(true)} className="rounded-md bg-[#198754] px-7 py-3 text-[15px] font-semibold text-white shadow-[0_2px_8px_rgba(25,135,84,0.3)] transition hover:bg-[#146c43] disabled:opacity-60">Submit &amp; Print Label</button>
           </div>
       </div>
     </div>
@@ -1001,7 +1116,13 @@ export default function GCRBarcodeGeneration({ grcId = null, initialRows = [] })
   const [printRows, setPrintRows] = useState([]);
   const [showAddItem, setShowAddItem] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [importMessage, setImportMessage] = useState("");
+  const importInputRef = useRef(null);
   const [barcodeFormat, setBarcodeFormat] = useState({ prefix: "", suffix: "", startNumber: 1, numberLenght: 4 });
+  /* sequenceRef was the browser-held running number. It is kept only so the
+     Barcode Setting's Start From can still be shown as a preview on the
+     settings card; NOTHING is numbered from it any more - see
+     reserveBarcodeNumbers below. */
   const sequenceRef = useRef(1);
 
   useEffect(() => {
@@ -1035,6 +1156,7 @@ export default function GCRBarcodeGeneration({ grcId = null, initialRows = [] })
       rsp: row.rsp || row.retailPrice || '',
       wsp: row.wspPrice || row.wsp || '',
       dp: row.dpPrice || row.dp || '',
+      customFields: row.customFields && typeof row.customFields === 'object' ? row.customFields : {},
     }));
     setRows(normalized);
   }, [initialRows]);
@@ -1072,6 +1194,7 @@ export default function GCRBarcodeGeneration({ grcId = null, initialRows = [] })
   }, [scope.business, scope.finYear]);
 
   const validRows = useMemo(() => rows.filter((row) => String(row.itemCode || row.itemName || "").trim()), [rows]);
+  const additionalFields = useMemo(() => customFieldNames(validRows), [validRows]);
 
   const totals = useMemo(() => validRows.reduce((acc, row) => {
     const qty = Number(row.qty || 0);
@@ -1097,6 +1220,7 @@ export default function GCRBarcodeGeneration({ grcId = null, initialRows = [] })
           beforeTax: 0,
           gst: 0,
           net: 0,
+          customFields: {},
         });
       }
       const entry = map.get(key);
@@ -1106,12 +1230,151 @@ export default function GCRBarcodeGeneration({ grcId = null, initialRows = [] })
       entry.beforeTax += beforeTax;
       entry.gst += beforeTax * (Number(row.gst || 0) / 100);
       entry.net += beforeTax + beforeTax * (Number(row.gst || 0) / 100);
+      Object.entries(row.customFields || {}).forEach(([key, value]) => {
+        const current = entry.customFields[key];
+        entry.customFields[key] = current && current !== value ? `${current}, ${value}` : value;
+      });
     });
     return Array.from(map.values());
   }, [validRows]);
 
   function appendRows(items) {
     setRows((current) => [...current, ...items]);
+  }
+
+  /* Reserves `count` real barcode numbers from the server.
+
+     The server applies the PC/MTR x batch/unique rule itself and hands back
+     one number per label it decides is needed, so the browser cannot get the
+     count wrong either. Throws with the server's own message - an invalid
+     quantity ("a unique piece quantity must be a whole number") is worth
+     showing verbatim. */
+  async function reserveBarcodeNumbers(countOrPlan) {
+    const plan = typeof countOrPlan === "number"
+      ? { uom: "PC", batchType: "unique", qty: countOrPlan }
+      : countOrPlan;
+
+    const response = await fetch("/api/barcode-generation/reserve", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        uom: plan.uom,
+        batchType: plan.batchType,
+        qty: plan.qty,
+        cuts: plan.cuts || [],
+        business: scope.business,
+        finYear: scope.finYear,
+      }),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      throw new Error(data.error || "Could not reserve barcode numbers. Check the Barcode Settings for this business.");
+    }
+    return (data.rows || []).map((r) => r.barcodeNo);
+  }
+
+  function exportRowsToExcel() {
+    const headers = [...Object.values(exportFieldLabels), ...additionalFields];
+    const fields = Object.keys(exportFieldLabels);
+    const values = validRows.map((row) => [
+      ...fields.map((field) => field === "barcodeNo" ? row[field] ?? "" : row[field] ?? ""),
+      ...additionalFields.map((field) => row.customFields?.[field] ?? ""),
+    ]);
+    const worksheet = XLSX.utils.aoa_to_sheet([headers, ...values]);
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, worksheet, "Barcode Items");
+    XLSX.writeFile(workbook, "barcode-items-template.xlsx");
+  }
+
+  async function importRowsFromExcel(event) {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file) return;
+
+    try {
+      const importedRows = await readExcelFile(file);
+      if (importedRows.length === 0) throw new Error("No item rows were found in the Excel file.");
+
+      /* ---- validate BEFORE anything is written -------------------------
+         An import that is half applied leaves the grid in a state nobody can
+         reason about, and if it is then saved it puts wrong stock into the
+         system. Every row is checked first and the whole file is rejected
+         with the offending row numbers if any of them fail. */
+      const problems = [];
+      importedRows.forEach((row, i) => {
+        const line = i + 2;                       // +1 for the header, +1 for 1-based
+        const name = String(row.itemName || row.itemCode || "").trim();
+        if (!name) problems.push(`Row ${line}: item code or name is required`);
+
+        const qty = Number(row.qty ?? row.totalMtr ?? 0);
+        if (!Number.isFinite(qty) || qty <= 0) problems.push(`Row ${line}: quantity must be a positive number`);
+
+        const isMtr = meterRegex.test(String(row.uom || ""));
+        const unique = String(row.uniqueBarcode || "").trim().toLowerCase() === "yes";
+        if (!isMtr && unique && !Number.isInteger(qty)) {
+          problems.push(`Row ${line}: a unique piece quantity must be a whole number (got ${qty})`);
+        }
+
+        const rate = Number(row.purchaseRate ?? 0);
+        if (row.purchaseRate !== undefined && row.purchaseRate !== "" && !Number.isFinite(rate)) {
+          problems.push(`Row ${line}: purchase rate is not a number`);
+        }
+      });
+
+      if (problems.length) {
+        const shown = problems.slice(0, 12).join(" · ");
+        throw new Error(
+          `The file was not imported - ${problems.length} problem${problems.length === 1 ? "" : "s"} found. ` +
+          shown +
+          (problems.length > 12 ? ` ...and ${problems.length - 12} more` : "")
+        );
+      }
+
+      /* ---- work out how many NEW rows need a number, then reserve that
+         many from the server in one call. Imported rows are numbered the
+         same way scanned ones are - never from a browser-held counter. */
+      const currentByKey = new Map();
+      rows.forEach((row) => {
+        [rowMatchKey(row), rowItemKey(row)].filter(Boolean).forEach((key) => currentByKey.set(key, row));
+      });
+
+      const seen = new Set();
+      const planned = [];
+      importedRows.forEach((importedRow, index) => {
+        const matchKey = rowMatchKey(importedRow) || `new:${index}`;
+        if (seen.has(matchKey)) return;
+        seen.add(matchKey);
+        const existing = currentByKey.get(matchKey) || currentByKey.get(rowItemKey(importedRow));
+        planned.push({ importedRow, index, matchKey, existing });
+      });
+
+      const needing = planned.filter((p) => !p.existing?.barcodeNo && !p.importedRow.barcodeNo).length;
+      const issued = needing ? await reserveBarcodeNumbers(needing) : [];
+      let nextNumber = 0;
+
+      setRows((current) => {
+        const byKey = new Map();
+        current.forEach((row) => {
+          [rowMatchKey(row), rowItemKey(row)].filter(Boolean).forEach((key) => byKey.set(key, row));
+        });
+        const newRows = [];
+
+        planned.forEach(({ importedRow, index, matchKey, existing }) => {
+          const rowId = existing?.id || `import-${Date.now()}-${index}`;
+          const barcodeNo = existing?.barcodeNo || importedRow.barcodeNo || issued[nextNumber++];
+          const nextRow = { ...(existing || emptyRow(rowId)), ...importedRow, id: rowId, barcodeNo, customFields: importedRow.customFields || {} };
+          if (existing) {
+            [matchKey, rowMatchKey(nextRow), rowItemKey(nextRow)].filter(Boolean).forEach((key) => byKey.set(key, nextRow));
+          } else newRows.push(nextRow);
+        });
+
+        return current.map((row) => byKey.get(rowMatchKey(row)) || row).concat(newRows);
+      });
+
+      setImportMessage(`${importedRows.length} row${importedRows.length === 1 ? "" : "s"} imported and validated. Matching Row IDs were updated.`);
+    } catch (error) {
+      setImportMessage(error.message || "Unable to import the Excel file.");
+    }
   }
 
   async function saveRows(rowsToSave = validRows, printAfterSave = false) {
@@ -1165,7 +1428,7 @@ export default function GCRBarcodeGeneration({ grcId = null, initialRows = [] })
         open={showAddItem}
         rowCount={rows.length}
         barcodeFormat={barcodeFormat}
-        sequenceRef={sequenceRef}
+        reserveNumbers={reserveBarcodeNumbers}
         onClose={() => setShowAddItem(true)}
         onSubmit={(items) => appendRows(items)}
         onSubmitAndPrint={(items) => {
@@ -1188,9 +1451,23 @@ export default function GCRBarcodeGeneration({ grcId = null, initialRows = [] })
             ))}
           </div>
           <div className="flex items-center gap-2 text-sm font-medium text-gray-700">
+            <input ref={importInputRef} type="file" accept=".xls,.html" onChange={importRowsFromExcel} className="hidden" />
+            <button type="button" onClick={() => importInputRef.current?.click()} className="flex items-center gap-1 rounded border border-gray-300 bg-white px-2 py-1 text-xs text-gray-700 hover:bg-gray-50" title="Import edited Excel template">
+              <Icon name="file" size={14} /> Import Excel
+            </button>
+            <button type="button" onClick={exportRowsToExcel} disabled={validRows.length === 0} className="flex items-center gap-1 rounded border border-gray-300 bg-white px-2 py-1 text-xs text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50" title="Export all item fields to Excel">
+              <Icon name="file" size={14} /> Export Excel
+            </button>
             <span className="rounded border border-gray-300 bg-gray-50 px-2 py-1">Pc(s) {totals.pcs}</span>
           </div>
         </div>
+
+        {importMessage && (
+          <div className="flex items-center justify-between border-b border-blue-100 bg-blue-50 px-4 py-2 text-sm text-blue-800">
+            <span>{importMessage}</span>
+            <button type="button" onClick={() => setImportMessage("")} className="text-blue-700" aria-label="Dismiss import message">×</button>
+          </div>
+        )}
 
         <div className="overflow-auto">
           {activeTab === "items" && (
@@ -1206,11 +1483,12 @@ export default function GCRBarcodeGeneration({ grcId = null, initialRows = [] })
                   <th className="border border-gray-300 px-2 py-2">No. of Cut</th>
                   <th className="border border-gray-300 px-2 py-2">Rate</th>
                   <th className="border border-gray-300 px-2 py-2">GST Amount</th>
+                  {additionalFields.map((field) => <th key={field} className="border border-gray-300 px-2 py-2">{field}</th>)}
                 </tr>
               </thead>
               <tbody>
                 {validRows.length === 0 ? (
-                  <tr><td colSpan={9} className="px-3 py-8 text-center text-gray-500">No data found</td></tr>
+                  <tr><td colSpan={9 + additionalFields.length} className="px-3 py-8 text-center text-gray-500">No data found</td></tr>
                 ) : validRows.map((row, index) => (
                   <tr key={row.id || index} className="odd:bg-white even:bg-gray-50">
                     <td className="border border-gray-300 px-2 py-2">{index + 1}</td>
@@ -1222,6 +1500,7 @@ export default function GCRBarcodeGeneration({ grcId = null, initialRows = [] })
                     <td className="border border-gray-300 px-2 py-2">{row.noOfCuts || "-"}</td>
                     <td className="border border-gray-300 px-2 py-2">{money(row.purchaseRate || 0)} / {money(row.finalPrice || 0)}</td>
                     <td className="border border-gray-300 px-2 py-2">{money((Number(row.finalPrice || 0) * Number(row.qty || 0)) * (Number(row.gst || 0) / 100))}</td>
+                    {additionalFields.map((field) => <td key={field} className="border border-gray-300 px-2 py-2">{row.customFields?.[field] || "-"}</td>)}
                   </tr>
                 ))}
               </tbody>
@@ -1239,11 +1518,12 @@ export default function GCRBarcodeGeneration({ grcId = null, initialRows = [] })
                   <th className="border border-gray-300 px-2 py-2">Before GST Amount</th>
                   <th className="border border-gray-300 px-2 py-2">GST Amount</th>
                   <th className="border border-gray-300 px-2 py-2">Net Amount</th>
+                  {additionalFields.map((field) => <th key={field} className="border border-gray-300 px-2 py-2">{field}</th>)}
                 </tr>
               </thead>
               <tbody>
                 {summaryRows.length === 0 ? (
-                  <tr><td colSpan={7} className="px-3 py-8 text-center text-gray-500">No data found</td></tr>
+                  <tr><td colSpan={7 + additionalFields.length} className="px-3 py-8 text-center text-gray-500">No data found</td></tr>
                 ) : summaryRows.map((row, index) => (
                   <tr key={row.id} className="odd:bg-white even:bg-gray-50">
                     <td className="border border-gray-300 px-2 py-2">{index + 1}</td>
@@ -1253,6 +1533,7 @@ export default function GCRBarcodeGeneration({ grcId = null, initialRows = [] })
                     <td className="border border-gray-300 px-2 py-2">{money(row.beforeTax)}</td>
                     <td className="border border-gray-300 px-2 py-2">{money(row.gst)}</td>
                     <td className="border border-gray-300 px-2 py-2">{money(row.net)}</td>
+                    {additionalFields.map((field) => <td key={field} className="border border-gray-300 px-2 py-2">{row.customFields?.[field] || "-"}</td>)}
                   </tr>
                 ))}
                 {summaryRows.length > 0 && (
@@ -1262,6 +1543,7 @@ export default function GCRBarcodeGeneration({ grcId = null, initialRows = [] })
                     <td className="border border-gray-300 px-2 py-2">{money(totals.taxable)}</td>
                     <td className="border border-gray-300 px-2 py-2">{money(totals.gst)}</td>
                     <td className="border border-gray-300 px-2 py-2">{money(totals.net)}</td>
+                    {additionalFields.map((field) => <td key={field} className="border border-gray-300 px-2 py-2" />)}
                   </tr>
                 )}
               </tbody>
@@ -1286,12 +1568,14 @@ export default function GCRBarcodeGeneration({ grcId = null, initialRows = [] })
                   <th className="border border-gray-300 px-2 py-2">WSP</th>
                   <th className="border border-gray-300 px-2 py-2">DP</th>
                   <th className="border border-gray-300 px-2 py-2">Variant</th>
+                  <th className="border border-gray-300 px-2 py-2">Barcode No</th>
+                  {additionalFields.map((field) => <th key={field} className="border border-gray-300 px-2 py-2">{field}</th>)}
                   <th className="border border-gray-300 px-2 py-2">Action</th>
                 </tr>
               </thead>
               <tbody>
                 {validRows.length === 0 ? (
-                  <tr><td colSpan={15} className="px-3 py-8 text-center text-gray-500">No data found</td></tr>
+                  <tr><td colSpan={16 + additionalFields.length} className="px-3 py-8 text-center text-gray-500">No data found</td></tr>
                 ) : validRows.map((row, index) => (
                   <tr key={row.id || index} className="odd:bg-white even:bg-gray-50">
                     <td className="border border-gray-300 px-2 py-2">{index + 1}</td>
@@ -1308,6 +1592,8 @@ export default function GCRBarcodeGeneration({ grcId = null, initialRows = [] })
                     <td className="border border-gray-300 px-2 py-2">{money(row.wsp || 0)}</td>
                     <td className="border border-gray-300 px-2 py-2">{money(row.dp || 0)}</td>
                     <td className="border border-gray-300 px-2 py-2">{row.uniqueBarcode || "No"}</td>
+                    <td className="border border-gray-300 px-2 py-2"><input value={row.barcodeNo || ""} disabled className="w-32 rounded border border-gray-200 bg-gray-100 px-2 py-1 text-gray-500" aria-label="System generated barcode" /></td>
+                    {additionalFields.map((field) => <td key={field} className="border border-gray-300 px-2 py-2">{row.customFields?.[field] || "-"}</td>)}
                     <td className="border border-gray-300 px-2 py-2"><div className="flex gap-2"><button type="button" className="text-blue-600 hover:underline">Edit</button><button type="button" onClick={() => setRows((current) => current.filter((item) => item.id !== row.id))} className="text-red-600 hover:underline">Delete</button></div></td>
                   </tr>
                 ))}

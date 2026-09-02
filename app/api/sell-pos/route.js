@@ -9,6 +9,11 @@ import { requireSession } from '@/lib/session';
 import { resolveRefLabels } from '@/lib/refLabels';
 import { validate, escapeRegex } from '@/lib/validate';
 import { nextDocNumber } from '@/lib/docnumber';
+import {
+  withTransaction, loadUnits, sellUnits, InventoryError, BARCODE_STATUS,
+} from '@/lib/inventory';
+import { handler } from '@/lib/apiError';
+import { requirePermission, PERMISSIONS } from '@/lib/rbac';
 const FIELDS = [];
 
 /* /api/sell-pos - list + create. */
@@ -89,9 +94,11 @@ export async function GET(req) {
   });
 }
 
-export async function POST(req) {
-  const session = await requireSession();
-  if (!session) return json({ error: 'Unauthorized' }, 401);
+/* handler() so a typed engine failure - an already-sold barcode, a lost race
+   with another till - reaches the operator as its own message and status
+   rather than an unhandled rejection. */
+export const POST = handler(async (req) => {
+  const session = await requirePermission(PERMISSIONS.POS_SELL);
 
   const body = await req.json();
   await dbConnect();
@@ -109,7 +116,13 @@ export async function POST(req) {
   doc.billingType = String(body.data?.billingType || '');
   doc.exempted = String(body.data?.exempted || 'NO');
 
-  if (Array.isArray(body.data?.items)) doc.items = body.data.items;
+  /* Line items are normalised before they are stored. The till was writing
+     `code` while every report reads `itemCode` (lib/reports.js lineItemCode),
+     so no POS sale ever matched an item: outward stock came out as zero and
+     the item-stock report showed closing stock equal to everything ever
+     received. normaliseLines() writes both keys, so old screens that read
+     `code` keep working and the reports start matching. */
+  if (Array.isArray(body.data?.items)) doc.items = normaliseLines(body.data.items);
   if (Array.isArray(body.data?.payments)) doc.payments = body.data.payments;
   if (body.data?.customerSnapshot) doc.customerSnapshot = body.data.customerSnapshot;
   if (body.data?.sellNote !== undefined) doc.sellNote = body.data.sellNote;
@@ -118,13 +131,81 @@ export async function POST(req) {
   doc.paid = Number(body.data?.paid || 0);
   doc.sellDue = Math.max(0, doc.totalAmount - doc.paid);
   doc.paymentStatus = doc.sellDue === 0 ? 'Paid' : doc.paid > 0 ? 'Part Paid' : 'Unpaid';
-  if (!doc.invoiceNo) {
-    doc.invoiceNo = await nextDocNumber(PosInvoice, 'invoiceNo', 'POS', {
-      businessId: doc.businessId, locationId: doc.locationId, finYear: doc.finYear,
-    });
-  }
 
-  const created = await PosInvoice.create(doc);
+  /* Barcoded lines are the ones that move stock. A line entered from the item
+     master without a barcode still bills, but cannot decrement a specific
+     unit - there is nothing physical to decrement. */
+  const codes = [...new Set((doc.items || []).map((l) => String(l.barcodeNo || '').trim()).filter(Boolean))];
 
-  return json({ ok: true, id: String(created._id) });
+  const created = await withTransaction(async (dbSession) => {
+    /* Re-read and re-check every barcode INSIDE the transaction. The till may
+       have scanned it a minute ago; another counter may have sold it since.
+       This is what stops the same unit being billed twice. */
+    const units = codes.length
+      ? await loadUnits(codes, { businessId: doc.businessId, session: dbSession })
+      : [];
+
+    const missing = codes.filter((c) => !units.some((u) => (u.barcodeNo || u.barcodeGenerated) === c));
+    if (missing.length) {
+      throw new InventoryError('BARCODE_NOT_FOUND',
+        'These barcodes are no longer in the system: ' + missing.slice(0, 8).join(', '),
+        { status: 422, skipped: missing });
+    }
+
+    const unavailable = units.filter((u) => u.status && u.status !== BARCODE_STATUS.IN_STOCK);
+    if (unavailable.length) {
+      throw new InventoryError('BARCODE_UNAVAILABLE',
+        unavailable.map((u) =>
+          (u.barcodeNo || u.barcodeGenerated) +
+          (u.status === BARCODE_STATUS.SOLD
+            ? ' was already sold' + (u.billingNo ? ' on ' + u.billingNo : '')
+            : ' is ' + String(u.status).toLowerCase().replace(/_/g, ' '))
+        ).join('; ') + '.',
+        { status: 409, skipped: unavailable.map((u) => u.barcodeNo || u.barcodeGenerated) });
+    }
+
+    if (!doc.invoiceNo) {
+      doc.invoiceNo = await nextDocNumber(PosInvoice, 'invoiceNo', 'POS', {
+        businessId: doc.businessId, locationId: doc.locationId, finYear: doc.finYear,
+      });
+    }
+
+    const [invoice] = await PosInvoice.create([doc], dbSession ? { session: dbSession } : {});
+
+    /* The write that was missing entirely: without it a barcode stayed in
+       stock after being billed and could be sold again from another till. */
+    if (units.length) {
+      await sellUnits({
+        units, invoice, locationId: doc.locationId, user: session, session: dbSession,
+      });
+    }
+
+    return invoice;
+  });
+
+  return json({ ok: true, id: String(created._id), invoiceNo: created.invoiceNo });
+});
+
+/* Writes both key spellings, and carries the barcode through so the sale can
+   be traced back to the physical unit and returned against it later. */
+function normaliseLines(items) {
+  return (items || []).map((l) => {
+    const itemCode = String(l.itemCode ?? l.code ?? l['Item Code'] ?? '').trim();
+    const qty = Number(l.qty ?? l.Qty ?? l.QTY ?? 1) || 1;
+    const rate = Number(l.rsp ?? l.rate ?? l.price ?? 0) || 0;
+    const discountPct = Number(l.discountPct ?? 0) || 0;
+    const gross = rate * qty;
+    const netAmount = Math.round((gross - (gross * discountPct) / 100) * 100) / 100;
+
+    return {
+      ...l,
+      itemCode,
+      code: itemCode || l.code || '',
+      itemName: l.itemName || l.name || '',
+      barcodeNo: String(l.barcodeNo || l.barcode || '').trim(),
+      qty,
+      rate,
+      netAmount,
+    };
+  });
 }

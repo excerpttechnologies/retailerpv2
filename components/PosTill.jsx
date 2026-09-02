@@ -1,10 +1,13 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import Icon from '@/components/Icon';
 import Field from '@/components/Field';
 import MultiSelect from '@/components/MultiSelect';
+import ProductImage from '@/components/ProductImage';
+import CustomerProfilePanel from '@/components/CustomerProfilePanel';
+import { useScanner, useBarcodeLookup, useScanSound } from '@/components/useScanner';
 
 const PAYMENT_MODES = ['Cash', 'Credit', 'Export', 'COD'];
 const MULTI_PAYMENT_METHODS = ['Cash', 'PayTM', 'Bank Deposit'];
@@ -21,21 +24,10 @@ const customerLabel = (customer) => {
   return [name || 'Unnamed Customer', customer.billingMobile].filter(Boolean).join(' - ');
 };
 
-const CUSTOMER_INFO_FIELDS = [
-  ['contactId', 'Customer No'], ['businessName', 'Business Name'], ['businessType', 'Business Type'], ['gstNo', 'GST No'],
-  ['firstName', 'First Name'], ['middleName', 'Middle Name'], ['lastName', 'Last Name'], ['billingMobile', 'Mobile'],
-  ['billingAlternateContactNumber', 'Alternate Mobile'], ['billingLandline', 'Landline'], ['billingEmail', 'Email'], ['billingEmail2', 'Email 2'],
-  ['billingAddressLine1', 'Address 1'], ['billingAddressLine2', 'Address 2'], ['billingCity', 'City'], ['billingDistrict', 'District'],
-  ['billingTaluk', 'Taluk'], ['billingState', 'State'], ['billingCountry', 'Country'], ['billingZipCode', 'PIN Code'],
-  ['billingWebsiteUrl', 'Website'], ['priceList', 'Price List'], ['saleDueDate', 'Sale Due Days'],
-  ['invoiceCreditLimit', 'Credit Limit'], ['remarks', 'Remarks'],
-];
-
-function CustomerInfoPanel({ customer }) {
-  if (!customer) return null;
-  const fields = CUSTOMER_INFO_FIELDS.filter(([key]) => customer[key] !== undefined && customer[key] !== null && String(customer[key]).trim() !== '');
-  return <div className="mx-3 mb-2 rounded border border-line bg-[#f7f9fc] p-3"><div className="mb-2 flex items-center justify-between border-b border-line pb-2"><span className="text-[13px] font-bold">Customer Details</span><span className="text-[11px] text-inkmuted">Loaded from Customer Master</span></div><div className="grid grid-cols-1 gap-x-4 gap-y-1 text-[12px] sm:grid-cols-2 lg:grid-cols-4">{fields.map(([key, label]) => <div key={key} className="min-w-0"><span className="text-inkmuted">{label}: </span><span className="break-words font-medium text-ink">{String(customer[key])}</span></div>)}</div></div>;
-}
+/* The read-only CustomerInfoPanel that used to live here has been replaced by
+   components/CustomerProfilePanel.jsx, which shows the same master fields on
+   its Details tab and adds the purchase and return history the counter
+   actually asks for. */
 
 function MultiplePay({ totalItems, totalPayable, onClose, onSubmit }) {
   const [payments, setPayments] = useState(() => MULTI_PAYMENT_METHODS.map((method) => ({ method, amount: '', note: '' })));
@@ -140,7 +132,13 @@ export default function PosTill() {
   const [msg, setMsg] = useState('');
   const [cashier, setCashier] = useState('');
   const [exempted, setExempted] = useState(false);
-  const [isReturn, setIsReturn] = useState(false);
+
+  /* Scanner plumbing. intent SELL makes the server apply the till's rules -
+     in stock, at THIS location, not already sold. */
+  const beep = useScanSound();
+  const { lookup: lookupBarcode, busy: scanBusy } = useBarcodeLookup({
+    business, location, intent: 'SELL',
+  });
 
   useEffect(() => {
     const current = new Date();
@@ -210,51 +208,126 @@ export default function PosTill() {
     setItems((rows) => rows.map((row, i) => i === index ? { ...row, [key]: value } : row));
   }
 
-  async function scan() {
-    const query = code.trim();
-    if (!query) return;
-    try {
-      const barcodeResponse = await fetch(`/api/inventory-barcode-list?perPage=10&business=${business}&location=${location}&search=${encodeURIComponent(query)}`);
-      const barcodeData = await barcodeResponse.json();
-      const barcodeHit = (barcodeData.rows || [])[0];
-      if (barcodeHit) {
-        addBarcodeItem(barcodeHit);
-        return;
-      }
+  /* ==================================================== scanning ========
 
+     A scan now goes to /api/barcode/scan with intent SELL, so the SERVER
+     decides whether the unit may be sold: it refuses one that is already
+     sold, one that is in transit on a transfer, and one held at another
+     location, and says which. The till previously searched the barcode LIST
+     and took the first row, which reported none of that - a barcode already
+     billed at the next counter came back looking perfectly sellable.
+
+     Falls back to the item master only when the code is not a barcode at
+     all, which is how a loose item or a search by name still reaches the
+     bill.
+     ==================================================================== */
+  const scannedCodes = useMemo(
+    () => items.map((row) => row.barcodeNo).filter(Boolean),
+    [items]
+  );
+
+  const addScanned = useCallback(async (raw) => {
+    const query = String(raw || '').trim();
+    if (!query) return;
+
+    if (!business || !location) {
+      setMsg('Choose the business and location before scanning.');
+      beep('err');
+      return;
+    }
+
+    const res = await lookupBarcode(query, scannedCodes);
+
+    if (res.ok) {
+      addBarcodeUnit(res.unit);
+      return;
+    }
+
+    /* A code the barcode engine does not recognise may still be an item
+       code or a product name - fall through to the item master. Anything
+       else is a real refusal and must be shown, not swallowed. */
+    if (res.code !== 'BARCODE_NOT_FOUND') {
+      setMsg(res.error);
+      beep('err');
+      return;
+    }
+
+    try {
       const response = await fetch(`/api/item?perPage=10&business=${business}&search=${encodeURIComponent(query)}`);
       const data = await response.json();
       const hit = (data.rows || [])[0];
-      if (!hit) { setMsg(`No item found for "${query}"`); return; }
+      if (!hit) { setMsg(`No item or barcode found for "${query}"`); beep('err'); return; }
+
       const detail = await fetch(`/api/item/${hit._id}/detail`).then((r) => r.json()).catch(() => ({}));
       const item = detail.item || {};
       const product = {
-        itemId: hit._id, barcode: '', code: item.itemCode || hit.itemCode || hit.name, name: item.name || hit.name,
+        itemId: hit._id, barcodeNo: '', barcode: '',
+        code: item.itemCode || hit.itemCode || hit.name,
+        itemCode: item.itemCode || hit.itemCode || '',
+        name: item.name || hit.name,
         description: item.description || hit.description || item.name || hit.name,
         hsn: item.hsnCode || '', gst: Number(item.slabs?.[0]?.igst || 0), qty: 1,
         rsp: Number(item.rsp ?? hit.rsp ?? 0), discountPct: 0, image: hit.image || '',
-        salesPerson: '',
+        uom: item.uom || '', salesPerson: salesPerson || '',
       };
       setItems((rows) => [product, ...rows]);
+      setSelectedProduct(product);
       setCode(''); setMsg('');
-    } catch { setMsg('Item lookup failed'); }
-  }
+      beep('ok');
+    } catch {
+      setMsg('Item lookup failed');
+      beep('err');
+    }
+  }, [business, location, lookupBarcode, scannedCodes, salesPerson, beep]);
 
-  function addBarcodeItem(barcodeHit) {
+  /* The physical scanner: listens on the window, so it works with focus
+     anywhere on the till - which is the requirement that the operator should
+     not have to click into the search box first. */
+  useScanner(addScanned, { enabled: Boolean(business && location) });
+
+  /* Kept as the name the search box and the suggestion list already call. */
+  function scan() { return addScanned(code); }
+
+  /* Adds a unit the server has just validated. Newest first, so the item the
+     operator has this second scanned is the top row of the table. */
+  function addBarcodeUnit(unit) {
     const product = {
-      itemId: barcodeHit._id,
-      barcode: barcodeHit.barcodeNo,
-      code: barcodeHit.itemCode || barcodeHit.itemId,
-      name: barcodeHit.itemId || barcodeHit.description || barcodeHit.itemCode,
-      description: barcodeHit.description || barcodeHit.itemId || '',
-      hsn: barcodeHit.hsn || '', gst: Number(barcodeHit.gst || 0), qty: 1,
-      rsp: Number(barcodeHit.rsp || 0), discountPct: 0,
-      image: barcodeHit.productImageUrl || '', grcNo: barcodeHit.grcNo || '', salesPerson: '',
+      itemId: unit._id,
+      barcodeNo: unit.barcodeNo,
+      barcode: unit.barcodeNo,
+      code: unit.itemCode || unit.itemName,
+      itemCode: unit.itemCode || '',
+      name: unit.itemName || unit.description || unit.itemCode,
+      itemName: unit.itemName || unit.description || unit.itemCode,
+      description: unit.description || unit.itemName || '',
+      hsn: unit.hsn || '',
+      gst: Number(unit.gst || 0),
+      uom: unit.uom || '',
+      uomType: unit.uomType || '',
+      batchType: unit.batchType || '',
+      /* A batch barcode stands for its whole quantity; a unique one is a
+         single unit. Defaulting to the unit's own quantity is what makes a
+         5-metre batch label bill as 5 metres rather than as 1. */
+      qty: Number(unit.qty) || 1,
+      rsp: Number(unit.offerPrice || unit.rsp || 0),
+      discountPct: 0,
+      image: unit.image || '',
+      grcNo: unit.grcNo || '',
+      salesPerson: salesPerson || '',
     };
     setItems((rows) => [product, ...rows]);
+    setSelectedProduct(product);
     setItemSuggestions([]);
     setCode('');
     setMsg('');
+    beep('ok');
+  }
+
+  /* The suggestion list hands over a row from the barcode list, which is a
+     display shape rather than a validated unit - so it goes back through the
+     same scan path instead of being trusted. */
+  function addBarcodeItem(barcodeHit) {
+    return addScanned(barcodeHit.barcodeNo || barcodeHit.itemCode);
   }
 
   async function saveCustomer(event) {
@@ -311,13 +384,17 @@ export default function PosTill() {
 
   return (
     <div className="pos-till fixed inset-0 z-50 flex flex-col overflow-auto bg-white">
-      <div className="flex flex-wrap items-center gap-3 px-4 py-2.5 text-[13.5px]"><span className="text-inkmuted">Business:</span><select className="f-input w-64" value={business} onChange={(e) => changeBusiness(e.target.value)}><option value="">Select business</option>{businesses.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select><span className="text-inkmuted">Location:</span><select className="f-input w-64" value={location} onChange={(e) => setLocation(e.target.value)} disabled={!business}><option value="">Select location</option>{locations.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select><span className="flex items-center gap-1.5 text-cell"><Icon name="refresh" size={15} /> {timeStr}</span><span className="flex-1" />{selectedProduct && <div className="flex items-center gap-3 border-l border-line pl-3"><span className="max-w-40 truncate text-[12px] font-semibold">{selectedProduct.barcode || selectedProduct.code}</span>{selectedProduct.image ? <button type="button" title="Preview selected product" onClick={() => setPreviewImage({ src: selectedProduct.image, alt: selectedProduct.name })}><img src={selectedProduct.image} alt={selectedProduct.name} className="h-16 w-16 rounded object-cover" /></button> : <span className="text-cell">No image</span>}</div>}{['refresh', 'voucher', 'register', 'cart', 'ledger', 'chevL'].map((ic, i) => <button key={i} aria-label={ic} className={'flex h-8 w-9 items-center justify-center rounded ' + (i === 0 ? 'bg-[#dbe6f7] text-brand' : 'bg-brand text-white')}><Icon name={ic} size={15} /></button>)}</div>
+      <div className="flex flex-wrap items-center gap-3 px-4 py-2.5 text-[13.5px]"><span className="text-inkmuted">Business:</span><select className="f-input w-64" value={business} onChange={(e) => changeBusiness(e.target.value)}><option value="">Select business</option>{businesses.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select><span className="text-inkmuted">Location:</span><select className="f-input w-64" value={location} onChange={(e) => setLocation(e.target.value)} disabled={!business}><option value="">Select location</option>{locations.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select><span className="flex items-center gap-1.5 text-cell"><Icon name="refresh" size={15} /> {timeStr}</span><span className="flex-1" />{selectedProduct && <div className="flex items-center gap-3 border-l border-line pl-3"><span className="max-w-40 truncate text-[12px] font-semibold">{selectedProduct.barcode || selectedProduct.code}</span><ProductImage src={selectedProduct.image} alt={selectedProduct.name} size={72} onOpen={() => setPreviewImage({ src: selectedProduct.image, alt: selectedProduct.name })} /></div>}{['refresh', 'voucher', 'register', 'cart', 'ledger', 'chevL'].map((ic, i) => <button key={i} aria-label={ic} className={'flex h-8 w-9 items-center justify-center rounded ' + (i === 0 ? 'bg-[#dbe6f7] text-brand' : 'bg-brand text-white')}><Icon name={ic} size={15} /></button>)}</div>
       <div className="grid grid-cols-1 gap-2 px-4 md:grid-cols-5"><input className="f-input" type="date" value={saleDate} onChange={(e) => setSaleDate(e.target.value)} /><select className="f-input" value={payMode} onChange={(e) => setPayMode(e.target.value)}>{PAYMENT_MODES.map((mode) => <option key={mode}>{mode}</option>)}</select><div className="md:col-span-2"><MultiSelect mode="single" options={customerOptions} value={customer} placeholder="Walk-in Customer / phone number" onSearch={setCustomerSearch} onChange={selectCustomer} /></div><input className="f-input" value={cashier} readOnly /></div>
-      <div className="mt-2 grid grid-cols-1 items-start gap-2 px-4 md:grid-cols-5"><MultiSelect mode="single" options={salesPeople} value={salesPerson} placeholder="Sales Person" onChange={setSalesPerson} /><div className="relative md:col-span-2"><input className="f-input" placeholder="Enter Product Name / SKU / Scan Bar Code" value={code} onChange={(e) => setCode(e.target.value)} onKeyDown={(e) => { if (['Enter', 'F9', 'Tab'].includes(e.key)) { e.preventDefault(); scan(); } }} />{itemSuggestions.length > 0 && <div className="absolute left-0 right-0 top-full z-30 mt-1 max-h-64 overflow-auto rounded border border-line bg-white shadow-lg">{itemSuggestions.map((item) => <button type="button" key={item._id} className="flex w-full items-center gap-2 border-b border-line px-3 py-2 text-left text-[12px] hover:bg-[#f4f7fb]" onClick={() => addBarcodeItem(item)}>{item.productImageUrl ? <img src={item.productImageUrl} alt="" className="h-9 w-9 rounded object-cover" /> : <span className="h-9 w-9 rounded bg-[#eef1f7]" />}<span className="min-w-0 flex-1"><b className="block truncate">{item.itemId || item.description || item.itemCode}</b><span className="text-inkmuted">{item.barcodeNo} · RSP {money(item.rsp)}</span></span></button>)}</div>}</div><select className="f-input" value={counter} onChange={(e) => setCounter(e.target.value)}><option value="">Select Cash Counter</option>{counters.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select><div className="flex items-center gap-5"><label><input type="checkbox" checked={exempted} onChange={(e) => setExempted(e.target.checked)} /> Exempted</label><label className="text-danger"><input type="checkbox" checked={isReturn} onChange={(e) => setIsReturn(e.target.checked)} /> Is Return?</label></div></div>
-      <CustomerInfoPanel customer={selectedCustomer} />
+      <div className="mt-2 grid grid-cols-1 items-start gap-2 px-4 md:grid-cols-5"><MultiSelect mode="single" options={salesPeople} value={salesPerson} placeholder="Sales Person" onChange={setSalesPerson} /><div className="relative md:col-span-2"><input data-scan-target="" className="f-input" placeholder="Scan barcode, or type a product name / SKU" value={code} onChange={(e) => setCode(e.target.value)} onKeyDown={(e) => { if (['Enter', 'F9', 'Tab'].includes(e.key)) { e.preventDefault(); scan(); } }} />{scanBusy && <span className="absolute right-2 top-2 text-[11px] text-inkmuted">checking...</span>}{itemSuggestions.length > 0 && <div className="absolute left-0 right-0 top-full z-30 mt-1 max-h-64 overflow-auto rounded border border-line bg-white shadow-lg">{itemSuggestions.map((item) => <button type="button" key={item._id} className="flex w-full items-center gap-2 border-b border-line px-3 py-2 text-left text-[12px] hover:bg-[#f4f7fb]" onClick={() => addBarcodeItem(item)}><ProductImage src={item.productImageUrl} alt={item.itemId || item.itemCode} size={44} /><span className="min-w-0 flex-1"><b className="block truncate">{item.itemId || item.description || item.itemCode}</b><span className="text-inkmuted">{item.barcodeNo} · RSP {money(item.rsp)}</span></span></button>)}</div>}</div><select className="f-input" value={counter} onChange={(e) => setCounter(e.target.value)}><option value="">Select Cash Counter</option>{counters.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select><div className="flex items-center gap-5"><label><input type="checkbox" checked={exempted} onChange={(e) => setExempted(e.target.checked)} /> Exempted</label><button type="button" className="btn bg-danger px-2 py-1 text-white" title="Process a customer return against a previous bill" onClick={() => router.push(`/admin/transaction/sell/pos-return/add?business=${business}&location=${location}&finYear=${finYear}`)}><Icon name="undo" size={13} /> Return / Refund</button></div></div>
+      <CustomerProfilePanel
+        customerId={customer}
+        business={business}
+        fallbackCustomer={selectedCustomer}
+      />
       {previewImage && <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/75 p-6" onClick={() => setPreviewImage(null)}><div className="relative max-h-full max-w-4xl rounded bg-white p-2 shadow-2xl" onClick={(e) => e.stopPropagation()}><button type="button" aria-label="Close image preview" className="absolute right-2 top-2 z-10 flex h-8 w-8 items-center justify-center rounded-full bg-black/70 text-white" onClick={() => setPreviewImage(null)}><Icon name="x" size={16} /></button><img src={previewImage.src} alt={previewImage.alt} className="max-h-[80vh] max-w-[80vw] object-contain" /></div></div>}
       {msg && <div className="mx-4 mt-2 flash flash-err">{msg}</div>}
-      <div className="mt-3 flex-1 overflow-x-auto px-4"><table className="dt"><thead><tr>{['#', 'Barcode No', 'Item Code', 'Item / Description', 'HSN', 'GST%', 'Qty', 'RSP Price', 'Disc %', 'Disc Amt', 'Line Total', 'Sales Person', 'Image', ''].map((heading) => <th key={heading}>{heading}</th>)}</tr></thead><tbody>{rows.length === 0 ? <tr><td colSpan="14" className="dt-empty">No Items Added</td></tr> : rows.map((row, index) => <tr key={`${row.itemId}-${index}`} className="cursor-pointer" onClick={() => setSelectedProduct(row)}><td>{index + 1}</td><td>{row.barcode || '-'}</td><td>{row.code}</td><td>{row.description || row.name}</td><td>{row.hsn}</td><td>{money(row.gst)}</td><td><input className="f-input w-20" type="number" min="0" value={row.qty} onChange={(e) => updateItem(index, 'qty', e.target.value)} /></td><td><input className="f-input w-24" type="number" min="0" value={row.rsp} onChange={(e) => updateItem(index, 'rsp', e.target.value)} /></td><td><input className="f-input w-20" type="number" min="0" value={row.discountPct} onChange={(e) => updateItem(index, 'discountPct', e.target.value)} /></td><td>{money(row.discountAmount)}</td><td>{money(row.lineTotal)}</td><td><select className="f-input min-w-28" value={row.salesPerson || ''} onChange={(e) => updateItem(index, 'salesPerson', e.target.value)}><option value="">Select...</option>{salesPeople.map((person) => <option key={person.value} value={person.value}>{person.label}</option>)}</select></td><td>{row.image ? <button type="button" title="Preview image" onClick={(e) => { e.stopPropagation(); setSelectedProduct(row); setPreviewImage({ src: row.image, alt: row.name }); }}><img src={row.image} alt={row.name} className="h-10 w-10 rounded object-cover" /></button> : '-'}</td><td><button type="button" className="act-btn bg-danger" onClick={(e) => { e.stopPropagation(); setItems((current) => current.filter((_, itemIndex) => itemIndex !== index)); if (selectedProduct?.itemId === row.itemId) setSelectedProduct(null); }}><Icon name="x" size={12} /></button></td></tr>)}</tbody></table></div>
+      <div className="mt-3 flex-1 overflow-x-auto px-4"><table className="dt"><thead><tr>{['#', 'Barcode No', 'Item Code', 'Item / Description', 'HSN', 'GST%', 'Qty', 'RSP Price', 'Disc %', 'Disc Amt', 'Line Total', 'Sales Person', 'Image', ''].map((heading) => <th key={heading}>{heading}</th>)}</tr></thead><tbody>{rows.length === 0 ? <tr><td colSpan="14" className="dt-empty">No Items Added</td></tr> : rows.map((row, index) => <tr key={`${row.itemId}-${index}`} className="cursor-pointer" onClick={() => setSelectedProduct(row)}><td>{index + 1}</td><td>{row.barcode || '-'}</td><td>{row.code}</td><td>{row.description || row.name}</td><td>{row.hsn}</td><td>{money(row.gst)}</td><td><input className="f-input w-20" type="number" min="0" value={row.qty} onChange={(e) => updateItem(index, 'qty', e.target.value)} /></td><td><input className="f-input w-24" type="number" min="0" value={row.rsp} onChange={(e) => updateItem(index, 'rsp', e.target.value)} /></td><td><input className="f-input w-20" type="number" min="0" value={row.discountPct} onChange={(e) => updateItem(index, 'discountPct', e.target.value)} /></td><td>{money(row.discountAmount)}</td><td>{money(row.lineTotal)}</td><td><select className="f-input min-w-28" value={row.salesPerson || ''} onChange={(e) => updateItem(index, 'salesPerson', e.target.value)}><option value="">Select...</option>{salesPeople.map((person) => <option key={person.value} value={person.value}>{person.label}</option>)}</select></td><td><ProductImage src={row.image} alt={row.name} size={56} onOpen={() => { setSelectedProduct(row); setPreviewImage({ src: row.image, alt: row.name }); }} /></td><td><button type="button" className="act-btn bg-danger" onClick={(e) => { e.stopPropagation(); setItems((current) => current.filter((_, itemIndex) => itemIndex !== index)); if (selectedProduct?.itemId === row.itemId) setSelectedProduct(null); }}><Icon name="x" size={12} /></button></td></tr>)}</tbody></table></div>
       <div className="border-t border-line px-4 pt-2"><div className="grid grid-cols-2 gap-2 text-[13px] md:grid-cols-6"><div><div className="text-cell">Qty</div><div>{qty}</div></div><div><div className="text-cell">Bill Value</div><div>{money(rows.reduce((sum, row) => sum + Number(row.rsp || 0) * Number(row.qty || 0), 0))}</div></div><div><div className="text-cell">Total Discount</div><div>{money(rows.reduce((sum, row) => sum + row.discountAmount, 0))}</div></div><div><div className="text-cell">Sub Total</div><div>{money(billValue)}</div></div><div><div className="text-cell">Tax</div><div>{money(tax)}</div></div><div><div className="text-cell">Net Amount</div><div className="font-bold text-danger">{money(billValue + tax)}</div></div></div></div>
       <div className="mt-2 flex flex-wrap items-center gap-3 bg-[#eef1f7] px-4 py-3"><button type="button" className="btn bg-[#17a2b8] text-white"><Icon name="register" size={14} /> Hold</button><button type="button" className="btn bg-[#2563a9] text-white" onClick={() => setShowMultiplePay(true)}><Icon name="register" size={14} /> Multiple Pay</button><span className="text-[15px] font-bold">Total Payable: <span className="text-okgreen">{money(billValue + tax)}</span></span><button type="button" className="btn bg-[#f2a19b] text-white" onClick={() => setItems([])}><Icon name="x" size={14} /> Clear Screen</button><span className="flex-1" /><button type="button" className="btn btn-primary" onClick={() => router.push('/admin/transaction/sell/pos')}>Recent Transactions</button></div>
       {showMultiplePay && <MultiplePay totalItems={qty} totalPayable={billValue + tax} onClose={() => setShowMultiplePay(false)} onSubmit={submitPayment} />}

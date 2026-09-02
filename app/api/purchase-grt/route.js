@@ -5,6 +5,7 @@ import Grc from '@/models/Grc';
 import { requireSession } from '@/lib/session';
 import { resolveRefLabels } from '@/lib/refLabels';
 import { validate, escapeRegex } from '@/lib/validate';
+import { nextSeriesNumber } from '@/lib/docnumber';
 import { FORM } from '@/app/admin/transaction/purchase/grt/form';
 
 /* header fields AND the totals rows - the totals card holds real stored
@@ -28,20 +29,17 @@ const PER_PAGE = 10;
 const GRT_PREFIX = 'TFJ/26/';
 const GRT_START = 129;
 
+/* Was a scan-for-the-highest-number-then-add-one, which two overlapping saves
+   both read the same way and both used. nextSeriesNumber now takes the number
+   from an atomic counter, seeded once from the highest already on disk - so
+   the existing TFJ/26/xxxx series continues uninterrupted and two concurrent
+   returns can no longer be issued the same number. */
 async function nextGrtNumber({ businessId, locationId, finYear }) {
-  const rows = await Grt.find({
-    grtNo: { $regex: '^' + GRT_PREFIX.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') },
-    ...(businessId ? { businessId } : {}),
-    ...(locationId ? { locationId } : {}),
-    ...(finYear ? { finYear } : {}),
-  }).select('grtNo').lean();
-
-  const highest = rows.reduce((max, row) => {
-    const number = Number.parseInt(String(row.grtNo).slice(GRT_PREFIX.length), 10);
-    return Number.isNaN(number) ? max : Math.max(max, number);
-  }, GRT_START - 1);
-
-  return GRT_PREFIX + String(highest + 1).padStart(4, '0');
+  return nextSeriesNumber(Grt, 'grtNo', GRT_PREFIX, {
+    scope: { businessId, locationId, finYear },
+    pad: 4,
+    start: GRT_START,
+  });
 }
 
 export async function GET(req) {

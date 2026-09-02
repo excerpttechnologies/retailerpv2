@@ -1574,6 +1574,14 @@ export default function ListView({ cfg, slug }) {
       if (v) qs.set(k, v);
     });
  
+    /* cfg.fixedQuery pins query parameters the SCREEN owns rather than the
+       operator - the Incoming Transfers list is the same endpoint as Stock
+       Transfers with box=in. Applied after the filters so a screen's own
+       scope cannot be cleared by a filter of the same name. */
+    Object.entries(cfg.fixedQuery || {}).forEach(([k, v]) => {
+      if (v !== undefined && v !== null && v !== "") qs.set(k, String(v));
+    });
+ 
     const url = cfg.endpoint + "?" + qs;
  
     try {
@@ -1599,6 +1607,7 @@ export default function ListView({ cfg, slug }) {
     finYear,
     filters,
     cfg.searchOnly,
+    cfg.fixedQuery,
   ]);
  
   useEffect(() => {
