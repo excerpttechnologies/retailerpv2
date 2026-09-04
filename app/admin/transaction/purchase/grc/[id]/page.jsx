@@ -121,12 +121,23 @@ export default function EditTransactionPurchaseGrcPage() {
   const set = (key, value) => setData((current) => ({ ...current, [key]: value }));
   const cell = (value) => value || '-';
   const totalTaxable = Number(data.taxable) || summary.taxable;
+  /* GST falls back to the header the same way Taxable Value above it does.
+     It used to read summary.gst alone, which is derived from the barcode
+     rows - and the historical import carried header totals for every GRC but
+     barcode rows for only a few. On an imported GRC with no rows the tax line
+     therefore showed 0.00 while Taxable Value showed the real figure, and Net
+     Purchases Value came out short by exactly the GST (GRC 05061: 20052.33
+     instead of the 21055 the document records). Reading both halves from the
+     same place is what keeps the block adding up. Nothing is invented - the
+     header value is what the source document was imported with, and `gst` is
+     not a form field, so Update never writes over it. */
+  const totalGst = Number(data.gst) || summary.gst;
   const freightBeforeGst = Number(data.freightAmount) || 0;
   const discountAmount = (totalTaxable * (Number(data.discountPercent) || 0)) / 100;
   const roundOffDiscount = Number(data.roundOffDiscount) || 0;
   const roundOff = Number(data.roundOff) || 0;
   const netPurchasesValue = totalTaxable - discountAmount - roundOffDiscount
-    + summary.gst + freightBeforeGst + roundOff;
+    + totalGst + freightBeforeGst + roundOff;
 
   async function generatePurchaseInvoice() {
     setInvoiceStatus('Generating...');
@@ -269,7 +280,7 @@ export default function EditTransactionPurchaseGrcPage() {
                 <td colSpan={2} className="border-r border-line py-2 pr-3 text-right text-brand-link">CGST + SGST (2.50 + 2.50) %</td>
                 <td className="border-r border-line text-center text-brand-link">+</td>
                 <td className="border-r border-line" />
-                <td className="py-2 pr-3 text-right text-brand-link">{summary.gst.toFixed(2)}</td>
+                <td className="py-2 pr-3 text-right text-brand-link">{totalGst.toFixed(2)}</td>
               </tr>
               <tr className="border-b border-line bg-[#f4f5f6]">
                 <td className="border-r border-line py-2 pr-3 text-right text-brand-link">Freight charges BEFORE GST (Amt)</td>

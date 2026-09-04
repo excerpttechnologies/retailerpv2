@@ -5,6 +5,7 @@ import ProductImage from '@/models/ProductImage';
 import { requireSession } from '@/lib/session';
 import { resolveRefLabels } from '@/lib/refLabels';
 import { validate, escapeRegex } from '@/lib/validate';
+import { imageUrl } from '@/lib/inventory';
 
 const FIELDS = [];
 
@@ -57,10 +58,14 @@ export async function GET(req) {
     }
   }
 
+  /* No staff upload for this barcode falls back to the photo shipped under
+     public/ for it - same resolution order the till and the inventory list
+     use, so one unit does not show a picture on one screen and a blank on
+     another. */
   const rowsWithImages = rows.map((r) => ({
     ...r,
     _id: String(r._id),
-    productImageUrl: imageByBarcode[r[LABEL_FIELD]] || '',
+    productImageUrl: imageUrl(imageByBarcode[r[LABEL_FIELD]] || '', r[LABEL_FIELD], r.oldBarcode),
   }));
 
   return json({

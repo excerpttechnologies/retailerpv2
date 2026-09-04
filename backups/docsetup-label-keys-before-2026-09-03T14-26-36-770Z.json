@@ -1,0 +1,122 @@
+[
+  {
+    "_id": "6a99409933a24c63eaa4137b",
+    "Name": "Inter Comp Sale ret",
+    "Type": "Inter Company Sales Return",
+    "Prefix": "TFJ/SR/[YY]/",
+    "Suffix": "",
+    "Start From": "20",
+    "Validity": "Never",
+    "Fin Year": "2026-2027"
+  },
+  {
+    "_id": "6a99409933a24c63eaa4137c",
+    "Name": "iner store",
+    "Type": "Stock Transfer Received",
+    "Prefix": "26/jnr/",
+    "Suffix": "",
+    "Start From": "1",
+    "Validity": "Never",
+    "Fin Year": "2026-2027"
+  },
+  {
+    "_id": "6a99409933a24c63eaa4137d",
+    "Name": "Inter comp Inv",
+    "Type": "Inter Company Sales Invoice",
+    "Prefix": "TFJ/26/",
+    "Suffix": "",
+    "Start From": "60",
+    "Validity": "Yearly",
+    "Fin Year": "2026-2027"
+  },
+  {
+    "_id": "6a99409933a24c63eaa4137e",
+    "Name": "interstore dly challan",
+    "Type": "Inter Company Delivery Challan",
+    "Prefix": "WH/DC/26/",
+    "Suffix": "",
+    "Start From": "639",
+    "Validity": "Never",
+    "Fin Year": "2026-2027"
+  },
+  {
+    "_id": "6a99409933a24c63eaa4137f",
+    "Name": "stk adj",
+    "Type": "Stock Adjustment",
+    "Prefix": "26/",
+    "Suffix": "",
+    "Start From": "1",
+    "Validity": "Never",
+    "Fin Year": "2026-2027"
+  },
+  {
+    "_id": "6a99409933a24c63eaa41380",
+    "Name": "DN",
+    "Type": "Debit Note",
+    "Prefix": "TFJ/[YY]/",
+    "Suffix": "",
+    "Start From": "68",
+    "Validity": "Never",
+    "Fin Year": "2026-2027"
+  },
+  {
+    "_id": "6a99409933a24c63eaa41381",
+    "Name": "GRT",
+    "Type": "GRT",
+    "Prefix": "TFJ/[YY]/",
+    "Suffix": "",
+    "Start From": "68",
+    "Validity": "Never",
+    "Fin Year": "2026-2027"
+  },
+  {
+    "_id": "6a99409933a24c63eaa41382",
+    "Name": "Split Item",
+    "Type": "Item Split",
+    "Prefix": "SPI/[FYY]/",
+    "Suffix": "",
+    "Start From": "100",
+    "Validity": "Never",
+    "Fin Year": "2026-2027"
+  },
+  {
+    "_id": "6a99409933a24c63eaa41383",
+    "Name": "PI",
+    "Type": "Purchase Invoice",
+    "Prefix": "[YY]/",
+    "Suffix": "",
+    "Start From": "182",
+    "Validity": "Never",
+    "Fin Year": "2026-2027"
+  },
+  {
+    "_id": "6a99409933a24c63eaa41384",
+    "Name": "WH STL",
+    "Type": "Stock Transfer Location",
+    "Prefix": "WH/[YY]/",
+    "Suffix": "",
+    "Start From": "1",
+    "Validity": "Never",
+    "Fin Year": "2026-2027"
+  },
+  {
+    "_id": "6a99409933a24c63eaa41385",
+    "Name": "wh stp to jnr",
+    "Type": "Stock Transfer Packet",
+    "Prefix": "WH/[YY]/",
+    "Suffix": "",
+    "Start From": "1",
+    "Validity": "Never",
+    "Fin Year": "2026-2027"
+  },
+  {
+    "_id": "6a99409933a24c63eaa41386",
+    "Name": "GRC",
+    "Type": "GRC",
+    "Prefix": "0",
+    "Suffix": "",
+    "Start From": "5114",
+    "Validity": "Yearly",
+    "Fin Year": "2026-2027"
+  }
+]

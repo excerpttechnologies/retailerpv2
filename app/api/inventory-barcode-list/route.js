@@ -5,6 +5,7 @@ import Grt from '@/models/Grt';
 import { BarcodeLabel } from '@/lib/barcodeLabel';
 import { requireSession } from '@/lib/session';
 import { escapeRegex } from '@/lib/validate';
+import { imageUrl } from '@/lib/inventory';
 
 /* /api/inventory-barcode-list - read-only list for Inventory > Barcode Item.
    Separate from /api/barcodeitem on purpose (that route/model is left
@@ -138,8 +139,9 @@ export async function GET(req) {
       grcNo: grcNumberById[r.grcId] || '',
       /* The mobile app writes the staff-uploaded photo straight onto the
          barcode row, so it arrives with the row - no join, no second
-         collection. */
-      productImageUrl: imageUrl(r.imageUrl || r.filePath || ''),
+         collection. Units that never got one fall back to the photo shipped
+         under public/ for that barcode. */
+      productImageUrl: imageUrl(r.imageUrl || r.filePath || '', r.barcodeGenerated || r.barcodeNo, r.oldBarcode),
     })),
     labels: {},
     total,
@@ -151,9 +153,5 @@ export async function GET(req) {
   
 }
 
-function imageUrl(value) {
-  const stored = String(value || '').trim();
-  if (!stored) return '';
-  if (/^(https?:|data:|blob:|\/)/i.test(stored)) return stored;
-  return '/api/files/' + stored.replace(/^\/+/, '');
-}
+/* was a byte-for-byte copy of lib/inventory's imageUrl() - it has since grown
+   the public/ barcode-photo fallback, and a second copy would not have it */

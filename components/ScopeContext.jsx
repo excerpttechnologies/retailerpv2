@@ -96,6 +96,23 @@ export function ScopeProvider({ children }) {
   const [finYear, setFinYear] = useState(FIN_YEARS[0]);
   const [user, setUser] = useState(null);
 
+  /* Both selectors are filled in from /api/options one tick after mount, so
+     `business` and `location` are '' on the first render of every screen.
+     A consumer cannot tell that empty-because-still-loading apart from
+     empty-because-there-is-none, and the two mean opposite things: the first
+     must not be queried with, the second is a final answer. `businessReady`
+     flips once /api/options?ref=business has settled (resolved or failed).
+
+     Location is tracked as "which business the current location belongs to"
+     rather than a plain boolean. A boolean set inside the effect is still
+     true for the OLD business during the render that follows a business
+     change - the effect has not run yet - and a consumer reading it then
+     fires a request with a location that no longer applies. Comparing against
+     `business` is correct on that very first render. */
+  const [businessReady, setBusinessReady] = useState(false);
+  const [locationsFor, setLocationsFor] = useState(null);
+  const locationReady = locationsFor === business;
+
   useEffect(() => {
     fetch('/api/auth/me')
       .then((r) => (r.ok ? r.json() : { user: null }))
@@ -119,11 +136,12 @@ export function ScopeProvider({ children }) {
         const main = list.find((o) => o.isDefault);
         setBusiness(main?.value || list[0]?.value || '');
       })
-      .catch(() => {});
+      .catch(() => {})
+      .finally(() => setBusinessReady(true));
   }, []);
 
   useEffect(() => {
-    if (!business) { setLocations([]); setLocation(''); return; }
+    if (!business) { setLocations([]); setLocation(''); setLocationsFor(business); return; }
     fetch('/api/options?ref=companylocations&business=' + business)
       .then((r) => r.json())
       .then((d) => {
@@ -147,7 +165,8 @@ export function ScopeProvider({ children }) {
         }
         setLocation(pick);
       })
-      .catch(() => {});
+      .catch(() => {})
+      .finally(() => setLocationsFor(business));
   }, [business]);
 
   useEffect(() => { if (location) localStorage.setItem('orbit.location', location); }, [location]);
@@ -155,6 +174,7 @@ export function ScopeProvider({ children }) {
   const value = {
     user,
     businesses, locations, business, location, finYear,
+    businessReady, locationReady,
     setBusiness, setLocation, setFinYear,
     // appended to every list/save request
     query: () => new URLSearchParams({ business, location, finYear }).toString(),

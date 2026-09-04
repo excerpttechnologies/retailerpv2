@@ -1467,7 +1467,7 @@ import { fmt, toCsv, toXlsHtml, download, printTable } from "@/lib/format";
    off entirely. Fixed positioning escapes the clip; the rect is measured on
    open, and the menu flips to the left of the button when it would otherwise
    run off the right of the window. */
-function ActionMenu({ items, open, onToggle, onGo }) {
+function ActionMenu({ items, open, onToggle, onGo, onAction }) {
   const btnRef = useRef(null);
   const [pos, setPos] = useState(null);
  
@@ -1504,7 +1504,13 @@ function ActionMenu({ items, open, onToggle, onGo }) {
             <button
               key={m.label}
               type="button"
-              onClick={() => onGo(m.href)}
+              onClick={() => {
+                if (m.action) {
+                  onAction(m.action, m);
+                } else {
+                  onGo(m.href);
+                }
+              }}
               className={
                 "flex w-full items-center gap-2 px-3.5 py-2.5 text-left text-[13.5px] text-ink hover:bg-[#f5f8fd] " +
                 (i > 0 ? "border-t border-line" : "")
@@ -1522,7 +1528,7 @@ function ActionMenu({ items, open, onToggle, onGo }) {
  
 export default function ListView({ cfg, slug }) {
   const router = useRouter();
-  const { business, location, finYear } = useScope();
+  const { business, location, finYear, businessReady, locationReady } = useScope();
   const [state, setState] = useState({
     rows: [],
     labels: {},
@@ -1533,6 +1539,7 @@ export default function ListView({ cfg, slug }) {
   const [search, setSearch] = useState("");
   const [hidden, setHidden] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
   const [page, setPage] = useState(1);
   const [modal, setModal] = useState(false);
   const [filters, setFilters] = useState({});
@@ -1556,13 +1563,56 @@ export default function ListView({ cfg, slug }) {
  
   const searched = !cfg.searchOnly || Object.keys(filters).length > 0;
  
+  /* ------------------------------------------------------------------
+     Scope gate.
+
+     Every business-scoped screen declares `scope: ["business", ...]` in its
+     cfg, and SingleFormView / MappingView have always honoured it - ListView
+     never did. The selectors are empty on the first render and only fill in
+     once /api/options answers, so the list fired immediately with
+     `business=&location=`. The API reads an empty business as "no business
+     filter" and replies with every tenant's rows; a moment later the properly
+     scoped request came back and replaced them. That is what made the Agents
+     table paint rows and then drop to "No Data.." about a second later - the
+     first response was never this business's data to begin with.
+
+     So: wait until the selectors have actually resolved. The request carries
+     business AND location whatever a screen declares in cfg.scope, and the
+     provider fills location in a beat after business, so both have to be
+     settled or the list simply fires twice - the second one being the flash
+     all over again on any endpoint that filters by location. finYear is
+     synchronous (it starts on FIN_YEARS[0]) and needs no gate.
+     ------------------------------------------------------------------ */
+  const needs = cfg.scope || [];
+  const scoped = needs.includes("business") || needs.includes("location");
+  const scopePending = scoped && (!businessReady || !locationReady);
+  /* Resolved, but this deployment has no business at all - querying now would
+     be the unscoped query all over again, so don't. */
+  const noBusiness = needs.includes("business") && !scopePending && !business;
+
+  /* Only the newest request may write state. Two are still legitimately in
+     flight at once (typing in Search, paging), and without this the slower of
+     the two can land last and overwrite the newer answer. */
+  const reqRef = useRef(0);
+
   const load = useCallback(async () => {
+    /* Hold the spinner - deliberately NOT an empty table, which would read as
+       "no records" for as long as the scope takes to arrive. */
+    if (scopePending) return;
+    if (noBusiness) {
+      reqRef.current += 1;
+      setError(null);
+      setState({ rows: [], labels: {}, page: 1, pages: 1, total: 0 });
+      setLoading(false);
+      return;
+    }
     if (cfg.searchOnly && Object.keys(filters).length === 0) {
       setLoading(false);
       return;
     }
     setLoading(true);
- 
+    const seq = ++reqRef.current;
+
     const qs = new URLSearchParams({
       page: String(page),
       search,
@@ -1585,8 +1635,21 @@ export default function ListView({ cfg, slug }) {
     const url = cfg.endpoint + "?" + qs;
  
     try {
-      const r = await fetch(url);
-      const d = await r.json();
+      const r = await fetch(url, { cache: "no-store" });
+      const d = await r.json().catch(() => ({}));
+
+      /* A newer request has already been sent - this answer is stale and must
+         not be allowed to write over it. */
+      if (seq !== reqRef.current) return;
+
+      /* 401 / 403 / 500 is not "no records". Emptying the table on a failed
+         request is what turns a session or server problem into a silent,
+         wrong-looking empty list, so keep what is on screen and say so. */
+      if (!r.ok) {
+        setError(d.error || `Could not load ${cfg.title || "records"} (${r.status}).`);
+        return;
+      }
+      setError(null);
       setState({
         rows: d.rows || [],
         labels: d.labels || {},
@@ -1594,11 +1657,14 @@ export default function ListView({ cfg, slug }) {
         pages: d.pages || 1,
         total: d.total || 0,
       });
+    } catch (e) {
+      if (seq === reqRef.current) setError("Network error - could not reach the server.");
     } finally {
-      setLoading(false);
+      if (seq === reqRef.current) setLoading(false);
     }
   }, [
     cfg.endpoint,
+    cfg.title,
     slugPath,
     page,
     search,
@@ -1608,6 +1674,8 @@ export default function ListView({ cfg, slug }) {
     filters,
     cfg.searchOnly,
     cfg.fixedQuery,
+    scopePending,
+    noBusiness,
   ]);
  
   useEffect(() => {
@@ -1847,28 +1915,47 @@ export default function ListView({ cfg, slug }) {
                 </tr>
               </thead>
               <tbody>
-                {loading && (
+                {(loading || scopePending) && (
                   <tr>
                     <td colSpan={visible.length + 1} className="dt-empty">
                       <span className="spin" />
                     </td>
                   </tr>
                 )}
-                {!loading && !searched && (
+                {!loading && !scopePending && error && (
+                  <tr>
+                    <td colSpan={visible.length + 1} className="dt-empty text-danger">
+                      {error}{" "}
+                      <button type="button" className="underline" onClick={load}>
+                        Retry
+                      </button>
+                    </td>
+                  </tr>
+                )}
+                {!loading && !scopePending && !error && noBusiness && (
+                  <tr>
+                    <td colSpan={visible.length + 1} className="dt-empty">
+                      Select a business to view this list.
+                    </td>
+                  </tr>
+                )}
+                {!loading && !scopePending && !error && !noBusiness && !searched && (
                   <tr>
                     <td colSpan={visible.length + 1} className="dt-empty">
                       Use the filter above to search.
                     </td>
                   </tr>
                 )}
-                {!loading && searched && state.rows.length === 0 && (
+                {!loading && !scopePending && !error && !noBusiness && searched && state.rows.length === 0 && (
                   <tr>
                     <td colSpan={visible.length + 1} className="dt-empty">
                       No Data..
                     </td>
                   </tr>
                 )}
-                {!loading &&
+                {/* rows are kept on screen through an error - a failed refresh
+                    should not wipe the list the operator was looking at */}
+                {!loading && !scopePending &&
                   state.rows.map((row) => {
                     const actions = (
                       <td>
@@ -1882,7 +1969,11 @@ export default function ListView({ cfg, slug }) {
                                   to: (r) => base + "/" + r._id,
                                 },
                               ]
-                            ).map((m) => ({ ...m, href: m.to(row) }))}
+                            ).map((m) => ({ 
+                              ...m, 
+                              href: m.to ? m.to(row) : undefined,
+                              rowId: row._id 
+                            }))}
                             open={menuFor === row._id}
                             onToggle={() =>
                               setMenuFor((m) =>
@@ -1892,6 +1983,12 @@ export default function ListView({ cfg, slug }) {
                             onGo={(href) => {
                               setMenuFor(null);
                               router.push(href);
+                            }}
+                            onAction={(action, item) => {
+                              setMenuFor(null);
+                              if (action === 'delete') {
+                                remove(item.rowId);
+                              }
                             }}
                           />
                         ) : (

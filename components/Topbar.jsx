@@ -22,15 +22,19 @@ export default function Topbar({ onToggleSidebar }) {
 
       <div className="flex-1" />
 
-      <select className="tb-select" value={business} onChange={(e) => setBusiness(e.target.value)}>
-        {businesses.length === 0 && <option value="">Select Business</option>}
-        {businesses.map((b) => <option key={b.value} value={b.value}>{b.label}</option>)}
-      </select>
+      <div className="tb-select-wrapper">
+        <select className="tb-select" value={business} onChange={(e) => setBusiness(e.target.value)}>
+          {businesses.length === 0 && <option value="">Select Business</option>}
+          {businesses.map((b) => <option key={b.value} value={b.value}>{b.label}</option>)}
+        </select>
+      </div>
 
-      <select className="tb-select" value={location} onChange={(e) => setLocation(e.target.value)}>
-        {locations.length === 0 && <option value="">Select Location</option>}
-        {locations.map((l) => <option key={l.value} value={l.value}>{l.label}</option>)}
-      </select>
+      <div className="tb-select-wrapper">
+        <select className="tb-select" value={location} onChange={(e) => setLocation(e.target.value)}>
+          {locations.length === 0 && <option value="">Select Location</option>}
+          {locations.map((l) => <option key={l.value} value={l.value}>{l.label}</option>)}
+        </select>
+      </div>
 
       <div className="flex items-center gap-2">
         <span className="text-[#56637d]"><Icon name="cal" size={26} /></span>

@@ -4,6 +4,7 @@ import DocSetup from '@/models/DocSetup';
 import { requireSession } from '@/lib/session';
 import { validate, escapeRegex } from '@/lib/validate';
 import { FIELDS } from '@/app/admin/setting/docsetup/fields';
+import { buildSample, validateSetup } from '@/lib/docSetup';
 
 /* /api/doc-setup - list + create. */
 
@@ -62,6 +63,22 @@ export async function POST(req) {
   if (body.business && isValidObjectId(body.business)) doc.businessId = body.business;
   if (body.finYear) doc.finYear = body.finYear;
 
+  const bad = validateSetup(doc);
+  if (bad) return json({ errors: bad }, 422);
+
+  /* One setup per business + type + year. The unique index enforces it, but
+     catching it here produces a message naming the clash instead of a raw
+     duplicate-key error. */
+  const clash = await DocSetup.findOne({
+    businessId: doc.businessId, documentType: doc.documentType, finYear: doc.finYear,
+  }).select('documentName').lean();
+  if (clash) {
+    return json({
+      errors: { documentType: `"${doc.documentType}" is already configured for this business and year (${clash.documentName}).` },
+    }, 422);
+  }
+
+  doc.sample = buildSample(doc);
   const created = await DocSetup.create(doc);
   return json({ ok: true, id: String(created._id) });
 }

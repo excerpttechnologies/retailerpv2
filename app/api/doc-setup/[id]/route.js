@@ -3,6 +3,7 @@ import DocSetup from '@/models/DocSetup';
 import { requireSession } from '@/lib/session';
 import { validate } from '@/lib/validate';
 import { FIELDS } from '@/app/admin/setting/docsetup/fields';
+import { buildSample, validateSetup } from '@/lib/docSetup';
 
 /* /api/doc-setup/<id> - read one, update, delete. */
 
@@ -30,6 +31,25 @@ export async function PUT(req, { params }) {
 
   const { errors, doc, ok } = validate(FIELDS, body.data || {});
   if (!ok) return json({ errors }, 422);
+
+  const bad = validateSetup(doc);
+  if (bad) return json({ errors: bad }, 422);
+
+  /* the same one-per-business-type-year rule as create, excluding this row */
+  const clash = await DocSetup.findOne({
+    _id: { $ne: id },
+    businessId: doc.businessId ?? undefined,
+    documentType: doc.documentType,
+    finYear: doc.finYear,
+  }).select('documentName').lean();
+  if (clash) {
+    return json({
+      errors: { documentType: `"${doc.documentType}" is already configured for this business and year (${clash.documentName}).` },
+    }, 422);
+  }
+
+  /* recomputed on every save - see buildSample in ../route.js */
+  doc.sample = buildSample(doc);
 
   const updated = await DocSetup.findByIdAndUpdate(id, doc, { new: true, runValidators: true });
   if (!updated) return json({ error: 'Not found' }, 404);

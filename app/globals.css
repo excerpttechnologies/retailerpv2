@@ -43,9 +43,25 @@ select {
   .sb-sub-link { @apply block py-2 pl-[60px] pr-5 text-sm text-sidebar-muted hover:text-white; }
   .sb-sub-link-active { @apply font-bold text-white; }
 
+  .tb-select-wrapper {
+    @apply relative inline-block w-[200px] min-w-0 max-w-[200px];
+  }
+
   .tb-select {
-    @apply h-9 min-w-[170px] rounded-md border border-linestrong bg-white
-           px-2.5 text-sm text-ink outline-none;
+    @apply h-9 w-full min-w-0 rounded-md border border-linestrong bg-white
+           px-2.5 pr-8 text-sm text-ink outline-none cursor-pointer
+           appearance-none;
+    background-image: url("data:image/svg+xml,%3Csvg width='10' height='6' viewBox='0 0 10 6' fill='none' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M1 1L5 5L9 1' stroke='%23374151' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 8px center;
+    background-size: 10px 6px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    overflow: hidden;
+  }
+  
+  .tb-select option {
+    @apply text-sm;
   }
 
   /* -------------------------------------------------------------- card --- */
@@ -73,15 +89,15 @@ select {
   }
 
   /* ------------------------------------------------------------- table --- */
-  .dt { @apply w-full border-collapse text-[13.5px]; }
+  .dt { @apply w-full border-collapse text-[12.5px] leading-[1.1]; }
   .dt th {
-    @apply whitespace-nowrap border-y border-r border-line bg-thead px-3 py-2.5
+    @apply whitespace-nowrap border-y border-r border-line bg-thead px-1.5 py-1
            text-left font-bold text-ink last:border-r-0;
   }
-  .dt td { @apply border-b border-line px-3 py-2.5 text-cell align-middle; }
+  .dt td { @apply border-b border-line px-1.5 py-1 text-cell align-middle; }
   .dt tbody tr:nth-child(odd) { @apply bg-rowalt; }
   .dt tbody tr:hover { @apply bg-[#f2f6fc]; }
-  .dt-empty { @apply py-3.5 text-center text-inkmuted; }
+  .dt-empty { @apply py-1.5 text-center text-inkmuted; }
 
   .pos-header-row { @apply flex min-h-[44px] flex-wrap items-center gap-2 border-b border-line px-3 py-1.5; }
   .pos-control-row { @apply grid grid-cols-1 items-center gap-2 border-b border-line px-3 py-1.5 md:grid-cols-5; }
