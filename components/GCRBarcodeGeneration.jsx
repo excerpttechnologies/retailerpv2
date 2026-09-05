@@ -326,6 +326,93 @@ function calculatePrices(row) {
   };
 }
 
+/* Searchable combobox used for Item Code and HSN.
+   Queries the server as the user types (debounced 300 ms).
+   value  = the stored id/code string
+   label  = what the user sees in the closed field
+   onSearch(q) called as user types
+   onSelect(optionObject) called on selection
+   onClear() called when × is clicked */
+function SearchSelect({ placeholder, value, label, onSearch, options, loading, onSelect, onClear, editableClass }) {
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState('');
+  const [highlighted, setHighlighted] = useState(0);
+  const containerRef = useRef(null);
+  const inputRef = useRef(null);
+
+  /* close on outside click */
+  useEffect(() => {
+    const handler = (e) => {
+      if (containerRef.current && !containerRef.current.contains(e.target)) setOpen(false);
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, []);
+
+  useEffect(() => { setHighlighted(0); }, [options]);
+
+  const handleKey = (e) => {
+    if (!open) { if (e.key === 'ArrowDown' || e.key === 'Enter') { setOpen(true); onSearch(query); } return; }
+    if (e.key === 'ArrowDown') { e.preventDefault(); setHighlighted((h) => Math.min(h + 1, options.length - 1)); }
+    else if (e.key === 'ArrowUp') { e.preventDefault(); setHighlighted((h) => Math.max(h - 1, 0)); }
+    else if (e.key === 'Enter') { e.preventDefault(); if (options[highlighted]) { onSelect(options[highlighted]); setOpen(false); setQuery(''); } }
+    else if (e.key === 'Escape') { setOpen(false); setQuery(''); }
+  };
+
+  const isSelected = Boolean(value);
+
+  return (
+    <div ref={containerRef} className="relative">
+      {isSelected && !open ? (
+        /* closed + value: show label with clear button */
+        <div className={`flex items-center gap-1 rounded-md px-2 py-2 text-sm ${editableClass}`}>
+          <span className="flex-1 truncate">{label || value}</span>
+          <button type="button" onClick={() => { onClear(); setQuery(''); }}
+            className="shrink-0 text-gray-400 hover:text-red-500" aria-label="Clear">✕</button>
+        </div>
+      ) : (
+        /* open / searching */
+        <div className={`flex items-center gap-1 rounded-md px-2 py-1.5 text-sm ${editableClass}`}>
+          <input
+            ref={inputRef}
+            className="flex-1 bg-transparent outline-none text-sm placeholder:text-gray-400"
+            placeholder={isSelected ? (label || value) : placeholder}
+            value={query}
+            onChange={(e) => { setQuery(e.target.value); onSearch(e.target.value); setOpen(true); }}
+            onFocus={() => { setOpen(true); onSearch(query); }}
+            onKeyDown={handleKey}
+            autoComplete="off"
+          />
+          {loading
+            ? <span className="shrink-0 text-[11px] text-gray-400">…</span>
+            : <span className="shrink-0 text-gray-400 text-[12px]">🔍</span>}
+        </div>
+      )}
+
+      {open && (
+        <div className="absolute z-50 mt-1 w-full overflow-y-auto rounded-md border border-gray-200 bg-white shadow-md"
+          style={{ maxHeight: 280 }}>
+          {loading && <div className="px-3 py-2 text-[12px] text-gray-400">Searching…</div>}
+          {!loading && options.length === 0 && (
+            <div className="px-3 py-2 text-[12px] text-gray-400">No results found</div>
+          )}
+          {options.map((opt, i) => (
+            <div
+              key={opt.value}
+              className={`cursor-pointer px-3 py-2 text-[13px] ${i === highlighted ? 'bg-blue-50 text-blue-700' : 'hover:bg-gray-50'}`}
+              onMouseDown={() => { onSelect(opt); setOpen(false); setQuery(''); }}
+              onMouseEnter={() => setHighlighted(i)}
+            >
+              <div className="font-medium leading-tight">{opt.primaryLabel}</div>
+              {opt.secondaryLabel && <div className="text-[11px] text-gray-400">{opt.secondaryLabel}</div>}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function AddItemModal({ open, onClose, onSubmit, onSubmitAndPrint, rowCount = 0, barcodeFormat, reserveNumbers, business = "" }) {
   const createBlankForm = (overrides = {}) => ({
     oldBarcode: "",
@@ -372,11 +459,66 @@ function AddItemModal({ open, onClose, onSubmit, onSubmitAndPrint, rowCount = 0,
      so a double-click cannot burn a second block of numbers */
   const [reserving, setReserving] = useState(false);
   const [reserveError, setReserveError] = useState("");
+  /* Server-side search state for Item Code and HSN */
   const [itemOptions, setItemOptions] = useState([]);
+  const [itemLoading, setItemLoading] = useState(false);
+  const [itemLabel, setItemLabel] = useState('');
   const [hsnOptions, setHsnOptions] = useState([]);
+  const [hsnLoading, setHsnLoading] = useState(false);
+  const [hsnLabel, setHsnLabel] = useState('');
+  const itemTimerRef = useRef(null);
+  const hsnTimerRef = useRef(null);
   const [cutRows, setCutRows] = useState([{ id: 1, value: "" }]);
   const [focusedCutIndex, setFocusedCutIndex] = useState(0);
   const cutTargetRef = useRef(0);
+
+  /* Debounced server-side item search */
+  const searchItems = (q) => {
+    clearTimeout(itemTimerRef.current);
+    setItemLoading(true);
+    itemTimerRef.current = setTimeout(() => {
+      const qs = new URLSearchParams({ perPage: '20', search: q || '' });
+      if (business) qs.set('business', business);
+      fetch('/api/item?' + qs)
+        .then((r) => r.json())
+        .then((d) => {
+          setItemOptions((d.rows || []).map((row) => ({
+            value: String(row._id),
+            primaryLabel: row.itemCode || row.name || '',
+            secondaryLabel: row.name !== row.itemCode ? row.name : '',
+            itemCode: row.itemCode || '',
+            name: row.name || '',
+            subGroupId: row.subGroupId || '',
+            description: row.description || '',
+          })));
+        })
+        .catch(() => setItemOptions([]))
+        .finally(() => setItemLoading(false));
+    }, 300);
+  };
+
+  /* Debounced server-side HSN search */
+  const searchHsn = (q) => {
+    clearTimeout(hsnTimerRef.current);
+    setHsnLoading(true);
+    hsnTimerRef.current = setTimeout(() => {
+      const qs = new URLSearchParams({ perPage: '20', search: q || '' });
+      fetch('/api/hsn?' + qs)
+        .then((r) => r.json())
+        .then((d) => {
+          setHsnOptions((d.rows || []).map((row) => ({
+            value: String(row._id),
+            primaryLabel: row.code || '',
+            secondaryLabel: row.description || '',
+            code: row.code || '',
+            description: row.description || '',
+            taxSlabs: Array.isArray(row.taxSlabs) ? row.taxSlabs : [],
+          })));
+        })
+        .catch(() => setHsnOptions([]))
+        .finally(() => setHsnLoading(false));
+    }, 300);
+  };
 
   /* OLD BARCODE LOOKUP.
 
@@ -410,34 +552,9 @@ function AddItemModal({ open, onClose, onSubmit, onSubmitAndPrint, rowCount = 0,
       return makeMeterCutRows(count, Number(form.totalMtr || 0));
     });
 
-    fetch('/api/item?perPage=200')
-      .then((response) => response.json())
-      .then((result) => {
-        const rows = (result.rows || []).map((row) => ({
-          value: String(row._id),
-          label: `${row.name || 'Unnamed item'}${row.itemCode ? ` (${row.itemCode})` : ''}`,
-          itemCode: row.itemCode || '',
-          name: row.name || '',
-          subGroupId: row.subGroupId || '',
-          description: row.description || '',
-        }));
-        setItemOptions(rows);
-      })
-      .catch(() => setItemOptions([]));
-
-    fetch('/api/hsn?perPage=200')
-      .then((response) => response.json())
-      .then((result) => {
-        const rows = (result.rows || []).map((row) => ({
-          value: String(row._id),
-          label: `${row.code || 'HSN'}${row.description ? ` - ${row.description}` : ''}`,
-          code: row.code || '',
-          description: row.description || '',
-          taxSlabs: Array.isArray(row.taxSlabs) ? row.taxSlabs : [],
-        }));
-        setHsnOptions(rows);
-      })
-      .catch(() => setHsnOptions([]));
+    /* pre-populate dropdowns with initial results so they are not blank on open */
+    searchItems('');
+    searchHsn('');
   }, [open]);
 
   useEffect(() => {
@@ -585,28 +702,10 @@ function AddItemModal({ open, onClose, onSubmit, onSubmitAndPrint, rowCount = 0,
 
       const unit = result.unit;
 
-      /* the scanned item may sit outside the 200 rows the Item Code dropdown
-         preloaded - add it so the select can actually display what was found */
-      if (unit.itemId) {
-        setItemOptions((current) => (
-          current.some((o) => String(o.value) === String(unit.itemId))
-            ? current
-            : [...current, {
-                value: String(unit.itemId),
-                label: `${unit.itemName || "Unnamed item"}${unit.itemCode ? ` (${unit.itemCode})` : ""}`,
-                itemCode: unit.itemCode || "",
-                name: unit.itemName || "",
-                subGroupId: "",
-                description: unit.description || "",
-              }]
-        ));
-      }
-
-      /* HSN is a select bound to an id, but the scan returns the CODE - match
-         it back to the loaded options so the dropdown shows the right row.
-         The code and GST are set either way, since those are what actually
-         get saved. */
-      const hsnMatch = hsnOptions.find((o) => String(o.code || "").trim() === String(unit.hsn || "").trim());
+      /* When a barcode is scanned, populate labels so the SearchSelect
+         closed state shows the item code and HSN code correctly. */
+      if (unit.itemCode) setItemLabel(unit.itemCode);
+      if (unit.hsn) setHsnLabel(unit.hsn);
 
       setForm((current) => ({
         ...current,
@@ -614,7 +713,7 @@ function AddItemModal({ open, onClose, onSubmit, onSubmitAndPrint, rowCount = 0,
         itemId: unit.itemId ? String(unit.itemId) : "",
         itemCode: unit.itemCode || "",
         itemName: unit.itemName || "",
-        hsnId: hsnMatch ? String(hsnMatch.value) : "",
+        hsnId: "",
         hsn: unit.hsn || "",
         gst: unit.gst ? String(unit.gst) : current.gst,
         printDescription: unit.printDescription || unit.description || unit.itemName || "",
@@ -639,33 +738,38 @@ function AddItemModal({ open, onClose, onSubmit, onSubmitAndPrint, rowCount = 0,
     }
   };
 
-  const handleItemSelection = async (selectedValue) => {
-    const selected = itemOptions.find((option) => String(option.value) === String(selectedValue));
-    if (!selected) {
+  const handleItemSelection = async (opt) => {
+    if (!opt) {
+      setItemLabel('');
       setForm((current) => ({ ...current, itemId: "", itemName: "", itemCode: "", subGroupName: "", groupName: "", printDescription: "" }));
       return;
     }
-
-    const itemCode = selected.itemCode || "";
-    const itemName = selected.name || selected.label || "";
+    const itemCode = opt.itemCode || opt.primaryLabel || "";
+    const itemName = opt.name || opt.secondaryLabel || "";
+    setItemLabel(itemCode);
     setForm((current) => ({
       ...current,
-      itemId: selected.value,
+      itemId: opt.value,
       itemCode,
       itemName,
-      printDescription: selected.description || "",
+      printDescription: opt.description || "",
     }));
-    await resolveProductGroup(selected.subGroupId || "");
+    await resolveProductGroup(opt.subGroupId || "");
   };
 
-  const handleHsnSelection = async (selectedValue) => {
-    const selected = hsnOptions.find((option) => String(option.value) === String(selectedValue));
-    if (!selected) {
+  const handleHsnSelection = async (opt) => {
+    if (!opt) {
+      setHsnLabel('');
       setForm((current) => ({ ...current, hsnId: "", hsn: "", gst: "5" }));
       return;
     }
-
-    await resolveHsnGst(selected);
+    setHsnLabel(opt.code || opt.primaryLabel || "");
+    await resolveHsnGst({
+      value: opt.value,
+      code: opt.code || opt.primaryLabel || "",
+      label: opt.primaryLabel || "",
+      taxSlabs: opt.taxSlabs || [],
+    });
   };
 
   const updateMarkupValue = (key, value) => {
@@ -984,22 +1088,32 @@ function AddItemModal({ open, onClose, onSubmit, onSubmitAndPrint, rowCount = 0,
 
             <div className="space-y-1">
               <label className="block text-[11px] font-semibold text-gray-700">Item Code *</label>
-              <select value={form.itemId} onChange={(event) => handleItemSelection(event.target.value)} className={`w-full rounded-md px-2 py-2 text-sm ${editableClass}`}>
-                <option value="">Select...</option>
-                {itemOptions.map((option) => (
-                  <option key={option.value} value={option.value}>{option.label}</option>
-                ))}
-              </select>
+              <SearchSelect
+                placeholder="Search Item Code…"
+                value={form.itemId}
+                label={itemLabel}
+                onSearch={searchItems}
+                options={itemOptions}
+                loading={itemLoading}
+                onSelect={(opt) => handleItemSelection(opt)}
+                onClear={() => handleItemSelection(null)}
+                editableClass={editableClass}
+              />
             </div>
 
             <div className="space-y-1">
               <label className="block text-[11px] font-semibold text-gray-700">HSN *</label>
-              <select value={form.hsnId} onChange={(event) => handleHsnSelection(event.target.value)} className={`w-full rounded-md px-2 py-2 text-sm ${editableClass}`}>
-                <option value="">Select...</option>
-                {hsnOptions.map((option) => (
-                  <option key={option.value} value={option.value}>{option.label}</option>
-                ))}
-              </select>
+              <SearchSelect
+                placeholder="Search HSN…"
+                value={form.hsnId}
+                label={hsnLabel}
+                onSearch={searchHsn}
+                options={hsnOptions}
+                loading={hsnLoading}
+                onSelect={(opt) => handleHsnSelection(opt)}
+                onClear={() => handleHsnSelection(null)}
+                editableClass={editableClass}
+              />
             </div>
 
             <div className="space-y-1">
@@ -1043,7 +1157,7 @@ function AddItemModal({ open, onClose, onSubmit, onSubmitAndPrint, rowCount = 0,
               the two description fields - which hold real text - take two
               each. Same total width, no change to the card. */}
           <div className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-5">
-            <div className="space-y-1">
+            <div className="space-y-1" style={{ maxWidth: '90px' }}>
               <label className="block text-[11px] font-semibold text-gray-700">Serial No. *</label>
               <input value={form.serialNo} onChange={(event) => updateField("serialNo", event.target.value)} className={`w-full rounded-md px-2 py-2 text-sm ${editableClass}`} />
             </div>

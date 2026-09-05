@@ -472,6 +472,7 @@ export default function TransactionFormView({ cfg, id, slug }) {
   const [source, setSource] = useState([]);
   const [items, setItems] = useState([]);
   const [vendorItems, setVendorItems] = useState([]);
+  const [selectedOptions, setSelectedOptions] = useState({});
   const [voucherRows, setVoucherRows] = useState(() => [
     Object.fromEntries((voucherCard?.fields || []).map((field) => [field.k, ''])),
   ]);
@@ -507,9 +508,28 @@ export default function TransactionFormView({ cfg, id, slug }) {
             : [Object.fromEntries((voucherCard.fields || []).map((field) => [field.k, d.doc[field.k] ?? '']))];
           setVoucherRows(savedRows);
         }
+        
+        // Load selected options for ref fields, especially supplierId
+        const refFields = allFields.filter((f) => f.type === 'ref');
+        refFields.forEach((field) => {
+          const value = d.doc[field.k];
+          if (value) {
+            // Load options for this ref field
+            fetch('/api/options?ref=' + field.ref + '&business=' + (scope.business || '') + '&location=' + (scope.location || ''))
+              .then((r) => r.json())
+              .then((optionsData) => {
+                const options = optionsData.options || [];
+                const selectedOption = options.find((opt) => opt.value === String(value));
+                if (selectedOption) {
+                  setSelectedOptions((prev) => ({ ...prev, [field.k]: selectedOption }));
+                }
+              })
+              .catch(() => {});
+          }
+        });
       });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [id, slugPath]);
+  }, [id, slugPath, scope.business, scope.location]);
 
   /* A slow lookup for a vendor picked two changes ago must not land on top
      of the current one. */
@@ -607,7 +627,19 @@ export default function TransactionFormView({ cfg, id, slug }) {
                 <div className="form-grid-4">
                   {(card.fields || []).filter((f) => !f.visibleWhen || Object.entries(f.visibleWhen).every(([key, expected]) => data[key] === expected)).map((f) => (
                     <div key={f.k}>
-                      <Field key={f.k + '-' + quickAddNonce} f={f} value={data[f.k]} error={errors[f.k]} onChange={set} />
+                      <Field 
+                        key={f.k + '-' + quickAddNonce} 
+                        f={f} 
+                        value={data[f.k]} 
+                        error={errors[f.k]} 
+                        onChange={set} 
+                        onOptionChange={(option) => {
+                          if (option) {
+                            setSelectedOptions((prev) => ({ ...prev, [f.k]: option }));
+                          }
+                        }}
+                        selectedOption={selectedOptions[f.k]}
+                      />
                       {(cfg.quickAdds?.[f.k] || (cfg.quickAdd?.field === f.k ? cfg.quickAdd : null)) && (
                         <button type="button" className="btn btn-primary mt-2" onClick={() => { setQuickAddTarget(f.k); setQuickAddOpen(true); }}>
                           <Icon name="plus" size={13} /> {(cfg.quickAdds?.[f.k] || cfg.quickAdd).label}
@@ -641,6 +673,34 @@ export default function TransactionFormView({ cfg, id, slug }) {
                               fillEntries.forEach(([target, sourceKey]) => {
                                 set(target, row[sourceKey] ?? '');
                               });
+                              
+                              // Handle vendor name display - prioritize supplier object from the row
+                              if (row.supplierId) {
+                                // If the row includes supplier details, use them directly
+                                if (row.supplier && row.supplier.vendorName) {
+                                  const vendorName = row.supplier.vendorName;
+                                  const vendorCode = row.supplier.vendorNo ? ` (${row.supplier.vendorNo})` : '';
+                                  setSelectedOptions((prev) => ({ 
+                                    ...prev, 
+                                    supplierId: { 
+                                      value: String(row.supplierId), 
+                                      label: vendorName + vendorCode 
+                                    } 
+                                  }));
+                                } else {
+                                  // Otherwise fetch from options API
+                                  fetch('/api/options?ref=supplier&business=' + (scope.business || '') + '&location=' + (scope.location || ''))
+                                    .then((r) => r.json())
+                                    .then((optionsData) => {
+                                      const options = optionsData.options || [];
+                                      const selectedOption = options.find((opt) => opt.value === String(row.supplierId));
+                                      if (selectedOption) {
+                                        setSelectedOptions((prev) => ({ ...prev, supplierId: selectedOption }));
+                                      }
+                                    })
+                                    .catch(() => {});
+                                }
+                              }
                             }}
                           />
                         </div>

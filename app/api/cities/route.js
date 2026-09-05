@@ -30,6 +30,6 @@ export async function GET(req) {
   const rows = await City.find(filter).limit(200).lean();
 
   return json({
-    options: rows.map((c) => ({ value: c.name, label: c.name + (c.state ? ', ' + c.state : '') })),
+    options: rows.map((c) => ({ value: c.name, label: c.name })),
   });
 }
