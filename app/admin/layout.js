@@ -1,12 +1,19 @@
 'use client';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import Sidebar from '@/components/Sidebar';
 import Topbar from '@/components/Topbar';
 import ChatBot from '@/components/ChatBot';
 import { ScopeProvider } from '@/components/ScopeContext';
+import { disableSelectScroll } from '@/lib/disableSelectScroll';
 
 export default function AdminLayout({ children }) {
   const [collapsed, setCollapsed] = useState(false);
+
+  /* Every <select> in every module - purchase, sales, inventory, contacts,
+     transportation, logistics, masters - mounts somewhere under here, so one
+     listener at this root covers all of them without touching a single form
+     file. See lib/disableSelectScroll.js. */
+  useEffect(() => disableSelectScroll(), []);
 
   return (
     <ScopeProvider>

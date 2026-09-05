@@ -132,6 +132,51 @@ export const POST = handler(async (req) => {
     return json({ error: 'No rows to save', code: 'EMPTY' }, 400);
   }
 
+  /* Validate goodsType is present and valid for all rows */
+  for (const row of rows) {
+    if (!row.goodsType || !row.goodsType.trim()) {
+      return json({ error: 'Goods Type is required for all rows', code: 'INVALID_INPUT' }, 400);
+    }
+    if (row.goodsType !== 'SM' && row.goodsType !== 'P-M-F') {
+      return json({ error: 'Invalid Goods Type. Allowed values are SM or P-M-F', code: 'INVALID_INPUT' }, 400);
+    }
+  }
+
+  /* An Old Barcode that is supplied must actually EXIST.
+
+     The Add Item form makes it mandatory and will not submit until the code
+     has resolved, but the client is not trusted to have done that - a typed
+     or replayed code that matches nothing would otherwise be saved onto the
+     new label, pointing its traceability at a record that is not there.
+
+     Deliberately NOT mandatory here: the Excel import on this same screen
+     builds rows without an Old Barcode, and requiring one server-side would
+     break that existing path. So this validates what is sent, and does not
+     demand that something be sent. */
+  const suppliedOldBarcodes = [...new Set(
+    rows.map((r) => String(r.oldBarcode || '').trim()).filter(Boolean)
+  )];
+  if (suppliedOldBarcodes.length) {
+    const found = await BarcodeLabel.find({
+      $or: [
+        { barcodeNo: { $in: suppliedOldBarcodes } },
+        { barcodeGenerated: { $in: suppliedOldBarcodes } },
+        { oldBarcode: { $in: suppliedOldBarcodes } },
+      ],
+      ...(business ? { businessId: String(business) } : {}),
+    }).select('barcodeNo barcodeGenerated oldBarcode').lean();
+
+    const known = new Set(found.flatMap((u) => [u.barcodeNo, u.barcodeGenerated, u.oldBarcode].filter(Boolean).map(String)));
+    const missing = suppliedOldBarcodes.filter((c) => !known.has(c));
+    if (missing.length) {
+      return json({
+        error: 'Barcode not found. Please enter or scan a valid barcode.',
+        code: 'INVALID_INPUT',
+        missing,
+      }, 400);
+    }
+  }
+
   /* ---- money, derived from the rows rather than trusted from the form --- */
   const totalQuantity = rows.reduce((sum, row) => sum + (parseFloat(row.qty) || 0), 0);
   const netAmount = rows.reduce((sum, row) => {
@@ -353,6 +398,7 @@ async function buildDocs({ rows, business, location, finYear, grcId, supplierId,
       seq: r.seq || r.seqDummy || '',
       dummy: r.dummy || '',
       supplierDescription: r.supplierDescription || '',
+      goodsType: r.goodsType || '',
       qty: String(r.qty ?? ''),
       uom: r.uom || '',
       hsn: r.hsn || '',

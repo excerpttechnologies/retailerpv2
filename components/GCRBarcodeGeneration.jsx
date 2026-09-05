@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useScope } from "./ScopeContext";
 import { useOptions } from "./useOptions";
+import { useBarcodeLookup } from "./useScanner";
 import Icon from "./Icon";
 import { computeSampleBarcode } from "@/lib/barcodeFormat";
 import * as XLSX from "xlsx";
@@ -23,7 +24,7 @@ const pcRegex = /(pc|pcs|piece|pieces)/i;
 const exportFieldLabels = {
   itemCode: "Item Code",
   itemName: "Item Name",
-  goodsType: "Goods Type",
+  goodsType: "Attribute Add On",
   hsn: "HSN",
   gst: "GST",
   uom: "UOM",
@@ -219,6 +220,10 @@ function recalcMeterCutRows({ count, totalMtr, rows = [], changedIndex = null, c
 function emptyRow(id) {
   return {
     id,
+    /* the barcode physically on the incoming goods - the vendor's own printed
+       number. It identifies the item, and is carried through to the saved
+       label so the new barcode stays traceable back to the old one. */
+    oldBarcode: "",
     itemCode: "",
     itemName: "",
     goodsType: "",
@@ -321,8 +326,9 @@ function calculatePrices(row) {
   };
 }
 
-function AddItemModal({ open, onClose, onSubmit, onSubmitAndPrint, rowCount = 0, barcodeFormat, reserveNumbers }) {
+function AddItemModal({ open, onClose, onSubmit, onSubmitAndPrint, rowCount = 0, barcodeFormat, reserveNumbers, business = "" }) {
   const createBlankForm = (overrides = {}) => ({
+    oldBarcode: "",
     itemCode: "",
     itemName: "",
     itemId: "",
@@ -331,6 +337,10 @@ function AddItemModal({ open, onClose, onSubmit, onSubmitAndPrint, rowCount = 0,
     hsn: "",
     gst: "5",
     goodsType: "",
+    /* the vendor's own wording for the goods. Was previously never a form
+       field - the generated row just copied itemName into it - so it is
+       seeded from the Old Barcode lookup and editable from row 2. */
+    supplierDescription: "",
     printDescription: "",
     uniqueBarcode: true,
     isMtr: false,
@@ -367,6 +377,22 @@ function AddItemModal({ open, onClose, onSubmit, onSubmitAndPrint, rowCount = 0,
   const [cutRows, setCutRows] = useState([{ id: 1, value: "" }]);
   const [focusedCutIndex, setFocusedCutIndex] = useState(0);
   const cutTargetRef = useRef(0);
+
+  /* OLD BARCODE LOOKUP.
+
+     status: idle | loading | found | error. `resolvedRef` holds the code that
+     is currently loaded into the form, so re-scanning the same label - the
+     classic double-trigger of a wedge scanner - neither refetches nor
+     rebuilds the form. `inFlightRef` blocks a second request while one is
+     already running. */
+  const [lookup, setLookup] = useState({ status: "idle", message: "" });
+  const resolvedRef = useRef("");
+  const inFlightRef = useRef("");
+
+  /* the shared scanner hook every other scanning screen uses (POS, stock
+     transfer, receiving, returns), so this screen talks to /api/barcode/scan
+     the same way and surfaces the same server messages */
+  const { lookup: scanLookup } = useBarcodeLookup({ business, intent: "LOOKUP" });
 
   const readOnlyClass = "border border-[#dfe4eb] bg-[#f3f5f9] text-gray-700";
   const editableClass = "border border-[#dfe4eb] bg-white text-gray-700";
@@ -498,6 +524,118 @@ function AddItemModal({ open, onClose, onSubmit, onSubmitAndPrint, rowCount = 0,
       setForm((current) => ({ ...current, gst: String(gstValue || 5) }));
     } catch (error) {
       setForm((current) => ({ ...current, gst: "5" }));
+    }
+  };
+
+  /* Clears everything the previous Old Barcode put on the form, so barcode B
+     can never inherit barcode A's item, HSN or GST. */
+  const clearFetchedItem = () => {
+    resolvedRef.current = "";
+    setForm((current) => ({
+      ...current,
+      itemId: "", itemCode: "", itemName: "", itemLabel: "",
+      hsnId: "", hsn: "", gst: "5",
+      printDescription: "", supplierDescription: "", subGroupName: "", groupName: "",
+    }));
+  };
+
+  /* Old Barcode -> the item it belongs to.
+
+     Reuses POST /api/barcode/scan, the single endpoint every scanner in the
+     app already talks to. With intent 'LOOKUP' it is a pure read - it never
+     writes, reserves or consumes anything - and it is the only lookup that
+     matches on oldBarcode as well as barcodeNo/barcodeGenerated, which is
+     exactly what is printed on incoming supplier goods. */
+  const lookupOldBarcode = async (rawCode) => {
+    const code = String(rawCode || "").trim();
+
+    if (!code) {
+      setLookup({ status: "idle", message: "" });
+      clearFetchedItem();
+      return;
+    }
+    /* already loaded, or already being fetched - a repeat scan is a no-op */
+    if (code === resolvedRef.current || code === inFlightRef.current) return;
+
+    inFlightRef.current = code;
+    setLookup({ status: "loading", message: "Fetching barcode..." });
+    /* the previous item must not linger while the new one is on its way */
+    clearFetchedItem();
+
+    try {
+      const result = await scanLookup(code);
+
+      /* the user typed on - this answer is for a code that is no longer in
+         the box, so dropping it avoids a late response overwriting a newer one */
+      if (inFlightRef.current !== code) return;
+
+      if (!result?.ok || !result.unit) {
+        /* "belongs to a different business" is worth repeating verbatim - it
+           tells the operator to change the company selector, which the
+           generic wording would send them hunting for. Anything else reads
+           as plain not-found. */
+        setLookup({
+          status: "error",
+          message: result?.code === "BARCODE_WRONG_BUSINESS"
+            ? result.error
+            : "Barcode not found. Please enter or scan a valid barcode.",
+        });
+        return;
+      }
+
+      const unit = result.unit;
+
+      /* the scanned item may sit outside the 200 rows the Item Code dropdown
+         preloaded - add it so the select can actually display what was found */
+      if (unit.itemId) {
+        setItemOptions((current) => (
+          current.some((o) => String(o.value) === String(unit.itemId))
+            ? current
+            : [...current, {
+                value: String(unit.itemId),
+                label: `${unit.itemName || "Unnamed item"}${unit.itemCode ? ` (${unit.itemCode})` : ""}`,
+                itemCode: unit.itemCode || "",
+                name: unit.itemName || "",
+                subGroupId: "",
+                description: unit.description || "",
+              }]
+        ));
+      }
+
+      /* HSN is a select bound to an id, but the scan returns the CODE - match
+         it back to the loaded options so the dropdown shows the right row.
+         The code and GST are set either way, since those are what actually
+         get saved. */
+      const hsnMatch = hsnOptions.find((o) => String(o.code || "").trim() === String(unit.hsn || "").trim());
+
+      setForm((current) => ({
+        ...current,
+        oldBarcode: code,
+        itemId: unit.itemId ? String(unit.itemId) : "",
+        itemCode: unit.itemCode || "",
+        itemName: unit.itemName || "",
+        hsnId: hsnMatch ? String(hsnMatch.value) : "",
+        hsn: unit.hsn || "",
+        gst: unit.gst ? String(unit.gst) : current.gst,
+        printDescription: unit.printDescription || unit.description || unit.itemName || "",
+        /* the vendor's wording as recorded on the matched label - falls back
+           to the merged description so an older row without a separate
+           supplier description still fills the field */
+        supplierDescription: unit.supplierDescription || unit.description || "",
+        purchaseRate: unit.rate ? String(unit.rate) : current.purchaseRate,
+        uom: unit.uom || current.uom,
+      }));
+
+      resolvedRef.current = code;
+      setLookup({
+        status: "found",
+        message: `${unit.itemCode || unit.itemName || "Item"} loaded.`,
+      });
+    } catch {
+      if (inFlightRef.current !== code) return;
+      setLookup({ status: "error", message: "Could not reach the server. Try the scan again." });
+    } finally {
+      if (inFlightRef.current === code) inFlightRef.current = "";
     }
   };
 
@@ -658,7 +796,32 @@ function AddItemModal({ open, onClose, onSubmit, onSubmitAndPrint, rowCount = 0,
      operator sees in the grid is the number that will be saved and the number
      on the label they may print immediately. */
   const submit = async (printAfterSubmit = false) => {
+    /* Old Barcode is OPTIONAL - a blank one generates a label with no link
+       back to a previous barcode, which is the normal case for goods that
+       arrive unlabelled.
+
+       It is still checked when one IS entered: a code that never resolved
+       would otherwise save a label pointing at a record that does not exist.
+       So the rule is "if you typed something, it has to be real", not "you
+       have to type something". */
+    const enteredOldBarcode = form.oldBarcode?.trim() || "";
+    if (enteredOldBarcode && resolvedRef.current !== enteredOldBarcode) {
+      setReserveError("Barcode not found. Please enter or scan a valid barcode.");
+      return;
+    }
+    if (!String(form.serialNo ?? "").trim()) {
+      setReserveError("Serial No. is required.");
+      return;
+    }
     if (!form.itemName?.trim()) return;
+    if (!form.goodsType?.trim()) {
+      setReserveError("Goods Type is required. Please select SM or P-M-F.");
+      return;
+    }
+    if (form.goodsType !== "SM" && form.goodsType !== "P-M-F") {
+      setReserveError("Invalid Goods Type. Please select SM or P-M-F.");
+      return;
+    }
     if (reserving) return;                       // guards the double-click
 
     const generatedRows = [];
@@ -698,6 +861,11 @@ function AddItemModal({ open, onClose, onSubmit, onSubmitAndPrint, rowCount = 0,
 
       generatedRows.push(calculatePrices({
         ...emptyRow(`${Date.now()}-${index}`),
+        /* carried through to the saved label (the save route already persists
+           oldBarcode), so the new barcode stays traceable to the old one.
+           Empty when none was entered - stored as '' to match the schema
+           default, never faked or copied from another barcode. */
+        oldBarcode: enteredOldBarcode,
         itemCode: form.itemCode || form.itemName.replace(/\s+/g, "-").toUpperCase(),
         itemName: form.itemName,
         goodsType: form.goodsType,
@@ -714,7 +882,9 @@ function AddItemModal({ open, onClose, onSubmit, onSubmitAndPrint, rowCount = 0,
         retailPrice: String(form.rspPrice || 0),
         uniqueBarcode: Boolean(form.uniqueBarcode) ? "Yes" : "No",
         barcodeNo: distinctBarcode,
-        supplierDescription: form.itemName,
+        /* what the operator typed in row 2, falling back to the old behaviour
+           (itemName) so a blank field still saves what it always did */
+        supplierDescription: form.supplierDescription?.trim() || form.itemName,
         printDescription: form.printDescription,
         mode: Boolean(form.uniqueBarcode) ? "unique" : "batch",
         groupId: planItem.groupId || null,
@@ -739,6 +909,12 @@ function AddItemModal({ open, onClose, onSubmit, onSubmitAndPrint, rowCount = 0,
     else onSubmit(generatedRows);
 
     const nextSerial = incrementSerial(baseSerial);
+    /* the next row is a different physical piece, so its Old Barcode starts
+       empty - createBlankForm already clears it, this just clears the
+       matching lookup state so the old "loaded" note does not linger */
+    resolvedRef.current = "";
+    inFlightRef.current = "";
+    setLookup({ status: "idle", message: "" });
     setForm((current) => createBlankForm({
       itemId: current.itemId,
       itemName: current.itemName,
@@ -748,6 +924,9 @@ function AddItemModal({ open, onClose, onSubmit, onSubmitAndPrint, rowCount = 0,
       gst: current.gst,
       goodsType: current.goodsType,
       printDescription: current.printDescription,
+      /* carried forward alongside printDescription - consecutive pieces off
+         the same GRC line share the vendor's wording */
+      supplierDescription: current.supplierDescription,
       uniqueBarcode: current.uniqueBarcode,
       isMtr: current.isMtr,
       discountType: current.discountType,
@@ -765,8 +944,46 @@ function AddItemModal({ open, onClose, onSubmit, onSubmitAndPrint, rowCount = 0,
     <div className="mt-4 w-full rounded-[8px] border border-slate-200 bg-white shadow-sm">
       <div className="px-5 py-4">
           <div className="grid grid-cols-1 gap-3 md:grid-cols-5">
-            <div className="space-y-1 md:col-span-2">
-              <label className="block text-[11px] font-semibold text-gray-700">Item Name *</label>
+            {/* Old Barcode leads the row: it is what is physically on the
+                incoming goods, and identifying the item from it is faster and
+                less error-prone than hunting the Item Code dropdown. Item Code
+                drops from 2 columns to 1 to make room, so the row still totals
+                5 and the card neither widens nor wraps. */}
+            <div className="space-y-1">
+              <label className="block text-[11px] font-semibold text-gray-700">Old Barcode</label>
+              <input
+                value={form.oldBarcode}
+                autoFocus
+                placeholder="Enter / Scan Old Barcode"
+                onChange={(event) => {
+                  const next = event.target.value;
+                  setForm((current) => ({ ...current, oldBarcode: next }));
+                  if (lookup.status !== "idle") setLookup({ status: "idle", message: "" });
+                }}
+                /* A wedge scanner types the code and then sends Enter, so this
+                   fires the lookup for a scan. Blur covers typing it by hand. */
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") {
+                    event.preventDefault();
+                    lookupOldBarcode(event.currentTarget.value);
+                  }
+                }}
+                onBlur={(event) => lookupOldBarcode(event.currentTarget.value)}
+                className={`w-full rounded-md px-2 py-2 text-sm ${editableClass}`}
+              />
+              {lookup.status !== "idle" && (
+                <p className={`text-[11px] ${
+                  lookup.status === "error" ? "text-red-600"
+                    : lookup.status === "found" ? "text-green-700"
+                      : "text-gray-500"
+                }`}>
+                  {lookup.message}
+                </p>
+              )}
+            </div>
+
+            <div className="space-y-1">
+              <label className="block text-[11px] font-semibold text-gray-700">Item Code *</label>
               <select value={form.itemId} onChange={(event) => handleItemSelection(event.target.value)} className={`w-full rounded-md px-2 py-2 text-sm ${editableClass}`}>
                 <option value="">Select...</option>
                 {itemOptions.map((option) => (
@@ -791,23 +1008,59 @@ function AddItemModal({ open, onClose, onSubmit, onSubmitAndPrint, rowCount = 0,
             </div>
 
             <div className="space-y-1">
-              <label className="block text-[11px] font-semibold text-gray-700">Goods Type</label>
-              <select value={form.goodsType} onChange={(event) => updateField("goodsType", event.target.value)} className={`w-full rounded-md px-2 py-2 text-sm ${editableClass}`}>
-                <option value="">Select...</option>
-                <option value="Fabric">Fabric</option>
-                <option value="Yarn">Yarn</option>
-                <option value="Thread">Thread</option>
-                <option value="Accessory">Accessory</option>
-              </select>
+              <label className="block text-[11px] font-semibold text-gray-700">Attribute Add On *</label>
+              <div className="flex flex-wrap gap-x-5 gap-y-2 rounded-md border border-linestrong bg-white px-3 py-2">
+                <label className="flex cursor-pointer items-center gap-1.5 text-[13px]">
+                  <input
+                    type="checkbox"
+                    checked={form.goodsType === "SM"}
+                    onChange={(e) => updateField("goodsType", e.target.checked ? "SM" : "")}
+                    className="h-4 w-4 accent-[#0d5ddc]"
+                  />
+                  SM
+                </label>
+                <label className="flex cursor-pointer items-center gap-1.5 text-[13px]">
+                  <input
+                    type="checkbox"
+                    checked={form.goodsType === "P-M-F"}
+                    onChange={(e) => updateField("goodsType", e.target.checked ? "P-M-F" : "")}
+                    className="h-4 w-4 accent-[#0d5ddc]"
+                  />
+                  P-M-F
+                </label>
+              </div>
             </div>
           </div>
 
+          {/* ROW 2 - the three description/identity fields.
+
+              Serial No. is the SAME form.serialNo that used to open the Price
+              Calculation grid; it was moved here rather than duplicated, so it
+              keeps its auto-seeded value (rowCount + 1) and still feeds
+              billSlNo on the generated row. */}
+          {/* 5 tracks rather than 3: Serial No. holds a short running number
+              and does not need a third of the row, so it takes one track and
+              the two description fields - which hold real text - take two
+              each. Same total width, no change to the card. */}
           <div className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-5">
-            <div className="space-y-1 md:col-span-3">
-              <label className="block text-[11px] font-semibold text-gray-700">Print Item Description</label>
-              <input value={form.printDescription} onChange={(event) => updateField("printDescription", event.target.value)} className={`w-full rounded-md px-2 py-2 text-sm ${editableClass}`} />
+            <div className="space-y-1">
+              <label className="block text-[11px] font-semibold text-gray-700">Serial No. *</label>
+              <input value={form.serialNo} onChange={(event) => updateField("serialNo", event.target.value)} className={`w-full rounded-md px-2 py-2 text-sm ${editableClass}`} />
             </div>
 
+            <div className="space-y-1 md:col-span-2">
+              <label className="block text-[11px] font-semibold text-gray-700">Supplier Description</label>
+              <input value={form.supplierDescription} onChange={(event) => updateField("supplierDescription", event.target.value)} className={`w-full rounded-md px-2 py-2 text-sm ${editableClass}`} />
+            </div>
+
+            <div className="space-y-1 md:col-span-2">
+              <label className="block text-[11px] font-semibold text-gray-700">Print Description</label>
+              <input value={form.printDescription} onChange={(event) => updateField("printDescription", event.target.value)} className={`w-full rounded-md px-2 py-2 text-sm ${editableClass}`} />
+            </div>
+          </div>
+
+          {/* ROW 3 */}
+          <div className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-5">
             <div className="space-y-1 flex items-end md:col-span-2">
               <label className="flex w-full items-center justify-start gap-3 rounded-md border border-[#dfe4eb] bg-white px-3 py-2 text-sm text-gray-700">
                 <input type="checkbox" checked={form.uniqueBarcode} onChange={(event) => updateField("uniqueBarcode", event.target.checked)} className="h-4 w-4 accent-[#0d5ddc]" /> Unique Barcode
@@ -834,16 +1087,14 @@ function AddItemModal({ open, onClose, onSubmit, onSubmitAndPrint, rowCount = 0,
           <div className="mt-5">
             <div className="mb-4 text-center text-[15px] font-bold uppercase tracking-wide underline decoration-[1.5px] underline-offset-4">Price Calculation</div>
 
-            <div className="grid grid-cols-1 gap-3 md:grid-cols-6">
-              <div className="space-y-1">
-                <label className="block text-[11px] font-semibold text-gray-700">Serial No. *</label>
-                <input value={form.serialNo} onChange={(event) => updateField("serialNo", event.target.value)} className={`w-full rounded-md px-2 py-2 text-sm ${editableClass}`} />
-              </div>
-
+            {/* Serial No. used to lead this grid; it now lives in row 2, so
+                the track count drops 6 -> 5 to keep the row full instead of
+                leaving a gap where it was. */}
+            <div className="grid grid-cols-1 gap-3 md:grid-cols-5">
               <div className="space-y-1">
                 <label className="block text-[11px] font-semibold text-gray-700">{form.isMtr ? "No. of Cuts *" : "Quantity *"}</label>
                 {form.isMtr ? (
-                  <input type="number" min={1} value={form.noOfCuts} onChange={(event) => {
+                  <input type="number" min={1} value={form.noOfCuts} onWheel={(e) => e.currentTarget.blur()} onChange={(event) => {
                     const raw = event.target.value;
                     updateField("noOfCuts", raw);
 
@@ -867,14 +1118,14 @@ function AddItemModal({ open, onClose, onSubmit, onSubmitAndPrint, rowCount = 0,
                     setCutRows(makeMeterCutRows(count, Number(form.totalMtr || 0)));
                   }} className={`w-full rounded-md px-2 py-2 text-sm ${editableClass}`} />
                 ) : (
-                  <input type="number" min={1} value={form.qty} onChange={(event) => updateField("qty", event.target.value)} className={`w-full rounded-md px-2 py-2 text-sm ${editableClass}`} />
+                  <input type="number" min={1} value={form.qty} onWheel={(e) => e.currentTarget.blur()} onChange={(event) => updateField("qty", event.target.value)} className={`w-full rounded-md px-2 py-2 text-sm ${editableClass}`} />
                 )}
               </div>
 
               {form.isMtr && (
                 <div className="space-y-1">
                   <label className="block text-[11px] font-semibold text-gray-700">Total MTR *</label>
-                  <input type="number" min={0} step="0.01" value={form.totalMtr} onChange={(event) => {
+                  <input type="number" min={0} step="0.01" value={form.totalMtr} onWheel={(e) => e.currentTarget.blur()} onChange={(event) => {
                     const totalValue = event.target.value;
                     updateField("totalMtr", totalValue);
 
@@ -903,7 +1154,7 @@ function AddItemModal({ open, onClose, onSubmit, onSubmitAndPrint, rowCount = 0,
 
               <div className="space-y-1">
                 <label className="block text-[11px] font-semibold text-gray-700">Purchase Rate *</label>
-                <input type="number" step="0.01" min={0} value={form.purchaseRate} onChange={(event) => updateField("purchaseRate", event.target.value)} className={`w-full rounded-md px-2 py-2 text-sm ${editableClass}`} />
+                <input type="number" step="0.01" min={0} value={form.purchaseRate} onWheel={(e) => e.currentTarget.blur()} onChange={(event) => updateField("purchaseRate", event.target.value)} className={`w-full rounded-md px-2 py-2 text-sm ${editableClass}`} />
               </div>
 
               <div className="space-y-1">
@@ -916,7 +1167,7 @@ function AddItemModal({ open, onClose, onSubmit, onSubmitAndPrint, rowCount = 0,
 
               <div className="space-y-1">
                 <label className="block text-[11px] font-semibold text-gray-700">Discount *</label>
-                <input type="number" step="0.01" min={0} value={form.discount} onChange={(event) => updateField("discount", event.target.value)} className={`w-full rounded-md px-2 py-2 text-sm ${editableClass}`} />
+                <input type="number" step="0.01" min={0} value={form.discount} onWheel={(e) => e.currentTarget.blur()} onChange={(event) => updateField("discount", event.target.value)} className={`w-full rounded-md px-2 py-2 text-sm ${editableClass}`} />
               </div>
 
               {!form.isMtr && (
@@ -931,27 +1182,27 @@ function AddItemModal({ open, onClose, onSubmit, onSubmitAndPrint, rowCount = 0,
             <div className="mt-4 grid grid-cols-1 gap-3 md:grid-cols-6">
               <div className="space-y-1">
                 <label className="block text-[11px] font-semibold text-gray-700">Markup RSP % *</label>
-                <input type="number" min={0} value={form.markupRSP} onChange={(event) => updateMarkupValue("markupRSP", event.target.value)} className={`w-full rounded-md px-2 py-2 text-sm ${editableClass}`} />
+                <input type="number" min={0} value={form.markupRSP} onWheel={(e) => e.currentTarget.blur()} onChange={(event) => updateMarkupValue("markupRSP", event.target.value)} className={`w-full rounded-md px-2 py-2 text-sm ${editableClass}`} />
               </div>
               <div className="space-y-1">
                 <label className="block text-[11px] font-semibold text-gray-700">RSP Price *</label>
-                <input type="number" step="0.01" min={0} value={form.rspPrice} onChange={(event) => updateMarkupValue("rspPrice", event.target.value)} className={`w-full rounded-md px-2 py-2 text-sm ${editableClass}`} />
+                <input type="number" step="0.01" min={0} value={form.rspPrice} onWheel={(e) => e.currentTarget.blur()} onChange={(event) => updateMarkupValue("rspPrice", event.target.value)} className={`w-full rounded-md px-2 py-2 text-sm ${editableClass}`} />
               </div>
               <div className="space-y-1">
                 <label className="block text-[11px] font-semibold text-gray-700">Markup WSP % *</label>
-                <input type="number" min={0} value={form.markupWSP} onChange={(event) => updateMarkupValue("markupWSP", event.target.value)} className={`w-full rounded-md px-2 py-2 text-sm ${editableClass}`} />
+                <input type="number" min={0} value={form.markupWSP} onWheel={(e) => e.currentTarget.blur()} onChange={(event) => updateMarkupValue("markupWSP", event.target.value)} className={`w-full rounded-md px-2 py-2 text-sm ${editableClass}`} />
               </div>
               <div className="space-y-1">
                 <label className="block text-[11px] font-semibold text-gray-700">WSP Price *</label>
-                <input type="number" step="0.01" min={0} value={form.wspPrice} onChange={(event) => updateMarkupValue("wspPrice", event.target.value)} className={`w-full rounded-md px-2 py-2 text-sm ${editableClass}`} />
+                <input type="number" step="0.01" min={0} value={form.wspPrice} onWheel={(e) => e.currentTarget.blur()} onChange={(event) => updateMarkupValue("wspPrice", event.target.value)} className={`w-full rounded-md px-2 py-2 text-sm ${editableClass}`} />
               </div>
               <div className="space-y-1">
                 <label className="block text-[11px] font-semibold text-gray-700">Markup DP % *</label>
-                <input type="number" min={0} value={form.markupDP} onChange={(event) => updateMarkupValue("markupDP", event.target.value)} className={`w-full rounded-md px-2 py-2 text-sm ${editableClass}`} />
+                <input type="number" min={0} value={form.markupDP} onWheel={(e) => e.currentTarget.blur()} onChange={(event) => updateMarkupValue("markupDP", event.target.value)} className={`w-full rounded-md px-2 py-2 text-sm ${editableClass}`} />
               </div>
               <div className="space-y-1">
                 <label className="block text-[11px] font-semibold text-gray-700">DP Price *</label>
-                <input type="number" step="0.01" min={0} value={form.dpPrice} onChange={(event) => updateMarkupValue("dpPrice", event.target.value)} className={`w-full rounded-md px-2 py-2 text-sm ${editableClass}`} />
+                <input type="number" step="0.01" min={0} value={form.dpPrice} onWheel={(e) => e.currentTarget.blur()} onChange={(event) => updateMarkupValue("dpPrice", event.target.value)} className={`w-full rounded-md px-2 py-2 text-sm ${editableClass}`} />
               </div>
             </div>
 
@@ -959,27 +1210,27 @@ function AddItemModal({ open, onClose, onSubmit, onSubmitAndPrint, rowCount = 0,
             <div className="mt-4 grid grid-cols-1 gap-3 md:grid-cols-6">
               <div className="space-y-1">
                 <label className="block text-[11px] font-semibold text-gray-700">RSP Offer %</label>
-                <input type="number" min={0} value={form.rspOfferPct} onChange={(event) => updateOfferValue("rspOfferPct", event.target.value)} className={`w-full rounded-md px-2 py-2 text-sm ${editableClass}`} />
+                <input type="number" min={0} value={form.rspOfferPct} onWheel={(e) => e.currentTarget.blur()} onChange={(event) => updateOfferValue("rspOfferPct", event.target.value)} className={`w-full rounded-md px-2 py-2 text-sm ${editableClass}`} />
               </div>
               <div className="space-y-1">
                 <label className="block text-[11px] font-semibold text-gray-700">RSP Offer Price</label>
-                <input type="number" step="0.01" min={0} value={form.rspOfferPrice} onChange={(event) => updateOfferValue("rspOfferPrice", event.target.value)} className={`w-full rounded-md px-2 py-2 text-sm ${editableClass}`} />
+                <input type="number" step="0.01" min={0} value={form.rspOfferPrice} onWheel={(e) => e.currentTarget.blur()} onChange={(event) => updateOfferValue("rspOfferPrice", event.target.value)} className={`w-full rounded-md px-2 py-2 text-sm ${editableClass}`} />
               </div>
               <div className="space-y-1">
                 <label className="block text-[11px] font-semibold text-gray-700">WSP Offer %</label>
-                <input type="number" min={0} value={form.wspOfferPct} onChange={(event) => updateOfferValue("wspOfferPct", event.target.value)} className={`w-full rounded-md px-2 py-2 text-sm ${editableClass}`} />
+                <input type="number" min={0} value={form.wspOfferPct} onWheel={(e) => e.currentTarget.blur()} onChange={(event) => updateOfferValue("wspOfferPct", event.target.value)} className={`w-full rounded-md px-2 py-2 text-sm ${editableClass}`} />
               </div>
               <div className="space-y-1">
                 <label className="block text-[11px] font-semibold text-gray-700">WSP Offer Price</label>
-                <input type="number" step="0.01" min={0} value={form.wspOfferPrice} onChange={(event) => updateOfferValue("wspOfferPrice", event.target.value)} className={`w-full rounded-md px-2 py-2 text-sm ${editableClass}`} />
+                <input type="number" step="0.01" min={0} value={form.wspOfferPrice} onWheel={(e) => e.currentTarget.blur()} onChange={(event) => updateOfferValue("wspOfferPrice", event.target.value)} className={`w-full rounded-md px-2 py-2 text-sm ${editableClass}`} />
               </div>
               <div className="space-y-1">
                 <label className="block text-[11px] font-semibold text-gray-700">DP Offer %</label>
-                <input type="number" min={0} value={form.dpOfferPct} onChange={(event) => updateOfferValue("dpOfferPct", event.target.value)} className={`w-full rounded-md px-2 py-2 text-sm ${editableClass}`} />
+                <input type="number" min={0} value={form.dpOfferPct} onWheel={(e) => e.currentTarget.blur()} onChange={(event) => updateOfferValue("dpOfferPct", event.target.value)} className={`w-full rounded-md px-2 py-2 text-sm ${editableClass}`} />
               </div>
               <div className="space-y-1">
                 <label className="block text-[11px] font-semibold text-gray-700">DP Offer Price</label>
-                <input type="number" step="0.01" min={0} value={form.dpOfferPrice} onChange={(event) => updateOfferValue("dpOfferPrice", event.target.value)} className={`w-full rounded-md px-2 py-2 text-sm ${editableClass}`} />
+                <input type="number" step="0.01" min={0} value={form.dpOfferPrice} onWheel={(e) => e.currentTarget.blur()} onChange={(event) => updateOfferValue("dpOfferPrice", event.target.value)} className={`w-full rounded-md px-2 py-2 text-sm ${editableClass}`} />
               </div>
             </div>
 
@@ -999,6 +1250,7 @@ function AddItemModal({ open, onClose, onSubmit, onSubmitAndPrint, rowCount = 0,
                       min={0}
                       step="0.01"
                       value={cut.value}
+                      onWheel={(e) => e.currentTarget.blur()}
                       onFocus={() => setFocusedCutIndex(index)}
                       onChange={(event) => updateCutValue(index, event.target.value)}
                       onBlur={() => commitCutValue(index)}
@@ -1054,15 +1306,28 @@ function PrintLabelPicker({ rows, open, onClose }) {
 
   const selectedRows = rows.filter((row) => selected.includes(row.barcodeNo));
 
+  /* The box is capped to the viewport and scrolls INTERNALLY.
+
+     It used to be an uncapped panel inside a centred `fixed inset-0` overlay.
+     Once enough barcodes were generated the list and the preview cards grew
+     taller than the screen, and because the panel was centred it overflowed
+     off BOTH the top and the bottom with no scrollbar anywhere to reach it -
+     the Print and Close buttons included. The overlay covers the whole
+     viewport, so the wheel could not scroll the page behind it either, and
+     the screen read as frozen.
+
+     max-h + flex-col + an overflow-y-auto body fixes all of that: the list
+     scrolls, the header and footer stay put, and nothing is ever pushed out
+     of reach. */
   return (
     <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/40 p-4">
-      <div className="w-full max-w-[960px] rounded-lg bg-white shadow-xl">
-        <div className="flex items-center justify-between border-b border-gray-200 px-4 py-3">
+      <div className="flex max-h-[calc(100vh-2rem)] w-full max-w-[960px] flex-col rounded-lg bg-white shadow-xl">
+        <div className="flex shrink-0 items-center justify-between border-b border-gray-200 px-4 py-3">
           <h3 className="text-lg font-semibold">Print Label Picker</h3>
           <button type="button" onClick={onClose} className="text-2xl leading-none text-gray-500">×</button>
         </div>
 
-        <div className="grid gap-4 p-4 md:grid-cols-2">
+        <div className="grid flex-1 gap-4 overflow-y-auto p-4 md:grid-cols-2">
           <div>
             {rows.filter((row) => row.barcodeNo).length === 0 && <div className="rounded border border-dashed border-gray-300 p-4 text-sm text-gray-500">No barcode generated yet.</div>}
             {rows.filter((row) => row.barcodeNo).map((row, index) => (
@@ -1072,7 +1337,7 @@ function PrintLabelPicker({ rows, open, onClose }) {
                   <div className="font-medium">{row.itemName || row.supplierDescription || "Item"}</div>
                   <div className="text-xs text-gray-600">{row.barcodeNo}</div>
                 </div>
-                <input type="number" min={1} value={copies[row.barcodeNo] || 1} onChange={(e) => setCopies((prev) => ({ ...prev, [row.barcodeNo]: Number(e.target.value) || 1 }))} className="w-[90px] rounded border border-gray-300 px-2 py-1 text-sm" />
+                <input type="number" min={1} value={copies[row.barcodeNo] || 1} onWheel={(e) => e.currentTarget.blur()} onChange={(e) => setCopies((prev) => ({ ...prev, [row.barcodeNo]: Number(e.target.value) || 1 }))} className="w-[90px] rounded border border-gray-300 px-2 py-1 text-sm" />
               </div>
             ))}
           </div>
@@ -1096,7 +1361,7 @@ function PrintLabelPicker({ rows, open, onClose }) {
           </div>
         </div>
 
-        <div className="flex items-center justify-end gap-2 border-t border-gray-200 px-4 py-3">
+        <div className="flex shrink-0 items-center justify-end gap-2 border-t border-gray-200 px-4 py-3">
           <button type="button" onClick={() => window.print()} className="rounded-lg border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-700">Print</button>
           <button type="button" onClick={onClose} className="rounded-lg border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-700">Close</button>
         </div>
@@ -1117,6 +1382,8 @@ export default function GCRBarcodeGeneration({ grcId = null, initialRows = [] })
   const [showAddItem, setShowAddItem] = useState(true);
   const [saving, setSaving] = useState(false);
   const [importMessage, setImportMessage] = useState("");
+  /* why the last save was refused, in the server's own words */
+  const [saveError, setSaveError] = useState("");
   const importInputRef = useRef(null);
   const [barcodeFormat, setBarcodeFormat] = useState({ prefix: "", suffix: "", startNumber: 1, numberLenght: 4 });
   /* sequenceRef was the browser-held running number. It is kept only so the
@@ -1379,6 +1646,7 @@ export default function GCRBarcodeGeneration({ grcId = null, initialRows = [] })
 
   async function saveRows(rowsToSave = validRows, printAfterSave = false) {
     setSaving(true);
+    setSaveError("");
     try {
       const saveTotals = rowsToSave.reduce((result, row) => {
         const qty = Number(row.qty || 0);
@@ -1404,12 +1672,26 @@ export default function GCRBarcodeGeneration({ grcId = null, initialRows = [] })
           },
         }),
       });
-      if (!response.ok) throw new Error("Save failed");
+      /* The API answers a failure as { error, code } (lib/apiError.js) - the
+         message is written for the operator and says WHICH rule was broken:
+         a missing Goods Type, an Old Barcode that matches nothing, a barcode
+         that has already moved, a permission the user does not hold. Throwing
+         a flat "Save failed" here discarded all of it, so a rejected save was
+         indistinguishable from a server being down and left nothing on screen
+         to act on. */
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({}));
+        throw new Error(data.error || `Save failed (HTTP ${response.status})`);
+      }
       setShowSaveConfirm(false);
       if (printAfterSave) setShowPrint(true);
       router.refresh?.();
     } catch (error) {
       console.error(error);
+      /* the confirm dialog sits over the banner, so it has to go or the
+         operator never sees why the save was refused */
+      setShowSaveConfirm(false);
+      setSaveError(error.message || "Save failed");
     } finally {
       setSaving(false);
     }
@@ -1429,6 +1711,9 @@ export default function GCRBarcodeGeneration({ grcId = null, initialRows = [] })
         rowCount={rows.length}
         barcodeFormat={barcodeFormat}
         reserveNumbers={reserveBarcodeNumbers}
+        /* scopes the Old Barcode lookup to the selected company, so a code
+           belonging to another business reports that rather than "not found" */
+        business={scope.business}
         onClose={() => setShowAddItem(true)}
         onSubmit={(items) => appendRows(items)}
         onSubmitAndPrint={(items) => {
@@ -1466,6 +1751,13 @@ export default function GCRBarcodeGeneration({ grcId = null, initialRows = [] })
           <div className="flex items-center justify-between border-b border-blue-100 bg-blue-50 px-4 py-2 text-sm text-blue-800">
             <span>{importMessage}</span>
             <button type="button" onClick={() => setImportMessage("")} className="text-blue-700" aria-label="Dismiss import message">×</button>
+          </div>
+        )}
+
+        {saveError && (
+          <div className="flex items-center justify-between border-b border-red-100 bg-red-50 px-4 py-2 text-sm text-red-800">
+            <span>{saveError}</span>
+            <button type="button" onClick={() => setSaveError("")} className="text-red-700" aria-label="Dismiss save error">×</button>
           </div>
         )}
 

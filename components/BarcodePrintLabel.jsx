@@ -524,6 +524,7 @@ export default function BarcodePrintLabel() {
                 type="number" min="0"
                 className="f-input w-[86px]"
                 value={bulkCopies}
+                onWheel={(e) => e.currentTarget.blur()}
                 onChange={(e) => setBulkCopies(e.target.value)}
               />
               <button type="button" className="btn btn-primary" onClick={applyToAll}>Apply</button>
@@ -573,6 +574,7 @@ export default function BarcodePrintLabel() {
                         type="number" min="0"
                         className="f-input h-8 w-[80px]"
                         value={r.copies}
+                        onWheel={(e) => e.currentTarget.blur()}
                         onChange={(e) => setCopies(i, e.target.value)}
                       />
                     </td>

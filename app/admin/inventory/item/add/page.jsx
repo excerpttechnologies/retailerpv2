@@ -16,7 +16,7 @@ export default function AddItemPage() {
         slugPath: "item",
         endpoint: '/api/item',
         scope: ["business"],
-        fields: FIELDS.filter((field) => field.k !== 'rsp'),
+        fields: FIELDS,
         quickAdds: {
           hsnId: {
             label: 'Add HSN',

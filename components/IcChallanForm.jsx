@@ -892,6 +892,7 @@ export default function IcChallanForm({ cfg, id }) {
                         min="0"
                         className={'f-input h-8 w-[86px] ' + (over ? 'border-danger' : '')}
                         value={r.qty ?? ''}
+                        onWheel={(e) => e.currentTarget.blur()}
                         onChange={(e) => {
                           /* a negative quantity on a challan is meaningless -
                              it would flip the line's sign all the way through
@@ -914,6 +915,7 @@ export default function IcChallanForm({ cfg, id }) {
                           type="number"
                           className="f-input h-8 w-[86px]"
                           value={r[k] ?? ''}
+                          onWheel={(e) => e.currentTarget.blur()}
                           onChange={(e) => setCell(i, k, e.target.value)}
                         />
                       </td>
@@ -954,6 +956,7 @@ export default function IcChallanForm({ cfg, id }) {
                   <input
                     type="number" className="f-input h-8 text-center"
                     value={headDiscountPct}
+                    onWheel={(e) => e.currentTarget.blur()}
                     onChange={(e) => setHeadDiscountPct(e.target.value)}
                   />
                 </td>
@@ -967,6 +970,7 @@ export default function IcChallanForm({ cfg, id }) {
                   <input
                     type="number" className="f-input h-8 text-center"
                     value={headRoffDiscount}
+                    onWheel={(e) => e.currentTarget.blur()}
                     onChange={(e) => setHeadRoffDiscount(e.target.value)}
                   />
                 </td>

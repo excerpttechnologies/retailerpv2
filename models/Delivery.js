@@ -95,6 +95,7 @@ const DeliverySchema = new mongoose.Schema(
 
     autoCharges: { type: Number, default: 0 },
     tips: { type: Number, default: 0 },
+    supplierContactId: { type: String, default: '' },
 
     /* Set when a dispatch picks this consignment up; null means it is still
        available. Same pattern as GRC -> Purchase Invoice elsewhere in the
@@ -102,6 +103,13 @@ const DeliverySchema = new mongoose.Schema(
     dispatchId: { type: mongoose.Schema.Types.ObjectId, ref: 'dispatch', default: null, index: true },
   },
   { timestamps: true }
+);
+
+/* Unique transaction number per business + location + financial year.
+   Prevents duplicate LR numbers when two users save simultaneously. */
+DeliverySchema.index(
+  { businessId: 1, locationId: 1, finYear: 1, transactionNo: 1 },
+  { unique: true, partialFilterExpression: { transactionNo: { $gt: '' } } }
 );
 
 export default mongoose.models.delivery ||

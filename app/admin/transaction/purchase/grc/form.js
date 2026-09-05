@@ -5,31 +5,25 @@ export const FORM = {
     "cards": [
       {
         "type": "source",
-        "endpoint": "/api/purchase-grc",
+        "endpoint": "/api/delivery",
         "availableLr": true,
         "label": "LR / Transaction Number",
         "req": true,
         "sourceKey": "lrTransactionId",
         "sourceLabel": "transactionNo",
-        "withSupplier": true,
         "width": "full",
-        /* "LR/26/011 | G524 | KARNATAKA Saree Centre, MYSORE"
-
-           Transaction number, then the VENDOR NUMBER and VENDOR NAME - joined 
-           onto the row from supplierId by the API, never stored on the delivery 
-           itself. The vendor is what an operator checks before receiving goods, 
-           and the bare transaction number does not tell two consignments apart.
-
-           Any part the record does not carry is skipped rather than printed
-           blank - see sourceLabel() in TransactionFormView. */
-        "sourceSubLabel": ["supplier.vendorNo", "supplier.vendorName"],
-        /* everything the delivery already recorded is copied onto the GRC
-           rather than re-typed. freightAmount is the LR's own freight. */
+        /* LR dropdown loads ALL available LR/Delivery records without requiring 
+           vendor selection first. The dropdown shows transaction number with 
+           supplier info for context: "LR/26/011 | G524 | KARNATAKA Saree Centre" */
+        "sourceSubLabel": ["supplier.contactId", "supplier.businessName"],
+        /* Everything from the selected LR/Delivery is auto-populated onto the GRC.
+           This includes the supplier, invoice details, freight, and transaction info. */
         "populate": {
+          "supplierId": "supplierId",
+          "vendorGstNo": "supplierGstNo",
           "vendorDocNo": "invPmNumber",
           "lrTransactionNo": "transactionNo",
-          "freightAmount": "freightAmount",
-          "supplierId": "supplierId"
+          "freightAmount": "freightAmount"
         }
       },
       {
@@ -42,20 +36,7 @@ export const FORM = {
             "ref": "supplier",
             "req": true,
             "width": "full",
-            /* minSearch: 1 used to be here. It meant the dropdown fetched
-               NOTHING until a character was typed, so opening it showed
-               "No options" - which reads as "this company has no suppliers"
-               rather than "type to search". The list now loads on open and
-               narrows as you type. Search matches the vendor name and the
-               G-code, so "KARNATAKA" and "G524" both find the same record. */
-            /* picking a vendor fills the read-only Vendor GST No below it */
-            "fillFrom": {
-              "endpoint": "/api/supplier",
-              "map": { "vendorGstNo": "gstNo" }
-            },
-            /* changing the vendor invalidates everything that came off the
-               previous vendor's LR - see `clears` in TransactionFormView */
-            "clears": ["lrTransactionId", "lrTransactionNo", "vendorDocNo"]
+            "readOnly": true
           },
           {
             "k": "vendorGstNo",
@@ -147,17 +128,17 @@ export const FORM = {
           {
             "k": "vendorWaybill",
             "label": "Vendor Waybill",
-            "type": "file",
-            "info": true
+            "type": "text",
+            "placeholder": "Enter waybill number or scan barcode"
           },
           {
             "k": "freightMode",
             "label": "Freight",
             "type": "select",
-            "req": true,
             "opts": [
               { "v": "Before Tax", "l": "Before Tax" },
-              { "v": "After Tax", "l": "After Tax" }
+              { "v": "After Tax", "l": "After Tax" },
+              { "v": "N/A", "l": "N/A" }
             ]
           }
         ]
@@ -171,7 +152,7 @@ export const FORM = {
           { "k": "taxableValue", "label": "Enter Taxable", "type": "number" },
           { "k": "taxAmount", "label": "Tax Amount", "type": "number" },
           { "k": "totalAmount", "label": "Enter Total Amount", "type": "number" },
-          { "k": "freightAmount", "label": "Freight", "type": "number", "req": true }
+          { "k": "freightAmount", "label": "Freight", "type": "number" }
         ]
       }
     ]

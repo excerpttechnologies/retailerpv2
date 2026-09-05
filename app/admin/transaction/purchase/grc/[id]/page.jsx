@@ -265,14 +265,14 @@ export default function EditTransactionPurchaseGrcPage() {
               <tr className="border-b border-line">
                 <td className="border-r border-line py-2 pr-3 text-right text-brand-link">Discount(%)</td>
                 <td className="border-r border-line" />
-                <td className="border-r border-line px-3 py-1"><input className="f-input h-8" type="number" value={data.discountPercent || ''} onChange={(e) => set('discountPercent', e.target.value)} /></td>
+                <td className="border-r border-line px-3 py-1"><input className="f-input h-8" type="number" value={data.discountPercent || ''} onChange={(e) => set('discountPercent', e.target.value)} onWheel={(e) => e.currentTarget.blur()} /></td>
                 <td className="border-r border-line text-center text-brand-link">-</td>
                 <td className="py-2 pr-3 text-right text-brand-link">{discountAmount.toFixed(2)}</td>
               </tr>
               <tr className="border-b border-line bg-[#f4f5f6]">
                 <td className="border-r border-line py-2 pr-3 text-right text-brand-link">Round Off Discount(Amt)</td>
                 <td className="border-r border-line" />
-                <td className="border-r border-line px-3 py-1"><input className="f-input h-8" type="number" value={data.roundOffDiscount || ''} onChange={(e) => set('roundOffDiscount', e.target.value)} /></td>
+                <td className="border-r border-line px-3 py-1"><input className="f-input h-8" type="number" value={data.roundOffDiscount || ''} onChange={(e) => set('roundOffDiscount', e.target.value)} onWheel={(e) => e.currentTarget.blur()} /></td>
                 <td className="border-r border-line text-center text-brand-link">-</td>
                 <td className="py-2 pr-3 text-right text-brand-link">{roundOffDiscount.toFixed(2)}</td>
               </tr>
@@ -285,7 +285,7 @@ export default function EditTransactionPurchaseGrcPage() {
               <tr className="border-b border-line bg-[#f4f5f6]">
                 <td className="border-r border-line py-2 pr-3 text-right text-brand-link">Freight charges BEFORE GST (Amt)</td>
                 <td className="border-r border-line" />
-                <td className="border-r border-line px-3 py-1"><input className="f-input h-8 text-center" type="number" value={data.freightAmount || 0} onChange={(e) => set('freightAmount', e.target.value)} /></td>
+                <td className="border-r border-line px-3 py-1"><input className="f-input h-8 text-center" type="number" value={data.freightAmount || 0} onChange={(e) => set('freightAmount', e.target.value)} onWheel={(e) => e.currentTarget.blur()} /></td>
                 <td className="border-r border-line text-center text-brand-link">+</td>
                 <td className="py-2 pr-3 text-right text-brand-link">{freightBeforeGst.toFixed(2)}</td>
               </tr>

@@ -1,3 +1,4 @@
+import { isValidObjectId } from 'mongoose';
 import dbConnect from '@/lib/db';
 import Delivery from '@/models/Delivery';
 import { requireSession } from '@/lib/session';
@@ -33,6 +34,13 @@ export async function PUT(req, { params }) {
 
   const totals = freightBreakdown(doc);
   DERIVED_FIELDS.forEach((f) => { doc[f.k] = totals[f.k]; });
+
+  /* Resolve supplier contactId from supplier master - this is the source of truth */
+  if (doc.supplierId && isValidObjectId(doc.supplierId)) {
+    const Contact = (await import('@/models/Contact')).default;
+    const supplier = await Contact.findById(doc.supplierId).select('contactId').lean();
+    doc.supplierContactId = supplier?.contactId || '';
+  }
 
   /* transactionNo is issued once on create and never reissued on edit */
   const updated = await Delivery.findByIdAndUpdate(id, doc, { new: true, runValidators: true });

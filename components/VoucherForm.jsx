@@ -273,6 +273,7 @@ export default function VoucherForm({ spec, onClose, onDone }) {
                               type="number" min="0" step="0.01"
                               className="f-input h-8"
                               value={r.amount}
+                              onWheel={(e) => e.currentTarget.blur()}
                               onChange={(e) => set(i, { amount: e.target.value })}
                             />
                           ) : null}

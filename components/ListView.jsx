@@ -1545,6 +1545,9 @@ export default function ListView({ cfg, slug }) {
   const [filters, setFilters] = useState({});
   const [menuFor, setMenuFor] = useState(null);
   const [viewRow, setViewRow] = useState(null);
+
+  // Default items per page - matches API default
+  const PER_PAGE = 10;
  
   /* close the open Action menu on any outside click */
   useEffect(() => {
@@ -1908,6 +1911,7 @@ export default function ListView({ cfg, slug }) {
               <thead>
                 <tr>
                   {actionPos === "left" && <th>Action</th>}
+                  {cfg.serialNumber && <th>#</th>}
                   {visible.map((c, i) => (
                     <th key={c.t + i}>{c.t}</th>
                   ))}
@@ -1917,14 +1921,14 @@ export default function ListView({ cfg, slug }) {
               <tbody>
                 {(loading || scopePending) && (
                   <tr>
-                    <td colSpan={visible.length + 1} className="dt-empty">
+                    <td colSpan={visible.length + 1 + (cfg.serialNumber ? 1 : 0)} className="dt-empty">
                       <span className="spin" />
                     </td>
                   </tr>
                 )}
                 {!loading && !scopePending && error && (
                   <tr>
-                    <td colSpan={visible.length + 1} className="dt-empty text-danger">
+                    <td colSpan={visible.length + 1 + (cfg.serialNumber ? 1 : 0)} className="dt-empty text-danger">
                       {error}{" "}
                       <button type="button" className="underline" onClick={load}>
                         Retry
@@ -1934,21 +1938,21 @@ export default function ListView({ cfg, slug }) {
                 )}
                 {!loading && !scopePending && !error && noBusiness && (
                   <tr>
-                    <td colSpan={visible.length + 1} className="dt-empty">
+                    <td colSpan={visible.length + 1 + (cfg.serialNumber ? 1 : 0)} className="dt-empty">
                       Select a business to view this list.
                     </td>
                   </tr>
                 )}
                 {!loading && !scopePending && !error && !noBusiness && !searched && (
                   <tr>
-                    <td colSpan={visible.length + 1} className="dt-empty">
+                    <td colSpan={visible.length + 1 + (cfg.serialNumber ? 1 : 0)} className="dt-empty">
                       Use the filter above to search.
                     </td>
                   </tr>
                 )}
                 {!loading && !scopePending && !error && !noBusiness && searched && state.rows.length === 0 && (
                   <tr>
-                    <td colSpan={visible.length + 1} className="dt-empty">
+                    <td colSpan={visible.length + 1 + (cfg.serialNumber ? 1 : 0)} className="dt-empty">
                       No Data..
                     </td>
                   </tr>
@@ -1956,7 +1960,7 @@ export default function ListView({ cfg, slug }) {
                 {/* rows are kept on screen through an error - a failed refresh
                     should not wipe the list the operator was looking at */}
                 {!loading && !scopePending &&
-                  state.rows.map((row) => {
+                  state.rows.map((row, rowIndex) => {
                     const actions = (
                       <td>
                         {actionVariant === "dropdown" ? (
@@ -2066,6 +2070,7 @@ export default function ListView({ cfg, slug }) {
                     return (
                       <tr key={row._id}>
                         {actionPos === "left" && actions}
+                        {cfg.serialNumber && <td>{(page - 1) * PER_PAGE + rowIndex + 1}</td>}
                         {visible.map((c, i) => (
                           <td key={c.t + i}>{cellValue(row, c)}</td>
                         ))}

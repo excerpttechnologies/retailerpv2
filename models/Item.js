@@ -57,6 +57,7 @@ const ItemSchema = new mongoose.Schema(
     filterId: { type: mongoose.Schema.Types.ObjectId, ref: 'productFilter', default: null },
     prefix: { type: String, default: '' },
     itemCode: { type: String, default: '' },
+    ecommItemCode: { type: String, default: '' },
     /* retail and wholesale selling price, shown on the Barcode Print Label
        screen; rspOfferPercent below is a discount %, not a price */
     rsp: { type: Number, default: null },

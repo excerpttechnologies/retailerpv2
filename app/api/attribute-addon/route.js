@@ -29,6 +29,9 @@ export async function GET(req) {
     const rx = { $regex: escapeRegex(search), $options: 'i' };
     filter.$or = [{ name: rx }];
   }
+  
+  /* Hide SUPPLIER DESCRIPTION from attribute addon list */
+  filter.name = { $nin: ['SUPPLIER DESCRIPTION', 'Supplier Description', 'supplier description'] };
 
   const total = await AttributeAddon.countDocuments(filter);
   const rows = await AttributeAddon.find(filter)

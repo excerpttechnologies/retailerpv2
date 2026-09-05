@@ -177,6 +177,7 @@ export default function CashRegisterOpenView() {
                   type="number" min="0" autoFocus
                   className="f-input max-w-[240px]"
                   value={amount}
+                  onWheel={(e) => e.currentTarget.blur()}
                   onChange={(e) => setAmount(e.target.value)}
                 />
                 <p className="mt-2 text-[12px] text-inkmuted">

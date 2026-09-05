@@ -303,6 +303,7 @@ export default function PosReturnForm() {
                     step="0.01"
                     placeholder={money(maxRefund)}
                     value={refundAmount}
+                    onWheel={(e) => e.currentTarget.blur()}
                     onChange={(e) => setRefundAmount(e.target.value)}
                   />
                   <span className={'mt-0.5 block text-[11px] ' + (overRefund ? 'text-danger' : 'text-inkmuted')}>

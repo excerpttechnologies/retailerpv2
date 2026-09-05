@@ -181,7 +181,7 @@ const REFS = {
   'product/filter':          { load: () => import('@/models/ProductFilter') },
   'product/group':           { load: () => import('@/models/ProductGroup') },
   uom:                       { load: () => import('@/models/Uom') },
-  'attribute-addon':         { load: () => import('@/models/AttributeAddon') },
+  'attribute-addon':         { load: () => import('@/models/AttributeAddon'), where: { name: { $nin: ['SUPPLIER DESCRIPTION', 'Supplier Description', 'supplier description'] } } },
   item:                      { load: () => import('@/models/Item') },
   logistic:                  { load: () => import('@/models/Logistic') },
  
@@ -275,6 +275,11 @@ export async function GET(req) {
     } else {
       filter[label] = rx;
     }
+  }
+  
+  /* Ensure SUPPLIER DESCRIPTION is always excluded */
+  if (ref === 'attribute-addon') {
+    (filter.$and ||= []).push({ name: { $nin: ['SUPPLIER DESCRIPTION', 'Supplier Description', 'supplier description'] } });
   }
  
   /* the default row sorts first, so it survives the 200-row cap */

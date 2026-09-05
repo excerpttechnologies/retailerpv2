@@ -55,7 +55,7 @@ export async function GET(req) {
 
   const total = await Contact.countDocuments(filter);
   const rows = await Contact.find(filter)
-    .sort({ createdAt: -1 })
+    .sort({ _id: -1 })
     .skip((page - 1) * perPage)
     .limit(perPage)
     .lean();

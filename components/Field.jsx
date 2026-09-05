@@ -183,6 +183,7 @@ import { useState, useEffect, useRef } from 'react';
 import MultiSelect from './MultiSelect';
 import { useOptions, useCities } from './useOptions';
 import { compressImage, prettyBytes } from '@/lib/imageFile';
+import BarcodeScanner from './BarcodeScanner';
 
 function Label({ f }) {
   /* ph = placeholder-only field: the original shows no label above these,
@@ -213,6 +214,7 @@ function RefField({ f, value, onChange, multi, onOptionChange, selectedOption })
       options={displayedOptions}
       loading={loading}
       error={error}
+      disabled={f.readOnly || f.disabled}
       /* A field that waits for typing must SAY so - otherwise an empty list
          is indistinguishable from a master with no records in it. */
       emptyText={!meetsMinimum
@@ -232,6 +234,48 @@ function RefField({ f, value, onChange, multi, onOptionChange, selectedOption })
       }}
       onSearch={setQuery}
     />
+  );
+}
+
+/* Loads options from /api/options and renders them as checkboxes.
+   Value is an array of id strings, same shape as multiref. */
+function CheckRefField({ f, value, onChange }) {
+  const { options, loading } = useOptions(f.ref);
+  const picked = Array.isArray(value) ? value : [];
+
+  function toggle(id) {
+    onChange(picked.includes(id) ? picked.filter((x) => x !== id) : [...picked, id]);
+  }
+
+  if (loading) {
+    return (
+      <div className="flex items-center gap-2 rounded-md border border-linestrong bg-white px-3 py-2 text-[13px] text-inkmuted">
+        <span className="spin" style={{ width: 14, height: 14 }} /> Loading…
+      </div>
+    );
+  }
+
+  if (!options.length) {
+    return (
+      <div className="rounded-md border border-linestrong bg-white px-3 py-2 text-[13px] text-inkmuted">
+        No options found
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex flex-wrap gap-x-5 gap-y-2 rounded-md border border-linestrong bg-white px-3 py-2">
+      {options.map((o) => (
+        <label key={o.value} className="flex cursor-pointer items-center gap-1.5 text-[13px]">
+          <input
+            type="checkbox"
+            checked={picked.includes(o.value)}
+            onChange={() => toggle(o.value)}
+          />
+          {o.label}
+        </label>
+      ))}
+    </div>
   );
 }
 
@@ -528,6 +572,13 @@ export default function Field({ f, value, error, onChange, onOptionChange, selec
       control = <RefField f={f} value={value} onChange={set} multi />;
       break;
 
+    case 'checkref': {
+      /* Dynamic options loaded from /api/options, displayed as checkboxes.
+         Value is an array of ObjectId strings (same shape as multiref). */
+      control = <CheckRefField f={f} value={value} onChange={set} />;
+      break;
+    }
+
     case 'zip':
       control = <PincodeField f={f} value={value} onChange={set} patch={patch} />;
       break;
@@ -600,12 +651,63 @@ export default function Field({ f, value, error, onChange, onOptionChange, selec
         <input
           type="number" className="f-input" value={value ?? ''}
           onChange={(e) => set(e.target.value === '' ? '' : Number(e.target.value))}
+          /* A number input listens for wheel scroll even without this being
+             the field the cursor was aimed at reading, not typing into - so
+             a scroll that was meant to move the page silently steps
+             whichever number field the cursor happened to be over
+             (Invoice Qty, Taxable, Freight, ...). Blurring on wheel does not
+             call preventDefault, so the scroll still reaches the page
+             normally; it just stops being interpreted as a step on this
+             field. */
+          onWheel={(e) => e.currentTarget.blur()}
         />
       );
       break;
 
     case 'file':
       control = <FileField f={f} value={value} onChange={set} />;
+      break;
+
+    case 'text':
+      /* For vendorWaybill field, add barcode scanner */
+      if (f.k === 'vendorWaybill') {
+        const [showScanner, setShowScanner] = useState(false);
+        control = (
+          <div className="flex gap-2">
+            <input
+              type="text"
+              className="f-input flex-1"
+              value={value ?? ''}
+              placeholder={f.placeholder || 'Enter waybill number or scan barcode'}
+              onChange={(e) => set(e.target.value)}
+            />
+            <button
+              type="button"
+              className="btn btn-primary"
+              onClick={() => setShowScanner(true)}
+            >
+              SCAN
+            </button>
+            {showScanner && (
+              <BarcodeScanner
+                onScan={(scannedValue) => {
+                  set(scannedValue);
+                  setShowScanner(false);
+                }}
+                onClose={() => setShowScanner(false)}
+              />
+            )}
+          </div>
+        );
+      } else {
+        control = (
+          <input
+            type="text" className={'f-input' + (f.uppercase ? ' uppercase' : '')} value={value ?? ''}
+            readOnly={!!f.readOnly} placeholder={f.placeholder || (f.ph ? f.label : '')}
+            onChange={(e) => set(e.target.value)}
+          />
+        );
+      }
       break;
 
     case 'checkgroup': {

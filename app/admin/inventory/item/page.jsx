@@ -10,6 +10,7 @@ const CONFIG = {
   endpoint: '/api/item',
   scope: ["business"],
   addTitle: "Add Item",
+  serialNumber: true,  // Enable serial numbers
   columns: [
     { k: "name", t: "Name" },
     { k: "itemType", t: "Item Type" },
@@ -17,6 +18,7 @@ const CONFIG = {
     { k: "uomId", t: "UOM", f: "ref" },
     { k: "prefix", t: "Prefix" },
     { k: "itemCode", t: "Item Code" },
+    { k: "ecommItemCode", t: "Ecomm Item Code" },
     { k: "groupId", t: "Group", f: "ref" },
     { k: "subGroupId", t: "Sub Group", f: "ref" },
   ],

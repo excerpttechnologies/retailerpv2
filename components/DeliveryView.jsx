@@ -121,17 +121,36 @@ function DeliveryDialog({ row, onClose, onSaved }) {
      keys off the field, so remounting it is what forces the refresh */
   const [transporterNonce, setTransporterNonce] = useState(0);
   const [supplierNonce, setSupplierNonce] = useState(0);
+  /* preview of the number this delivery will most likely be given - never
+     submitted, see the effect below */
+  const [nextNo, setNextNo] = useState('');
 
+  /* The next Transaction No, shown only as a hint.
+
+     This used to write the fetched number straight into `data`, and the
+     endpoint behind it reserved that number - so merely opening the dialog
+     consumed one. Open, cancel, open again and the series had walked
+     LR/26/022 -> 023 -> 024 with nothing saved.
+
+     Two things changed. The endpoint is now a pure read (see
+     previewSeriesNumber), and what it returns is kept OUT of the form: the
+     dialog submits a blank Transaction No and the API reserves the real
+     number atomically as part of the save. So this is a display value that
+     can go stale between opening the dialog and saving, which is fine -
+     nothing downstream depends on it, and typing over it still works as a
+     manual override. */
   useEffect(() => {
     if (isEdit) return;
+    let live = true;
     const qs = new URLSearchParams({
-      nextNumber: '1', business: scope.business || '', finYear: scope.finYear || '',
+      nextNumber: '1', business: scope.business || '', location: scope.location || '', finYear: scope.finYear || '',
     });
-    fetch(ENDPOINT + '?' + qs)
+    fetch(ENDPOINT + '?' + qs, { cache: 'no-store' })
       .then((r) => r.json())
-      .then((d) => setData((current) => current.transactionNo ? current : { ...current, transactionNo: d.transactionNo || '' }))
+      .then((d) => { if (live) setNextNo(d.transactionNo || ''); })
       .catch(() => {});
-  }, [isEdit, scope.business, scope.finYear]);
+    return () => { live = false; };
+  }, [isEdit, scope.business, scope.location, scope.finYear]);
 
   const set = (k, v) => {
     setData((d) => ({ ...d, [k]: v }));
@@ -283,12 +302,48 @@ function DeliveryDialog({ row, onClose, onSaved }) {
                   the field that is actually stored - so the clock is gone and
                   Transaction Date opens on today with a calendar picker. */}
               <div className="mb-3">
-                <Field
-                  f={{ ...field('transactionNo'), label: 'Transaction No', placeholder: 'Auto generate on save' }}
-                  value={data.transactionNo}
-                  error={errors.transactionNo}
-                  onChange={set}
-                />
+                <label className="mb-1 block text-[13px] font-semibold">
+                  Transaction No <span className="f-req">*</span>
+                </label>
+                {isEdit ? (
+                  /* Edit mode — show the saved number, never regenerate */
+                  <input
+                    type="text"
+                    className="f-input bg-gray-100 font-mono"
+                    value={data.transactionNo || ''}
+                    readOnly
+                    aria-label="Transaction No"
+                  />
+                ) : (
+                  /* Add mode — show the preview number (pure read from server,
+                     does NOT consume the sequence). The real number is reserved
+                     atomically by the server when Save is clicked.
+                     Loading state shows a spinner so the operator knows the
+                     fetch is in flight rather than seeing a blank box. */
+                  <div className="relative">
+                    <input
+                      type="text"
+                      className="f-input bg-gray-100 font-mono"
+                      value={nextNo || ''}
+                      readOnly
+                      placeholder={nextNo ? '' : 'Fetching next number…'}
+                      aria-label="Transaction No — auto-generated on save"
+                    />
+                    {!nextNo && (
+                      <span className="absolute right-2 top-1/2 -translate-y-1/2">
+                        <span className="spin" style={{ width: 14, height: 14 }} />
+                      </span>
+                    )}
+                  </div>
+                )}
+                {!isEdit && nextNo && (
+                  <p className="mt-0.5 text-[11.5px] text-inkmuted">
+                    Auto-generated on save — do not type manually
+                  </p>
+                )}
+                {errors.transactionNo && (
+                  <div className="mt-1 text-[12px] text-red-600">{errors.transactionNo}</div>
+                )}
               </div>
 
               <div className="mb-3">
@@ -355,7 +410,7 @@ function DeliveryDialog({ row, onClose, onSaved }) {
                     className="btn btn-primary mt-2"
                     onClick={() => setAddingSupplier(true)}
                   >
-                    <Icon name="plus" size={20} /> 
+                    <Icon name="plus" size={20} />
                   </button>
                 </div>
 
@@ -483,22 +538,26 @@ function ViewDialog({ row, labels, onClose }) {
 
 /* ----------------------------------------------------------------- LIST -- */
 
-export default function DeliveryView() {
-  const { business, location, finYear } = useScope();
+/* One grid: its own search, column visibility, exports, paging and fetch.
+
+   Rendered twice - Pending and Completed - so the two lists page and filter
+   independently, which is what "pagination for Pending and Completed should
+   be independent" requires. The date range is owned by the shared Filter card
+   above and passed in, so one Search applies to both. */
+function DeliveryGrid({
+  status, title, emptyText, applied, business, location, finYear,
+  refreshKey, onView, onEdit, onAdd, onChanged,
+}) {
   const [state, setState] = useState({ rows: [], labels: {}, page: 1, pages: 1, total: 0 });
   const [search, setSearch] = useState('');
   const [hidden, setHidden] = useState([]);
   const [loading, setLoading] = useState(true);
   const [page, setPage] = useState(1);
-  const [range, setRange] = useState({ startDate: '', endDate: '' });
-  const [applied, setApplied] = useState({ startDate: '', endDate: '' });
-  const [editing, setEditing] = useState(null);
-  const [viewing, setViewing] = useState(null);
 
   const load = useCallback(async () => {
     setLoading(true);
     const qs = new URLSearchParams({
-      page: String(page), search,
+      page: String(page), search, status,
       business: business || '', location: location || '', finYear: finYear || '',
     });
     if (applied.startDate) qs.set('startDate', applied.startDate);
@@ -514,7 +573,7 @@ export default function DeliveryView() {
     } finally {
       setLoading(false);
     }
-  }, [page, search, business, location, finYear, applied]);
+  }, [page, search, status, business, location, finYear, applied, refreshKey]);
 
   useEffect(() => { load(); }, [load]);
   useEffect(() => { setPage(1); }, [search, business, location, finYear, applied]);
@@ -529,7 +588,7 @@ export default function DeliveryView() {
     if (col.f === 'ref') {
       const label = state.labels[String(row[col.k])] || '';
       /* an unclaimed consignment should read as such, not as a blank cell */
-      return label || (col.k === 'dispatchId' ? '\u2014' : '');
+      return label || (col.k === 'dispatchId' ? '—' : '');
     }
     return col.f ? fmt(col.f, row[col.k]) : (row[col.k] ?? '');
   };
@@ -545,6 +604,7 @@ export default function DeliveryView() {
 
   const exportRows = () => state.rows.map((r) => visible.map((c) => cellText(r, c)));
   const exportHeaders = () => visible.map((c) => c.t);
+  const fileBase = status === 'completed' ? 'completed-goods-received' : 'pending-goods-received';
 
   async function remove(id) {
     if (!window.confirm('Delete this record?')) return;
@@ -554,8 +614,105 @@ export default function DeliveryView() {
       window.alert(d.error || 'Could not delete this record.');
       return;
     }
-    load();
+    onChanged();
   }
+
+  return (
+    <div className="card">
+      <div className="card-head">
+        <span className="card-title">{title}</span>
+        <span className="flex-1" />
+        <button type="button" className="btn btn-ghost" onClick={load}>
+          <Icon name="refresh" size={14} /> Refresh
+        </button>
+      </div>
+
+      <div className="card-body">
+        <Toolbar
+          columns={COLUMNS}
+          hidden={hidden}
+          onToggleColumn={(t) =>
+            setHidden((h) => (h.includes(t) ? h.filter((x) => x !== t) : [...h, t]))
+          }
+          search={search}
+          onSearch={setSearch}
+          {...(onAdd ? { onAdd } : {})}
+          onExportCsv={() => download(fileBase + '.csv', toCsv(exportHeaders(), exportRows()), 'text/csv')}
+          onExportExcel={() =>
+            download(fileBase + '.xls', toXlsHtml(title, exportHeaders(), exportRows()),
+              'application/vnd.ms-excel')
+          }
+          onExportPdf={() => printTable(title, exportHeaders(), exportRows())}
+        />
+
+        <div className="mt-3 overflow-x-auto">
+          <table className="dt">
+            <thead>
+              <tr>
+                {visible.map((c, i) => <th key={c.t + i}>{c.t}</th>)}
+                <th>Action</th>
+              </tr>
+            </thead>
+            <tbody>
+              {loading && (
+                <tr><td colSpan={visible.length + 1} className="dt-empty"><span className="spin" /></td></tr>
+              )}
+              {!loading && state.rows.length === 0 && (
+                <tr><td colSpan={visible.length + 1} className="dt-empty">{emptyText}</td></tr>
+              )}
+              {!loading && state.rows.map((row) => (
+                <tr key={row._id}>
+                  {visible.map((c, i) => <td key={c.t + i}>{cell(row, c)}</td>)}
+                  <td>
+                    <span className="inline-flex items-center gap-1.5">
+                      <button className="act-btn bg-[#2b7fd4]" title="View" onClick={() => onView(row, state.labels)}>
+                        <Icon name="eye" size={12} />
+                      </button>
+                      <button className="act-btn bg-warnyellow" title="Edit" onClick={() => onEdit(row)}>
+                        <Icon name="pencil" size={12} />
+                      </button>
+                      <button className="act-btn bg-danger" title="Delete" onClick={() => remove(row._id)}>
+                        <Icon name="trash" size={12} />
+                      </button>
+                    </span>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+
+        <div className="flex items-center pt-3 text-[13px] text-cell">
+          <span>Page <b className="text-brand-link">{state.page}</b> of {state.pages}</span>
+          <span className="flex-1" />
+          <span className="flex gap-2">
+            <button className="btn" disabled={state.page <= 1} onClick={() => setPage((p) => p - 1)}>Previous</button>
+            <button className="btn" disabled={state.page >= state.pages} onClick={() => setPage((p) => p + 1)}>Next</button>
+          </span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+export default function DeliveryView() {
+  const { business, location, finYear } = useScope();
+  const [range, setRange] = useState({ startDate: '', endDate: '' });
+  const [applied, setApplied] = useState({ startDate: '', endDate: '' });
+  const [editing, setEditing] = useState(null);
+  const [viewing, setViewing] = useState(null);
+  const [viewLabels, setViewLabels] = useState({});
+  /* bumped after a save or delete so BOTH grids refetch - a consignment that
+     has just been received has to leave Pending and appear in Completed */
+  const [refreshKey, setRefreshKey] = useState(0);
+  const refreshAll = useCallback(() => setRefreshKey((k) => k + 1), []);
+
+  const shared = {
+    applied, business, location, finYear, refreshKey,
+    onView: (row, labels) => { setViewing(row); setViewLabels(labels); },
+    onEdit: (row) => setEditing(row),
+    onChanged: refreshAll,
+  };
 
   return (
     <>
@@ -563,13 +720,13 @@ export default function DeliveryView() {
         <DeliveryDialog
           row={editing === true ? null : editing}
           onClose={() => setEditing(null)}
-          onSaved={() => { setEditing(null); setPage(1); load(); }}
+          onSaved={() => { setEditing(null); refreshAll(); }}
         />
       )}
 
-      {viewing && <ViewDialog row={viewing} labels={state.labels} onClose={() => setViewing(null)} />}
+      {viewing && <ViewDialog row={viewing} labels={viewLabels} onClose={() => setViewing(null)} />}
 
-      {/* Filter card */}
+      {/* Filter card - shared, so one date range applies to both grids */}
       <div className="card">
         <div className="card-head">
           <span className="card-title"><Icon name="filter" size={15} /> Filter</span>
@@ -601,79 +758,23 @@ export default function DeliveryView() {
         </div>
       </div>
 
-      <div className="card">
-        <div className="card-head">
-          <span className="card-title">Delivery / LR Transactions</span>
-          <span className="flex-1" />
-          <button type="button" className="btn btn-ghost" onClick={load}>
-            <Icon name="refresh" size={14} /> Refresh
-          </button>
-        </div>
+      {/* Add lives on Pending only: a newly created LR has no GRC yet, so it
+          can only ever land in this grid. */}
+      <DeliveryGrid
+        {...shared}
+        status="pending"
+        title="Pending Goods Received"
+        emptyText="No pending goods received records found."
+        onAdd={() => setEditing(true)}
+      />
 
-        <div className="card-body">
-          <Toolbar
-            columns={COLUMNS}
-            hidden={hidden}
-            onToggleColumn={(t) =>
-              setHidden((h) => (h.includes(t) ? h.filter((x) => x !== t) : [...h, t]))
-            }
-            search={search}
-            onSearch={setSearch}
-            onAdd={() => setEditing(true)}
-            onExportCsv={() => download('delivery.csv', toCsv(exportHeaders(), exportRows()), 'text/csv')}
-            onExportExcel={() =>
-              download('delivery.xls', toXlsHtml('Delivery / LR', exportHeaders(), exportRows()),
-                'application/vnd.ms-excel')
-            }
-            onExportPdf={() => printTable('Delivery / LR Transactions', exportHeaders(), exportRows())}
-          />
-
-          <div className="mt-3 overflow-x-auto">
-            <table className="dt">
-              <thead>
-                <tr>
-                  {visible.map((c, i) => <th key={c.t + i}>{c.t}</th>)}
-                  <th>Action</th>
-                </tr>
-              </thead>
-              <tbody>
-                {loading && (
-                  <tr><td colSpan={visible.length + 1} className="dt-empty"><span className="spin" /></td></tr>
-                )}
-                {!loading && state.rows.length === 0 && (
-                  <tr><td colSpan={visible.length + 1} className="dt-empty">No Data..</td></tr>
-                )}
-                {!loading && state.rows.map((row) => (
-                  <tr key={row._id}>
-                    {visible.map((c, i) => <td key={c.t + i}>{cell(row, c)}</td>)}
-                    <td>
-                      <span className="inline-flex items-center gap-1.5">
-                        <button className="act-btn bg-[#2b7fd4]" title="View" onClick={() => setViewing(row)}>
-                          <Icon name="eye" size={12} />
-                        </button>
-                        <button className="act-btn bg-warnyellow" title="Edit" onClick={() => setEditing(row)}>
-                          <Icon name="pencil" size={12} />
-                        </button>
-                        <button className="act-btn bg-danger" title="Delete" onClick={() => remove(row._id)}>
-                          <Icon name="trash" size={12} />
-                        </button>
-                      </span>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-
-          <div className="flex items-center pt-3 text-[13px] text-cell">
-            <span>Page <b className="text-brand-link">{state.page}</b> of {state.pages}</span>
-            <span className="flex-1" />
-            <span className="flex gap-2">
-              <button className="btn" disabled={state.page <= 1} onClick={() => setPage((p) => p - 1)}>Previous</button>
-              <button className="btn" disabled={state.page >= state.pages} onClick={() => setPage((p) => p + 1)}>Next</button>
-            </span>
-          </div>
-        </div>
+      <div className="mt-4">
+        <DeliveryGrid
+          {...shared}
+          status="completed"
+          title="Completed Goods Received"
+          emptyText="No completed goods received records found."
+        />
       </div>
     </>
   );

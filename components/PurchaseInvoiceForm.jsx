@@ -331,6 +331,7 @@ export default function PurchaseInvoiceForm({ cfg, id }) {
                         <input
                           type="number" className="f-input h-8 w-[86px]"
                           value={r[k] ?? ''}
+                          onWheel={(e) => e.currentTarget.blur()}
                           onChange={(e) => setCell(i, k, e.target.value)}
                         />
                       </td>
@@ -339,6 +340,7 @@ export default function PurchaseInvoiceForm({ cfg, id }) {
                       <input
                         type="number" className="f-input h-8 w-[86px]"
                         value={r.roffDiscount ?? ''}
+                        onWheel={(e) => e.currentTarget.blur()}
                         onChange={(e) => setCell(i, 'roffDiscount', e.target.value)}
                       />
                     </td>
@@ -354,6 +356,7 @@ export default function PurchaseInvoiceForm({ cfg, id }) {
                       <input
                         type="number" className="f-input h-8 w-[76px]"
                         value={r.dp ?? ''}
+                        onWheel={(e) => e.currentTarget.blur()}
                         onChange={(e) => setCell(i, 'dp', e.target.value)}
                       />
                     </td>
@@ -394,6 +397,7 @@ export default function PurchaseInvoiceForm({ cfg, id }) {
                   <input
                     type="number" className="f-input h-8 w-[110px] text-right"
                     value={headDiscountPct}
+                    onWheel={(e) => e.currentTarget.blur()}
                     onChange={(e) => setHeadDiscountPct(e.target.value)}
                   />
                 </td>
@@ -404,6 +408,7 @@ export default function PurchaseInvoiceForm({ cfg, id }) {
                   <input
                     type="number" className="f-input h-8 w-[110px] text-right"
                     value={headRoffDiscount}
+                    onWheel={(e) => e.currentTarget.blur()}
                     onChange={(e) => setHeadRoffDiscount(e.target.value)}
                   />
                 </td>
@@ -424,6 +429,7 @@ export default function PurchaseInvoiceForm({ cfg, id }) {
                   <input
                     type="number" className="f-input h-8 w-[110px] text-right"
                     value={freight}
+                    onWheel={(e) => e.currentTarget.blur()}
                     onChange={(e) => setFreight(e.target.value)}
                   />
                 </td>

@@ -32,7 +32,7 @@ export async function GET(req) {
     const barcodeRows = await BarcodeLabel.find({ $or: [{ barcodeGenerated: rx }, { oldBarcode: rx }] }).select('itemCode imageUrl').limit(100).lean();
     const barcodeCodes = barcodeRows.map((row) => row.itemCode).filter(Boolean);
     barcodeRows.forEach((row) => { if (row.itemCode && row.imageUrl) barcodeImageByCode[String(row.itemCode)] = row.imageUrl; });
-    filter.$or = [{ name: rx }, { prefix: rx }, { itemCode: rx }, { description: rx }];
+    filter.$or = [{ name: rx }, { prefix: rx }, { itemCode: rx }, { ecommItemCode: rx }, { description: rx }];
     if (barcodeCodes.length) filter.$or.push({ itemCode: { $in: barcodeCodes } });
   }
 

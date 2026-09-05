@@ -23,6 +23,9 @@ export const FIELDS = [
   { k: 'bookingDate', label: 'Booking Date', type: 'date', req: true },
 
   /* SUPPLIER / PARCEL INFO */
+  /* The supplier dropdown already appends (G-code) to every option label via
+     /api/options codeField:'contactId', so the G Code is visible in the
+     picker itself — no separate field needed. */
   { k: 'supplierId', label: 'Supplier Name', type: 'ref', ref: 'supplier', req: true },
   { k: 'invPmNumber', label: 'Inv / PM Number', type: 'text', req: true },
   { k: 'parcelQty', label: 'Parcel Qty', type: 'number', req: true },

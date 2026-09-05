@@ -69,3 +69,15 @@ export async function ensureFloor(name, scope = {}, floor = 0, session = null) {
     { upsert: true, ...(session ? { session } : {}) }
   );
 }
+
+/* Reads a counter WITHOUT touching it: the last value issued, or 0 when the
+   series has never been used.
+
+   This exists so a screen can show the number a document WOULD get before
+   anyone commits to creating it. reserveSequence cannot be used for that -
+   it is a write, so a "preview" built on it burns a number every time a
+   dialog is opened and closed again. A read must never move the sequence. */
+export async function peekSequence(name, scope = {}) {
+  const doc = await Counter.findOne({ key: counterKey(name, scope) }).select('seq').lean();
+  return Number(doc?.seq) || 0;
+}

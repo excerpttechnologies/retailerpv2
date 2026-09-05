@@ -66,10 +66,9 @@ export const TABS = [
             },
             {
               "k": "firstName",
-              "label": "First Name*",
+              "label": "First Name",
               "ph": true,
-              "type": "text",
-              "req": true
+              "type": "text"
             },
             {
               "k": "middleName",

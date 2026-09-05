@@ -86,6 +86,7 @@ function OpenDialog({ onClose, onDone }) {
             type="number" min="0" autoFocus
             className="f-input"
             value={opening}
+            onWheel={(e) => e.currentTarget.blur()}
             onChange={(e) => setOpening(e.target.value)}
           />
           <label className="f-label mt-3">Note</label>
@@ -164,6 +165,7 @@ function CloseDialog({ row, onClose, onDone }) {
             type="number" min="0" autoFocus
             className="f-input"
             value={closing}
+            onWheel={(e) => e.currentTarget.blur()}
             onChange={(e) => setClosing(e.target.value)}
           />
           <label className="f-label mt-3">Note</label>

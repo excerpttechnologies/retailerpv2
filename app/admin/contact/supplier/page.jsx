@@ -16,7 +16,7 @@ const CONFIG = {
   actionVariant: "dropdown",
   columns: [
     { k: "businessName", t: "Business Name" },
-    { k: "contactId", t: "Contact ID" },
+    { k: "contactId", t: "Supplier No" },
     { k: "firstName", t: "Name" },
     { k: "billingMobile", t: "Mobile" },
     { k: "billingEmail", t: "Email" },

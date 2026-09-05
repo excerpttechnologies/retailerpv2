@@ -254,6 +254,7 @@ function Totals({ card, data, onChange }) {
                   className="f-input h-8 text-center"
                   value={data[r.input] ?? 0}
                   onChange={(e) => onChange(r.input, Number(e.target.value))}
+                  onWheel={(e) => e.currentTarget.blur()}
                 />
               )}
             </td>
@@ -297,6 +298,7 @@ function VoucherSection({ card, rows, onChange, onAdd, onRemove }) {
                       className="f-input"
                       value={row[field.k] ?? ''}
                       onChange={(event) => onChange(index, field.k, event.target.value)}
+                      onWheel={(e) => e.currentTarget.blur()}
                     />
                   </td>
                 ))}
@@ -435,7 +437,7 @@ function VendorItems({ supplierId, selected, onChange, scope }) {
         {supplierId && selected.length > 0 && <div className="overflow-x-auto"><table className="dt min-w-[1500px]"><thead><tr><th>Sl No</th><th>Item Code</th><th>Item Name</th><th>HSN</th><th>GST Slab</th><th>UOM</th><th>Maximum Quantity</th><th>Final Rate</th><th>Return Quantity</th><th>Before GST</th><th>IGST Amount</th><th>CGST Amount</th><th>SGST Amount</th><th>Net Amount</th></tr></thead><tbody>
           {selected.map((row, index) => {
             const amounts = amountFor(row);
-            const input = (key, type = 'text', fallback = '') => <input className="f-input h-8 min-w-[80px]" type={type} value={row[key] ?? fallback} onChange={(event) => updateSelectedRow(index, key, event.target.value)} />;
+            const input = (key, type = 'text', fallback = '') => <input className="f-input h-8 min-w-[80px]" type={type} value={row[key] ?? fallback} onChange={(event) => updateSelectedRow(index, key, event.target.value)} onWheel={(e) => e.currentTarget.blur()} />;
             return <tr key={row._id}><td>{index + 1}</td><td>{input('itemCode')}</td><td>{input('supplierDescription', 'text', row.itemName)}</td><td>{input('hsn')}</td><td>{input('gst', 'number')}</td><td>{input('uom')}</td><td>{input('maximumQuantity', 'number', row.qty || 1)}</td><td>{input('finalNet', 'number')}</td><td>{input('qty', 'number')}</td><td>{amounts.beforeGst.toFixed(2)}</td><td>{amounts.igst.toFixed(2)}</td><td>{amounts.cgst.toFixed(2)}</td><td>{amounts.sgst.toFixed(2)}</td><td>{amounts.net.toFixed(2)}</td></tr>;
           })}
           <tr className="font-semibold"><td colSpan={8}>Total</td><td>{selectedTotals.qty.toFixed(2)}</td><td>{selectedTotals.beforeGst.toFixed(2)}</td><td>{selectedTotals.igst.toFixed(2)}</td><td>{selectedTotals.cgst.toFixed(2)}</td><td>{selectedTotals.sgst.toFixed(2)}</td><td>{selectedTotals.net.toFixed(2)}</td></tr>
@@ -623,10 +625,22 @@ export default function TransactionFormView({ cfg, id, slug }) {
                             }}
                             onSelect={(row) => {
                               if (!row || !inlineSourceCard.populate) return;
-                              setData((current) => Object.entries(inlineSourceCard.populate).reduce(
-                                (next, [target, sourceKey]) => ({ ...next, [target]: row[sourceKey] ?? '' }),
-                                current
-                              ));
+                              const fillFromKeys = new Set(
+                                allFields.filter((f) => f.fillFrom).map((f) => f.k)
+                              );
+                              const batchEntries = Object.entries(inlineSourceCard.populate)
+                                .filter(([target]) => !fillFromKeys.has(target));
+                              const fillEntries = Object.entries(inlineSourceCard.populate)
+                                .filter(([target]) => fillFromKeys.has(target));
+                              if (batchEntries.length) {
+                                setData((current) => batchEntries.reduce(
+                                  (next, [target, sourceKey]) => ({ ...next, [target]: row[sourceKey] ?? '' }),
+                                  current
+                                ));
+                              }
+                              fillEntries.forEach(([target, sourceKey]) => {
+                                set(target, row[sourceKey] ?? '');
+                              });
                             }}
                           />
                         </div>
@@ -728,10 +742,29 @@ export default function TransactionFormView({ cfg, id, slug }) {
                       if (sourceItems.length) setItems(sourceItems);
                       const row = Array.isArray(selection) ? selection[0] : selection;
                       if (!row || !card.populate) return;
-                      setData((current) => Object.entries(card.populate).reduce(
-                        (next, [target, sourceKey]) => ({ ...next, [target]: row[sourceKey] ?? '' }),
-                        current
-                      ));
+                      /* Populate fields from the selected source row.
+                         Fields that have `fillFrom` must go through set() so that
+                         fillFrom fires (e.g. supplierId → fetch GST No).
+                         All other fields are batched into a single setData call. */
+                      const fillFromKeys = new Set(
+                        allFields.filter((f) => f.fillFrom).map((f) => f.k)
+                      );
+                      const batchEntries = Object.entries(card.populate)
+                        .filter(([target]) => !fillFromKeys.has(target));
+                      const fillEntries = Object.entries(card.populate)
+                        .filter(([target]) => fillFromKeys.has(target));
+
+                      if (batchEntries.length) {
+                        setData((current) => batchEntries.reduce(
+                          (next, [target, sourceKey]) => ({ ...next, [target]: row[sourceKey] ?? '' }),
+                          current
+                        ));
+                      }
+                      /* call set() for each fillFrom field so the side-effect
+                         (API fetch → write dependent field) is triggered */
+                      fillEntries.forEach(([target, sourceKey]) => {
+                        set(target, row[sourceKey] ?? '');
+                      });
                     }}
                   />
                   {card.info && <InfoBox items={card.info} />}

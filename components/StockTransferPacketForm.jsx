@@ -348,6 +348,7 @@ export default function StockTransferPacketForm({ cfg, id }) {
                         min="0"
                         className={'f-input h-8 w-[86px] ' + (over ? 'border-danger' : '')}
                         value={r.qty ?? ''}
+                        onWheel={(e) => e.currentTarget.blur()}
                         onChange={(e) => {
                           /* a negative quantity on a transfer is meaningless -
                              it would flip the line's sign all the way through
@@ -367,6 +368,7 @@ export default function StockTransferPacketForm({ cfg, id }) {
                         type="number"
                         className="f-input h-8 w-[96px]"
                         value={r.netRate ?? ''}
+                        onWheel={(e) => e.currentTarget.blur()}
                         onChange={(e) => setCell(i, 'netRate', e.target.value)}
                       />
                     </td>
