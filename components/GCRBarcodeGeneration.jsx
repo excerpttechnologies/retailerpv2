@@ -413,6 +413,61 @@ function SearchSelect({ placeholder, value, label, onSearch, options, loading, o
   );
 }
 
+/* Serial No., rendered TWICE - once in row 2, once in row 3.
+
+   It is a component rather than copied JSX for one reason: both boxes must
+   show the same number and both must be locked the same way, and two copies of
+   this markup would eventually drift. Both call sites pass the one
+   form.serialNo, so the pair is two windows onto a single value - there is no
+   second serial, and nothing here can generate one.
+
+   The number is GENERATED, never typed: seeded to rowCount + 1 when the form
+   opens and advanced by incrementSerial() after every submit. A hand-edit
+   could only put it out of step with the rows already in the grid, and two
+   rows carrying the same serial cannot be told apart afterwards.
+
+   readOnly is the real guard - it blocks typing, paste, cut and delete at the
+   browser level. The handlers below only close the gaps it leaves: a caret
+   keystroke reaching a click-focused box, a drop, and a scroll over it. Tab
+   and Ctrl/Cmd combinations are let through, so focus can still leave the box
+   and the value can still be copied. The last
+   line of defence is not here at all: AddItemModal's updateField refuses the
+   serialNo key outright, so no handler anywhere can write it. */
+function LockedSerialField({ value, readOnlyClass }) {
+  return (
+    <div className="max-w-[110px] space-y-1 xl:max-w-none">
+      <label className="block text-[11px] font-semibold text-gray-700">Serial No. *</label>
+      <div className="relative">
+        <input
+          value={value}
+          readOnly
+          tabIndex={-1}
+          aria-readonly="true"
+          title="Serial No. is generated automatically"
+          onKeyDown={(event) => { if (event.key !== "Tab" && !event.ctrlKey && !event.metaKey) event.preventDefault(); }}
+          onPaste={(event) => event.preventDefault()}
+          onCut={(event) => event.preventDefault()}
+          onDrop={(event) => event.preventDefault()}
+          onWheel={(event) => event.currentTarget.blur()}
+          className={`w-full cursor-not-allowed rounded-md px-2 py-2 pr-7 text-sm ${readOnlyClass}`}
+        />
+        <svg
+          viewBox="0 0 24 24"
+          aria-hidden="true"
+          className="pointer-events-none absolute right-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-gray-400"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="2"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        >
+          <rect x="5" y="11" width="14" height="9" rx="2" />
+          <path d="M8 11V8a4 4 0 0 1 8 0v3" />
+        </svg>
+      </div>
+    </div>
+  );
+}
 function AddItemModal({ open, onClose, onSubmit, onSubmitAndPrint, rowCount = 0, barcodeFormat, reserveNumbers, business = "" }) {
   const createBlankForm = (overrides = {}) => ({
     oldBarcode: "",
@@ -587,7 +642,36 @@ function AddItemModal({ open, onClose, onSubmit, onSubmitAndPrint, rowCount = 0,
 
   if (!open) return null;
 
-  const updateField = (key, value) => setForm((current) => ({ ...current, [key]: value }));
+  /* Serial No. is generated, never entered. Refusing the key here - rather
+     than only marking the two inputs readOnly - means no handler, no future
+     field and no stray call can put a UI value into it. The generator still
+     writes it: createBlankForm seeds it and the post-submit reset advances
+     it, and both go through setForm directly, not through here. */
+  const updateField = (key, value) => {
+    if (key === "serialNo") return;
+    setForm((current) => ({ ...current, [key]: value }));
+  };
+
+  /* HSN appears in row 1 and again in row 3. Both call this, so both read
+     the same form.hsnId / hsnLabel and both go through handleHsnSelection -
+     picking in either box updates the other and pulls the GST slab with it.
+     Fully editable in both places: this is a live search, never locked. */
+  const renderHsnField = () => (
+    <div className="space-y-1">
+      <label className="block text-[11px] font-semibold text-gray-700">HSN *</label>
+      <SearchSelect
+        placeholder="Search HSN…"
+        value={form.hsnId}
+        label={hsnLabel}
+        onSearch={searchHsn}
+        options={hsnOptions}
+        loading={hsnLoading}
+        onSelect={(opt) => handleHsnSelection(opt)}
+        onClear={() => handleHsnSelection(null)}
+        editableClass={editableClass}
+      />
+    </div>
+  );
 
   const resolveProductGroup = async (subGroupId) => {
     if (!subGroupId) {
@@ -772,6 +856,21 @@ function AddItemModal({ open, onClose, onSubmit, onSubmitAndPrint, rowCount = 0,
     });
   };
 
+  /* Markup RSP % and RSP Offer % take two digits - 0 to 99 - and nothing else.
+
+     The cap lives here and not on the input maxLength because maxLength only
+     limits typing. A paste, an autofill, a drop or an input event raised by an
+     extension all bypass it, and every one of those still fires onChange - so
+     sanitising on the way into state is what actually holds.
+
+     Stripping non-digits also removes the minus sign and the decimal point, so
+     these two fields carry whole positive percentages only. No separate
+     "> 99" test is needed: two digits IS 0-99, and the slice enforces it
+     before the value is ever parsed.
+
+     Deliberately scoped to these two fields only - Markup WSP %, Markup DP %,
+     Discount and GST% are untouched and still accept their existing range. */
+  const twoDigitPercent = (raw) => String(raw ?? "").replace(/\D/g, "").slice(0, 2);
   const updateMarkupValue = (key, value) => {
     setForm((current) => {
       const next = { ...current, [key]: value };
@@ -1047,12 +1146,21 @@ function AddItemModal({ open, onClose, onSubmit, onSubmitAndPrint, rowCount = 0,
   return (
     <div className="mt-4 w-full rounded-[8px] border border-slate-200 bg-white shadow-sm">
       <div className="px-5 py-4">
-          <div className="grid grid-cols-1 gap-3 md:grid-cols-5">
-            {/* Old Barcode leads the row: it is what is physically on the
-                incoming goods, and identifying the item from it is faster and
-                less error-prone than hunting the Item Code dropdown. Item Code
-                drops from 2 columns to 1 to make room, so the row still totals
-                5 and the card neither widens nor wraps. */}
+          {/* ROW 1: Old Barcode | Item Code | HSN | GST% | Attribute Add On.
+
+              Four tracks for five fields: HSN and GST% share the third cell.
+              GST% is not typed - resolveHsnGst() fills it from whichever HSN
+              is picked - so sitting them side by side is how the operator
+              checks the pick landed. They stay two separate controls; the
+              grouping is only the cell they share.
+
+              Explicit widths rather than equal quarters: GST% holds two digits
+              and Attribute Add On holds two fixed checkboxes, so both are
+              pinned to what they need and Old Barcode / Item Code split the
+              rest. The two-column md: stage exists because the sidebar is a
+              fixed 280px - at 768px viewport a four-across row leaves each
+              field about 90px, which is unreadable. */}
+          <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_270px_230px]">
             <div className="space-y-1">
               <label className="block text-[11px] font-semibold text-gray-700">Old Barcode</label>
               <input
@@ -1064,8 +1172,6 @@ function AddItemModal({ open, onClose, onSubmit, onSubmitAndPrint, rowCount = 0,
                   setForm((current) => ({ ...current, oldBarcode: next }));
                   if (lookup.status !== "idle") setLookup({ status: "idle", message: "" });
                 }}
-                /* A wedge scanner types the code and then sends Enter, so this
-                   fires the lookup for a scan. Blur covers typing it by hand. */
                 onKeyDown={(event) => {
                   if (event.key === "Enter") {
                     event.preventDefault();
@@ -1101,24 +1207,13 @@ function AddItemModal({ open, onClose, onSubmit, onSubmitAndPrint, rowCount = 0,
               />
             </div>
 
-            <div className="space-y-1">
-              <label className="block text-[11px] font-semibold text-gray-700">HSN *</label>
-              <SearchSelect
-                placeholder="Search HSN…"
-                value={form.hsnId}
-                label={hsnLabel}
-                onSearch={searchHsn}
-                options={hsnOptions}
-                loading={hsnLoading}
-                onSelect={(opt) => handleHsnSelection(opt)}
-                onClear={() => handleHsnSelection(null)}
-                editableClass={editableClass}
-              />
-            </div>
-
-            <div className="space-y-1">
-              <label className="block text-[11px] font-semibold text-gray-700">GST% *</label>
-              <input value={form.gst} readOnly className={`w-full rounded-md px-2 py-2 text-sm ${readOnlyClass}`} />
+            {/* HSN + GST% - grouped in one cell, still two separate controls */}
+            <div className="grid grid-cols-[minmax(0,1fr)_86px] gap-2">
+              {renderHsnField()}
+              <div className="space-y-1">
+                <label className="block text-[11px] font-semibold text-gray-700">GST% *</label>
+                <input value={form.gst} readOnly className={`w-full rounded-md px-2 py-2 text-sm ${readOnlyClass}`} />
+              </div>
             </div>
 
             <div className="space-y-1">
@@ -1146,40 +1241,48 @@ function AddItemModal({ open, onClose, onSubmit, onSubmitAndPrint, rowCount = 0,
             </div>
           </div>
 
-          {/* ROW 2 - the three description/identity fields.
+          {/* ROW 2: Serial No. | Supplier Description | Print Description.
 
-              Serial No. is the SAME form.serialNo that used to open the Price
-              Calculation grid; it was moved here rather than duplicated, so it
-              keeps its auto-seeded value (rowCount + 1) and still feeds
-              billSlNo on the generated row. */}
-          {/* 5 tracks rather than 3: Serial No. holds a short running number
-              and does not need a third of the row, so it takes one track and
-              the two description fields - which hold real text - take two
-              each. Same total width, no change to the card. */}
-          <div className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-5">
-            <div className="space-y-1" style={{ maxWidth: '90px' }}>
-              <label className="block text-[11px] font-semibold text-gray-700">Serial No. *</label>
-              <input value={form.serialNo} onChange={(event) => updateField("serialNo", event.target.value)} className={`w-full rounded-md px-2 py-2 text-sm ${editableClass}`} />
-            </div>
+              Serial No. is pinned to 90px - it holds a short running number -
+              so the two descriptions take a half each of everything left. They
+              hold real supplier text and are the fields that most need width;
+              this is also why the page shell below dropped its second gutter,
+              which was costing the card 32px it could spend here. */}
+          <div className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-[90px_minmax(0,1fr)_minmax(0,1fr)]">
+            <LockedSerialField value={form.serialNo} readOnlyClass={readOnlyClass} />
 
-            <div className="space-y-1 md:col-span-2">
+            <div className="space-y-1">
               <label className="block text-[11px] font-semibold text-gray-700">Supplier Description</label>
-              <input value={form.supplierDescription} onChange={(event) => updateField("supplierDescription", event.target.value)} className={`w-full rounded-md px-2 py-2 text-sm ${editableClass}`} />
+              <input value={form.supplierDescription} title={form.supplierDescription} onChange={(event) => updateField("supplierDescription", event.target.value)} className={`w-full rounded-md px-2 py-2 text-sm ${editableClass}`} />
             </div>
 
-            <div className="space-y-1 md:col-span-2">
+            <div className="space-y-1">
               <label className="block text-[11px] font-semibold text-gray-700">Print Description</label>
-              <input value={form.printDescription} onChange={(event) => updateField("printDescription", event.target.value)} className={`w-full rounded-md px-2 py-2 text-sm ${editableClass}`} />
+              <input value={form.printDescription} title={form.printDescription} onChange={(event) => updateField("printDescription", event.target.value)} className={`w-full rounded-md px-2 py-2 text-sm ${editableClass}`} />
             </div>
           </div>
 
-          {/* ROW 3 */}
-          <div className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-5">
-            <div className="space-y-1 flex items-end md:col-span-2">
-              <label className="flex w-full items-center justify-start gap-3 rounded-md border border-[#dfe4eb] bg-white px-3 py-2 text-sm text-gray-700">
+          {/* ROW 3: Serial No. | HSN | Unique Barcode | MTR.
+
+              The second Serial No. and the second HSN are the SAME two values
+              as row 2 and row 1 - both serial boxes read form.serialNo and
+              both HSN boxes read form.hsnId / hsnLabel, so there is one value
+              behind each pair and no way for them to disagree. Nothing here
+              generates a second serial: the pair is two windows onto one
+              number, and neither window is writable. */}
+          <div className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-[90px_170px_230px_230px]">
+            <LockedSerialField value={form.serialNo} readOnlyClass={readOnlyClass} />
+
+            {renderHsnField()}
+
+            <div className="space-y-1 flex items-end">
+              <label className="flex w-full cursor-pointer items-center justify-start gap-3 rounded-md border border-[#dfe4eb] bg-white px-3 py-2 text-sm text-gray-700">
                 <input type="checkbox" checked={form.uniqueBarcode} onChange={(event) => updateField("uniqueBarcode", event.target.checked)} className="h-4 w-4 accent-[#0d5ddc]" /> Unique Barcode
               </label>
-              <label className="flex w-full items-center justify-start gap-3 rounded-md border border-[#dfe4eb] bg-white px-3 py-2 text-sm text-gray-700">
+            </div>
+
+            <div className="space-y-1 flex items-end">
+              <label className="flex w-full cursor-pointer items-center justify-start gap-3 rounded-md border border-[#dfe4eb] bg-white px-3 py-2 text-sm text-gray-700">
                 <input type="checkbox" checked={form.isMtr} onChange={(event) => {
                   const checked = event.target.checked;
                   updateField("isMtr", checked);
@@ -1201,9 +1304,7 @@ function AddItemModal({ open, onClose, onSubmit, onSubmitAndPrint, rowCount = 0,
           <div className="mt-5">
             <div className="mb-4 text-center text-[15px] font-bold uppercase tracking-wide underline decoration-[1.5px] underline-offset-4">Price Calculation</div>
 
-            {/* Serial No. used to lead this grid; it now lives in row 2, so
-                the track count drops 6 -> 5 to keep the row full instead of
-                leaving a gap where it was. */}
+            {/* Price Calculation grid */}
             <div className="grid grid-cols-1 gap-3 md:grid-cols-5">
               <div className="space-y-1">
                 <label className="block text-[11px] font-semibold text-gray-700">{form.isMtr ? "No. of Cuts *" : "Quantity *"}</label>
@@ -1296,7 +1397,7 @@ function AddItemModal({ open, onClose, onSubmit, onSubmitAndPrint, rowCount = 0,
             <div className="mt-4 grid grid-cols-1 gap-3 md:grid-cols-6">
               <div className="space-y-1">
                 <label className="block text-[11px] font-semibold text-gray-700">Markup RSP % *</label>
-                <input type="number" min={0} value={form.markupRSP} onWheel={(e) => e.currentTarget.blur()} onChange={(event) => updateMarkupValue("markupRSP", event.target.value)} className={`w-full rounded-md px-2 py-2 text-sm ${editableClass}`} />
+                <input type="text" inputMode="numeric" maxLength={2} value={form.markupRSP} onChange={(event) => updateMarkupValue("markupRSP", twoDigitPercent(event.target.value))} className={`w-full rounded-md px-2 py-2 text-sm ${editableClass}`} />
               </div>
               <div className="space-y-1">
                 <label className="block text-[11px] font-semibold text-gray-700">RSP Price *</label>
@@ -1324,7 +1425,7 @@ function AddItemModal({ open, onClose, onSubmit, onSubmitAndPrint, rowCount = 0,
             <div className="mt-4 grid grid-cols-1 gap-3 md:grid-cols-6">
               <div className="space-y-1">
                 <label className="block text-[11px] font-semibold text-gray-700">RSP Offer %</label>
-                <input type="number" min={0} value={form.rspOfferPct} onWheel={(e) => e.currentTarget.blur()} onChange={(event) => updateOfferValue("rspOfferPct", event.target.value)} className={`w-full rounded-md px-2 py-2 text-sm ${editableClass}`} />
+                <input type="text" inputMode="numeric" maxLength={2} value={form.rspOfferPct} onChange={(event) => updateOfferValue("rspOfferPct", twoDigitPercent(event.target.value))} className={`w-full rounded-md px-2 py-2 text-sm ${editableClass}`} />
               </div>
               <div className="space-y-1">
                 <label className="block text-[11px] font-semibold text-gray-700">RSP Offer Price</label>
@@ -1812,7 +1913,7 @@ export default function GCRBarcodeGeneration({ grcId = null, initialRows = [] })
   }
 
   return (
-    <div className="min-h-screen bg-gray-100 p-4 md:p-6">
+    <div className="min-h-screen bg-gray-100 px-2 py-4 md:py-6">
       <div className="flex items-center justify-between gap-4 pb-3">
         <div>
           <h1 className="text-xl font-semibold text-gray-800">GRC Barcode Generation</h1>
@@ -1985,7 +2086,7 @@ export default function GCRBarcodeGeneration({ grcId = null, initialRows = [] })
                 ) : validRows.map((row, index) => (
                   <tr key={row.id || index} className="odd:bg-white even:bg-gray-50">
                     <td className="border border-gray-300 px-2 py-2">{index + 1}</td>
-                    <td className="border border-gray-300 px-2 py-2">{row.itemCode || "-"} / {row.itemName || "-"} / {row.hsn || "-"} / {row.gst || "-"} / {row.uom || "-"}</td>
+                    <td className="border border-gray-300 px-2 py-2">{row.itemCode || "-"}</td>
                     <td className="border border-gray-300 px-2 py-2">{row.qty || "-"}</td>
                     <td className="border border-gray-300 px-2 py-2">{row.noOfCuts || "-"}</td>
                     <td className="border border-gray-300 px-2 py-2">{money(row.purchaseRate || 0)}</td>

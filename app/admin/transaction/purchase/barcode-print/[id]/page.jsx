@@ -239,7 +239,19 @@ export default function GrcBarcodePrintPage() {
         // 2 per row for now - the actual physical label size will come from
         // elsewhere later, per your note, so this grid isn't tuned to a
         // specific sticker sheet yet.
-        <div className="grid grid-cols-2 print:grid-cols-2">
+        /* print-doc is what makes this sheet survive printing at all.
+           globals.css hides every element on the page at print time
+           (body * { visibility: hidden }) and only un-hides .print-doc and
+           its children - that is how the sidebar, top bar and the Print
+           button are kept off the paper. Without the class the labels were
+           hidden along with everything else and the printout came out as a
+           blank page, even though the screen looked correct.
+
+           content-start goes with it: .print-doc is absolutely positioned
+           at inset 0, so the grid is as tall as the page and its rows would
+           otherwise stretch to fill it - one row of labels came out a full
+           page tall, with the cut line running the whole sheet. */
+        <div className="print-doc content-start grid grid-cols-2 print:grid-cols-2">
           {labels.map((r, i) => (
             <div
               key={r._id}

@@ -606,15 +606,47 @@ export default function TransactionFormView({ cfg, id, slug }) {
         body: JSON.stringify(payload),
       });
       const d = await r.json();
-      if (r.status === 422) { setErrors(d.errors || {}); setFlash({ type: 'err', msg: 'Please correct the highlighted fields.' }); return; }
-      if (!r.ok) { setFlash({ type: 'err', msg: d.error || 'Save failed' }); return; }
+      if (r.status === 422) {
+        setErrors(d.errors || {});
+        /* Build a human-readable summary from the field-level errors so the
+           operator knows exactly what to correct even on forms whose first
+           card is not a fields card (e.g. GRC Add, where the flash used to
+           be invisible because it was rendered only inside the first card). */
+        const messages = Object.values(d.errors || {}).filter(Boolean);
+        setFlash({
+          type: 'err',
+          msg: messages.length
+            ? messages.join(' • ')
+            : 'Please correct the highlighted fields.',
+        });
+        return;
+      }
+      if (!r.ok) {
+        setFlash({ type: 'err', msg: d.error || ('Save failed (' + r.status + ')') });
+        return;
+      }
       if (cfg.afterSaveBarcode && d.id) setSavedId(d.id);
       else router.push(listUrl);
-    } finally { setSaving(false); }
+    } catch (err) {
+      /* Network failure, JSON parse error, etc. — previously swallowed silently */
+      setFlash({ type: 'err', msg: err?.message || 'An unexpected error occurred. Please try again.' });
+    } finally {
+      setSaving(false);
+    }
   }
 
   return (
     <>
+      {/* Flash message lives here — outside the card map — so it always
+          renders regardless of which card type is first. Previously it was
+          only shown inside the first `fields` card, which meant it was
+          invisible on forms like GRC Add whose first card is `source`. */}
+      {flash && (
+        <div className={'flash ' + (flash.type === 'err' ? 'flash-err' : 'flash-ok')}>
+          {flash.msg}
+        </div>
+      )}
+
       {cards.map((card, i) => {
         if (card.type === 'fields') {
           return (
@@ -623,7 +655,6 @@ export default function TransactionFormView({ cfg, id, slug }) {
                 <div className="card-head"><span className="card-title">{cfg.form.title}</span></div>
               )}
               <div className="card-body">
-                {flash && i === 0 && <div className={'flash ' + (flash.type === 'err' ? 'flash-err' : 'flash-ok')}>{flash.msg}</div>}
                 <div className="form-grid-4">
                   {(card.fields || []).filter((f) => !f.visibleWhen || Object.entries(f.visibleWhen).every(([key, expected]) => data[key] === expected)).map((f) => (
                     <div key={f.k}>
@@ -767,6 +798,7 @@ export default function TransactionFormView({ cfg, id, slug }) {
             <div className="card" key={i}>
               <div className="card-body">
                 <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+                  <div>
                   <SourceSelect
                     card={card}
                     supplierId={data.supplierId}
@@ -827,6 +859,12 @@ export default function TransactionFormView({ cfg, id, slug }) {
                       });
                     }}
                   />
+                  {/* Inline validation error for required source fields
+                      (e.g. LR / Transaction Number on GRC Add) */}
+                  {card.sourceKey && errors[card.sourceKey] && (
+                    <p className="mt-1 text-[12px] text-red-600">{errors[card.sourceKey]}</p>
+                  )}
+                  </div>
                   {card.info && <InfoBox items={card.info} />}
                 </div>
               </div>

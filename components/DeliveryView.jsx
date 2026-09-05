@@ -546,7 +546,7 @@ function ViewDialog({ row, labels, onClose }) {
    above and passed in, so one Search applies to both. */
 function DeliveryGrid({
   status, title, emptyText, applied, business, location, finYear,
-  refreshKey, onView, onEdit, onAdd, onChanged,
+  refreshKey, onView, onEdit, onAdd, onChanged, showAdd = true,
 }) {
   const [state, setState] = useState({ rows: [], labels: {}, page: 1, pages: 1, total: 0 });
   const [search, setSearch] = useState('');
@@ -636,7 +636,8 @@ function DeliveryGrid({
           }
           search={search}
           onSearch={setSearch}
-          {...(onAdd ? { onAdd } : {})}
+          {...(onAdd && showAdd ? { onAdd } : {})}
+          showAdd={showAdd}
           onExportCsv={() => download(fileBase + '.csv', toCsv(exportHeaders(), exportRows()), 'text/csv')}
           onExportExcel={() =>
             download(fileBase + '.xls', toXlsHtml(title, exportHeaders(), exportRows()),
@@ -774,6 +775,7 @@ export default function DeliveryView() {
           status="completed"
           title="Completed Goods Received"
           emptyText="No completed goods received records found."
+          showAdd={false}
         />
       </div>
     </>
