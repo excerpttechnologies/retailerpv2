@@ -1,7 +1,7 @@
 /* Tab + section layout for Suppliers.
    Production Details removed on request - Basic / Purchase / Financial only. */
 
-export const TABS = [
+const RAW_TABS = [
     {
       "key": "basic",
       "label": "Basic Information",
@@ -631,6 +631,50 @@ export const TABS = [
       ]
     }
   ];
+
+/* The five wizard steps.
+
+   Derived from RAW_TABS rather than retyped: the Basic Information tab always
+   held three blocks - identity, Billing Details, Shipping Details - and the
+   wizard just promotes each block to a step of its own. Splitting it here
+   means the field definitions above stay the single source of truth, so a
+   field added to a section shows up in its step with no second edit.
+
+   Purchase and Financial follow unchanged as steps 4 and 5. Nothing is
+   dropped: /api/supplier flattens THIS array to build its validation field
+   list, so a step that lost its fields would silently stop validating them.
+
+   The section titles are kept even though they now repeat the step name - the
+   grey section header is where the "Same as Billing Address" toggle lives. */
+const SHIPPING_TITLE = 'Shipping Details';
+const BILLING_TITLE = 'Billing Details';
+
+export const TABS = (() => {
+  const basic = RAW_TABS.find((t) => t.key === 'basic');
+  const rest = RAW_TABS.filter((t) => t.key !== 'basic');
+  const sections = basic?.sections || [];
+  const billing = sections.filter((s) => s.title === BILLING_TITLE);
+  const shipping = sections.filter((s) => s.title === SHIPPING_TITLE);
+  const identity = sections.filter((s) => s.title !== BILLING_TITLE && s.title !== SHIPPING_TITLE);
+
+  /* If the Basic tab is ever restructured and these blocks stop matching,
+     fall back to the original tabs rather than rendering an empty step. */
+  if (!basic || !billing.length || !shipping.length || !identity.length) return RAW_TABS;
+
+  return [
+    { key: 'basic', label: 'Basic Details', sections: identity },
+    { key: 'billing', label: 'Billing Details', sections: billing },
+    { key: 'shipping', label: 'Shipping Details', sections: shipping },
+    ...rest,
+  ];
+})();
+
+/* k -> label for every supplier field, so the import preview can name a row
+   the way the form does instead of showing the raw key. */
+export const FIELD_LABELS = Object.fromEntries(
+  TABS.flatMap((t) => (t.sections || []).flatMap((s) => (s.fields || [])))
+    .map((f) => [f.k, f.label || f.k]),
+);
 
   export const AGENT_QUICK_FIELDS = [
     { k: 'typeId', label: 'Type', type: 'ref', ref: 'contact-type-agent', req: true },

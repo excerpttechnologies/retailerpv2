@@ -112,6 +112,18 @@ export const FORM = {
             "ref": "agent"
           },
           {
+            "k": "freightMode",
+            "label": "Freight",
+            "type": "select",
+            "opts": [
+              { "v": "Before Tax", "l": "Before Tax" },
+              { "v": "After Tax", "l": "After Tax" },
+              { "v": "N/A", "l": "N/A" }
+            ],
+            "disabledWhen": { "freightMode": "N/A" },
+            "unlockable": true
+          },
+          {
             "k": "stockPointName",
             "label": "Stock Point",
             "type": "text",
@@ -131,16 +143,6 @@ export const FORM = {
             "type": "text",
             "placeholder": "Enter waybill number or scan barcode"
           },
-          {
-            "k": "freightMode",
-            "label": "Freight",
-            "type": "select",
-            "opts": [
-              { "v": "Before Tax", "l": "Before Tax" },
-              { "v": "After Tax", "l": "After Tax" },
-              { "v": "N/A", "l": "N/A" }
-            ]
-          }
         ]
       },
       {

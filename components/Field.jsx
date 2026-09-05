@@ -539,7 +539,7 @@ export default function Field({ f, value, error, onChange, onOptionChange, selec
 
     case 'select':
       control = (
-        <select className="f-input" value={value ?? ''} onChange={(e) => set(e.target.value)}>
+        <select className="f-input" value={value ?? ''} disabled={f.readOnly || f.disabled} onChange={(e) => set(e.target.value)}>
           <option value="">{f.placeholder || 'Select...'}</option>
           {(f.opts || []).map((o) => <option key={o.v} value={o.v}>{o.l}</option>)}
         </select>

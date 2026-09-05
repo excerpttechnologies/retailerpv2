@@ -44,16 +44,29 @@ const exportFieldLabels = {
   printDescription: "Print Description",
   rsp: "RSP",
   wsp: "WSP",
-  dp: "DP",
+  dp: "E-COMM",
   offerPrice: "Offer Price",
   wspPrice: "WSP Offer Price",
-  dpPrice: "DP Offer Price",
+  dpPrice: "E-COMM Offer Price",
   rspOfferPct: "RSP Offer %",
   wspOfferPct: "WSP Offer %",
-  dpOfferPct: "DP Offer %",
+  dpOfferPct: "E-COMM Offer %",
   markupRSP: "Markup RSP %",
   markupWSP: "Markup WSP %",
-  markupDP: "Markup DP %",
+  markupDP: "Markup E-COMM %",
+};
+
+/* These four columns were exported under "DP ..." before the label became
+   E-COMM. A workbook exported back then is still a perfectly good file to
+   import today, so the old headings keep resolving to the same keys. Without
+   this they would stop matching, fall through to customFields, and the three
+   E-COMM prices would silently arrive empty - which reads as lost data, not
+   as a rename. The keys are unchanged; only what the heading says moved. */
+const legacyExportHeaders = {
+  "DP": "dp",
+  "DP Offer Price": "dpPrice",
+  "DP Offer %": "dpOfferPct",
+  "Markup DP %": "markupDP",
 };
 
 const normalizeExportHeader = (value) => String(value || "").trim().toLowerCase().replace(/[^a-z0-9]/g, "");
@@ -68,7 +81,10 @@ function readExcelFile(file) {
         const sheetRows = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: "", raw: false });
         const headers = (sheetRows.shift() || []).map((header) => String(header || "").trim());
         if (headers.length === 0) throw new Error("The Excel file does not contain a header row.");
-        const headerMap = new Map(Object.entries(exportFieldLabels).map(([key, label]) => [normalizeExportHeader(label), key]));
+        const headerMap = new Map([
+          ...Object.entries(legacyExportHeaders).map(([label, key]) => [normalizeExportHeader(label), key]),
+          ...Object.entries(exportFieldLabels).map(([key, label]) => [normalizeExportHeader(label), key]),
+        ]);
         const rows = sheetRows.map((values) => headers.reduce((result, header, index) => {
           const value = values[index] ?? "";
           const key = headerMap.get(normalizeExportHeader(header));
@@ -235,7 +251,7 @@ function emptyRow(id) {
     totalMtr: "",
     purchaseRate: "",
     discountType: "Percentage",
-    discount: "5",
+    discount: "0",
     finalPrice: "",
     retailPrice: "",
     disc1: "",
@@ -415,56 +431,35 @@ function SearchSelect({ placeholder, value, label, onSearch, options, loading, o
 
 /* Serial No., rendered TWICE - once in row 2, once in row 3.
 
-   It is a component rather than copied JSX for one reason: both boxes must
-   show the same number and both must be locked the same way, and two copies of
-   this markup would eventually drift. Both call sites pass the one
-   form.serialNo, so the pair is two windows onto a single value - there is no
-   second serial, and nothing here can generate one.
+   ONE value, two windows. Both call sites pass form.serialNo and write back
+   through the same handler, so typing in either box updates the other and
+   there is no way for the pair to disagree. It is a component rather than
+   copied JSX so the two can never drift apart.
 
-   The number is GENERATED, never typed: seeded to rowCount + 1 when the form
-   opens and advanced by incrementSerial() after every submit. A hand-edit
-   could only put it out of step with the rows already in the grid, and two
-   rows carrying the same serial cannot be told apart afterwards.
+   Editable: the number is seeded from the row count and advanced by
+   incrementSerial() after every submit, but the operator has the final say -
+   a GRC that continues a supplier's existing run has to be able to start
+   where that run left off.
 
-   readOnly is the real guard - it blocks typing, paste, cut and delete at the
-   browser level. The handlers below only close the gaps it leaves: a caret
-   keystroke reaching a click-focused box, a drop, and a scroll over it. Tab
-   and Ctrl/Cmd combinations are let through, so focus can still leave the box
-   and the value can still be copied. The last
-   line of defence is not here at all: AddItemModal's updateField refuses the
-   serialNo key outright, so no handler anywhere can write it. */
-function LockedSerialField({ value, readOnlyClass }) {
+   Digits only. Stripping anything else on the way in is what makes "positive
+   whole number" true by construction: a minus sign, a decimal point or a
+   pasted "12abc" never reach state, so there is no invalid value for the
+   submit check to catch later. Empty IS allowed while typing - clearing the
+   box to retype it is normal - and submit() rejects a blank one. */
+function SerialNoField({ value, onChange, editableClass }) {
   return (
     <div className="max-w-[110px] space-y-1 xl:max-w-none">
       <label className="block text-[11px] font-semibold text-gray-700">Serial No. *</label>
-      <div className="relative">
-        <input
-          value={value}
-          readOnly
-          tabIndex={-1}
-          aria-readonly="true"
-          title="Serial No. is generated automatically"
-          onKeyDown={(event) => { if (event.key !== "Tab" && !event.ctrlKey && !event.metaKey) event.preventDefault(); }}
-          onPaste={(event) => event.preventDefault()}
-          onCut={(event) => event.preventDefault()}
-          onDrop={(event) => event.preventDefault()}
-          onWheel={(event) => event.currentTarget.blur()}
-          className={`w-full cursor-not-allowed rounded-md px-2 py-2 pr-7 text-sm ${readOnlyClass}`}
-        />
-        <svg
-          viewBox="0 0 24 24"
-          aria-hidden="true"
-          className="pointer-events-none absolute right-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-gray-400"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="2"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-        >
-          <rect x="5" y="11" width="14" height="9" rx="2" />
-          <path d="M8 11V8a4 4 0 0 1 8 0v3" />
-        </svg>
-      </div>
+      <input
+        value={value ?? ""}
+        inputMode="numeric"
+        aria-label="Serial No."
+        placeholder="1"
+        onChange={(event) => onChange(event.target.value)}
+        /* a scroll over a focused box must not nudge the number */
+        onWheel={(event) => event.currentTarget.blur()}
+        className={`w-full rounded-md px-2 py-2 text-sm ${editableClass}`}
+      />
     </div>
   );
 }
@@ -477,7 +472,7 @@ function AddItemModal({ open, onClose, onSubmit, onSubmitAndPrint, rowCount = 0,
     itemLabel: "",
     hsnId: "",
     hsn: "",
-    gst: "5",
+    gst: "0",
     goodsType: "",
     /* the vendor's own wording for the goods. Was previously never a form
        field - the generated row just copied itemName into it - so it is
@@ -491,7 +486,7 @@ function AddItemModal({ open, onClose, onSubmit, onSubmitAndPrint, rowCount = 0,
     totalMtr: "",
     purchaseRate: "",
     discountType: "Percentage",
-    discount: "5",
+    discount: "0",
     finalPrice: "0.00",
     markupRSP: 100,
     rspPrice: "0.00",
@@ -642,15 +637,11 @@ function AddItemModal({ open, onClose, onSubmit, onSubmitAndPrint, rowCount = 0,
 
   if (!open) return null;
 
-  /* Serial No. is generated, never entered. Refusing the key here - rather
-     than only marking the two inputs readOnly - means no handler, no future
-     field and no stray call can put a UI value into it. The generator still
-     writes it: createBlankForm seeds it and the post-submit reset advances
-     it, and both go through setForm directly, not through here. */
-  const updateField = (key, value) => {
-    if (key === "serialNo") return;
-    setForm((current) => ({ ...current, [key]: value }));
-  };
+  const updateField = (key, value) => setForm((current) => ({ ...current, [key]: value }));
+
+  /* Both Serial No. boxes come through here, which is why they stay in step.
+     See SerialNoField for why the digits are stripped rather than validated. */
+  const updateSerialNo = (raw) => updateField("serialNo", String(raw ?? "").replace(/\D/g, ""));
 
   /* HSN appears in row 1 and again in row 3. Both call this, so both read
      the same form.hsnId / hsnLabel and both go through handleHsnSelection -
@@ -713,7 +704,7 @@ function AddItemModal({ open, onClose, onSubmit, onSubmitAndPrint, rowCount = 0,
     setForm((current) => ({ ...current, hsn: code, hsnId: hsnDoc?.value || current.hsnId }));
 
     if (!taxId) {
-      setForm((current) => ({ ...current, gst: "5" }));
+      setForm((current) => ({ ...current, gst: "0" }));
       return;
     }
 
@@ -721,10 +712,10 @@ function AddItemModal({ open, onClose, onSubmit, onSubmitAndPrint, rowCount = 0,
       const response = await fetch(`/api/tax/${taxId}`);
       const payload = await response.json();
       const taxRecord = payload?.doc || payload || {};
-      const gstValue = Number(taxRecord.igst ?? taxRecord.cgst ?? taxRecord.sgst ?? taxRecord.gst ?? 5);
-      setForm((current) => ({ ...current, gst: String(gstValue || 5) }));
+      const gstValue = Number(taxRecord.igst ?? taxRecord.cgst ?? taxRecord.sgst ?? taxRecord.gst ?? 0);
+      setForm((current) => ({ ...current, gst: String(gstValue || 0) }));
     } catch (error) {
-      setForm((current) => ({ ...current, gst: "5" }));
+      setForm((current) => ({ ...current, gst: "0" }));
     }
   };
 
@@ -735,7 +726,7 @@ function AddItemModal({ open, onClose, onSubmit, onSubmitAndPrint, rowCount = 0,
     setForm((current) => ({
       ...current,
       itemId: "", itemCode: "", itemName: "", itemLabel: "",
-      hsnId: "", hsn: "", gst: "5",
+      hsnId: "", hsn: "", gst: "0",
       printDescription: "", supplierDescription: "", subGroupName: "", groupName: "",
     }));
   };
@@ -844,7 +835,7 @@ function AddItemModal({ open, onClose, onSubmit, onSubmitAndPrint, rowCount = 0,
   const handleHsnSelection = async (opt) => {
     if (!opt) {
       setHsnLabel('');
-      setForm((current) => ({ ...current, hsnId: "", hsn: "", gst: "5" }));
+      setForm((current) => ({ ...current, hsnId: "", hsn: "", gst: "0" }));
       return;
     }
     setHsnLabel(opt.code || opt.primaryLabel || "");
@@ -868,7 +859,7 @@ function AddItemModal({ open, onClose, onSubmit, onSubmitAndPrint, rowCount = 0,
      "> 99" test is needed: two digits IS 0-99, and the slice enforces it
      before the value is ever parsed.
 
-     Deliberately scoped to these two fields only - Markup WSP %, Markup DP %,
+     Deliberately scoped to these two fields only - Markup WSP %, Markup E-COMM %,
      Discount and GST% are untouched and still accept their existing range. */
   const twoDigitPercent = (raw) => String(raw ?? "").replace(/\D/g, "").slice(0, 2);
   const updateMarkupValue = (key, value) => {
@@ -1012,8 +1003,15 @@ function AddItemModal({ open, onClose, onSubmit, onSubmitAndPrint, rowCount = 0,
       setReserveError("Barcode not found. Please enter or scan a valid barcode.");
       return;
     }
-    if (!String(form.serialNo ?? "").trim()) {
+    /* the field only ever holds digits, so "not a number" cannot get here -
+       what is left to check is that it is present and not zero */
+    const serialEntered = String(form.serialNo ?? "").trim();
+    if (!serialEntered) {
       setReserveError("Serial No. is required.");
+      return;
+    }
+    if (Number(serialEntered) < 1) {
+      setReserveError("Serial No. must be 1 or more.");
       return;
     }
     if (!form.itemName?.trim()) return;
@@ -1249,7 +1247,7 @@ function AddItemModal({ open, onClose, onSubmit, onSubmitAndPrint, rowCount = 0,
               this is also why the page shell below dropped its second gutter,
               which was costing the card 32px it could spend here. */}
           <div className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-[90px_minmax(0,1fr)_minmax(0,1fr)]">
-            <LockedSerialField value={form.serialNo} readOnlyClass={readOnlyClass} />
+            <SerialNoField value={form.serialNo} onChange={updateSerialNo} editableClass={editableClass} />
 
             <div className="space-y-1">
               <label className="block text-[11px] font-semibold text-gray-700">Supplier Description</label>
@@ -1271,7 +1269,7 @@ function AddItemModal({ open, onClose, onSubmit, onSubmitAndPrint, rowCount = 0,
               generates a second serial: the pair is two windows onto one
               number, and neither window is writable. */}
           <div className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-[90px_170px_230px_230px]">
-            <LockedSerialField value={form.serialNo} readOnlyClass={readOnlyClass} />
+            <SerialNoField value={form.serialNo} onChange={updateSerialNo} editableClass={editableClass} />
 
             {renderHsnField()}
 
@@ -1412,11 +1410,11 @@ function AddItemModal({ open, onClose, onSubmit, onSubmitAndPrint, rowCount = 0,
                 <input type="number" step="0.01" min={0} value={form.wspPrice} onWheel={(e) => e.currentTarget.blur()} onChange={(event) => updateMarkupValue("wspPrice", event.target.value)} className={`w-full rounded-md px-2 py-2 text-sm ${editableClass}`} />
               </div>
               <div className="space-y-1">
-                <label className="block text-[11px] font-semibold text-gray-700">Markup DP % *</label>
+                <label className="block text-[11px] font-semibold text-gray-700">Markup E-COMM % *</label>
                 <input type="number" min={0} value={form.markupDP} onWheel={(e) => e.currentTarget.blur()} onChange={(event) => updateMarkupValue("markupDP", event.target.value)} className={`w-full rounded-md px-2 py-2 text-sm ${editableClass}`} />
               </div>
               <div className="space-y-1">
-                <label className="block text-[11px] font-semibold text-gray-700">DP Price *</label>
+                <label className="block text-[11px] font-semibold text-gray-700">E-COMM Price *</label>
                 <input type="number" step="0.01" min={0} value={form.dpPrice} onWheel={(e) => e.currentTarget.blur()} onChange={(event) => updateMarkupValue("dpPrice", event.target.value)} className={`w-full rounded-md px-2 py-2 text-sm ${editableClass}`} />
               </div>
             </div>
@@ -1440,11 +1438,11 @@ function AddItemModal({ open, onClose, onSubmit, onSubmitAndPrint, rowCount = 0,
                 <input type="number" step="0.01" min={0} value={form.wspOfferPrice} onWheel={(e) => e.currentTarget.blur()} onChange={(event) => updateOfferValue("wspOfferPrice", event.target.value)} className={`w-full rounded-md px-2 py-2 text-sm ${editableClass}`} />
               </div>
               <div className="space-y-1">
-                <label className="block text-[11px] font-semibold text-gray-700">DP Offer %</label>
+                <label className="block text-[11px] font-semibold text-gray-700">E-COMM Offer %</label>
                 <input type="number" min={0} value={form.dpOfferPct} onWheel={(e) => e.currentTarget.blur()} onChange={(event) => updateOfferValue("dpOfferPct", event.target.value)} className={`w-full rounded-md px-2 py-2 text-sm ${editableClass}`} />
               </div>
               <div className="space-y-1">
-                <label className="block text-[11px] font-semibold text-gray-700">DP Offer Price</label>
+                <label className="block text-[11px] font-semibold text-gray-700">E-COMM Offer Price</label>
                 <input type="number" step="0.01" min={0} value={form.dpOfferPrice} onWheel={(e) => e.currentTarget.blur()} onChange={(event) => updateOfferValue("dpOfferPrice", event.target.value)} className={`w-full rounded-md px-2 py-2 text-sm ${editableClass}`} />
               </div>
             </div>
@@ -2073,7 +2071,7 @@ export default function GCRBarcodeGeneration({ grcId = null, initialRows = [] })
                   <th className="border border-gray-300 px-2 py-2">Net Amount</th>
                   <th className="border border-gray-300 px-2 py-2">RSP</th>
                   <th className="border border-gray-300 px-2 py-2">WSP</th>
-                  <th className="border border-gray-300 px-2 py-2">DP</th>
+                  <th className="border border-gray-300 px-2 py-2">E-COMM</th>
                   <th className="border border-gray-300 px-2 py-2">Variant</th>
                   <th className="border border-gray-300 px-2 py-2">Barcode No</th>
                   {additionalFields.map((field) => <th key={field} className="border border-gray-300 px-2 py-2">{field}</th>)}

@@ -1,5 +1,5 @@
 'use client';
-import { useEffect, useState } from 'react';
+import { Fragment, useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import Icon from './Icon';
 import Field from './Field';
@@ -62,6 +62,66 @@ export default function TabbedFormView({ cfg, id, slug, onSaved }) {
   }, [id, slugPath]);
 
   const set = (k, v) => { setData((d) => ({ ...d, [k]: v })); setErrors((e) => ({ ...e, [k]: undefined })); };
+
+  /* WIZARD MODE - opt in with cfg.wizard.
+
+     Without it this component behaves exactly as it always has: a tab strip,
+     a Submit on every tab, and a save on each one. Customer, Agent and the
+     supplier dialog embedded in the LR screen all rely on that, so the old
+     path is left untouched and the new behaviour is switched on per page.
+
+     With it: Next validates the current step and moves on WITHOUT saving, and
+     the only Submit is on the last step. `data` was already one shared state
+     across all tabs, so stepping back and forth cannot lose anything. */
+  const wizard = cfg.wizard === true;
+  const isLastStep = active === tabs.length - 1;
+
+  /* Required fields of ONE step. Deliberately not the whole form: Next must
+     not complain about a field two steps ahead that the user has not reached.
+     The full check still happens server-side on Submit, and the 422 handler
+     below jumps to whichever step holds the offending field. */
+  function validateStep(index) {
+    const t = tabs[index];
+    if (!t) return {};
+    const found = {};
+    (t.sections || []).forEach((s) => (s.fields || []).forEach((fld) => {
+      if (!fld.req) return;
+      if (cfg.isFieldVisible && !cfg.isFieldVisible(fld, data)) return;
+      const v = data[fld.k];
+      const empty = v === undefined || v === null
+        || (Array.isArray(v) ? v.length === 0 : String(v).trim() === '');
+      if (empty) found[fld.k] = (fld.label || fld.k) + ' is required.';
+    }));
+    return found;
+  }
+
+  function goNext() {
+    const found = validateStep(active);
+    if (Object.keys(found).length) {
+      setErrors((e) => ({ ...e, ...found }));
+      setFlash({ type: 'err', msg: 'Please complete the highlighted fields before continuing.' });
+      return;
+    }
+    setFlash(null);
+    setActive((a) => Math.min(a + 1, tabs.length - 1));
+  }
+
+  function goBack() {
+    /* no validation on the way back - the point of Back is to fix something */
+    setFlash(null);
+    setActive((a) => Math.max(a - 1, 0));
+  }
+
+  /* Used by the import panel: merge reviewed values into the shared state.
+     Only the keys the operator ticked arrive here, so a field they typed by
+     hand and did not tick is not in the patch and is left alone. */
+  function applyPatch(patch, source) {
+    const keys = Object.keys(patch || {});
+    if (!keys.length) return;
+    setData((d) => ({ ...d, ...patch }));
+    setErrors((e) => { const next = { ...e }; keys.forEach((k) => { next[k] = undefined; }); return next; });
+    setFlash({ type: 'ok', msg: `${keys.length} field${keys.length === 1 ? '' : 's'} filled from ${source}. Nothing is saved until you Submit on the last step.` });
+  }
 
   useEffect(() => {
     if (!cfg.gstLookup || recordId || !String(data.gstNo || '').trim()) {
@@ -140,7 +200,7 @@ export default function TabbedFormView({ cfg, id, slug, onSaved }) {
         return;
       }
       setRecordId(d.id);
-      if (active === tabs.length - 1) {
+      if (wizard || active === tabs.length - 1) {
         /* embedded in a dialog: hand the new record back rather than leaving
            the page the caller was in the middle of */
         if (onSaved) onSaved(d);
@@ -176,24 +236,65 @@ export default function TabbedFormView({ cfg, id, slug, onSaved }) {
           --tab-count custom property, with the rule in globals.css: a
           dynamically built `md:grid-cols-${n}` class would never be generated,
           since there is no Tailwind safelist in this project. */}
-      <div className="tabstrip border-b border-line" style={{ '--tab-count': tabs.length }}>
-        {tabs.map((t, i) => (
-          <button
-            key={t.key}
-            type="button"
-            onClick={() => setActive(i)}
-            className={
-              'py-3 text-center text-[13.5px] ' +
-              (i === active ? 'bg-brand font-bold text-white' : 'bg-white text-brand-link hover:bg-[#f5f8fd]')
-            }
-          >
-            {t.label}
-          </button>
-        ))}
-      </div>
+      {wizard ? (
+        /* Numbered steps with arrows between them, so the operator can see
+           where they are and how many are left. Clicking a step still jumps
+           to it - that is what the tab strip did before, and on an edit page
+           being made to click Next four times to reach the bank details would
+           be worse than useless. Next is what validates; jumping does not. */
+        <div className="flex flex-wrap items-center gap-y-2 border-b border-line bg-white px-3 py-2.5">
+          {tabs.map((t, i) => (
+            <Fragment key={t.key}>
+              {i > 0 && <span aria-hidden="true" className="px-1.5 text-inkmuted">&rarr;</span>}
+              <button
+                type="button"
+                onClick={() => { setFlash(null); setActive(i); }}
+                aria-current={i === active ? 'step' : undefined}
+                className={
+                  'flex items-center gap-2 rounded-md px-3 py-1.5 text-[13px] '
+                  + (i === active
+                    ? 'bg-brand font-bold text-white'
+                    : 'border border-line bg-white text-brand-link hover:bg-[#f5f8fd]')
+                }
+              >
+                <span
+                  className={
+                    'flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-[11px] font-bold '
+                    + (i === active ? 'bg-white text-brand' : 'bg-[#eef2f8] text-inkmuted')
+                  }
+                >
+                  {i + 1}
+                </span>
+                {t.label}
+              </button>
+            </Fragment>
+          ))}
+        </div>
+      ) : (
+        <div className="tabstrip border-b border-line" style={{ '--tab-count': tabs.length }}>
+          {tabs.map((t, i) => (
+            <button
+              key={t.key}
+              type="button"
+              onClick={() => setActive(i)}
+              className={
+                'py-3 text-center text-[13.5px] ' +
+                (i === active ? 'bg-brand font-bold text-white' : 'bg-white text-brand-link hover:bg-[#f5f8fd]')
+              }
+            >
+              {t.label}
+            </button>
+          ))}
+        </div>
+      )}
 
       <div className="card-body">
         {flash && <div className={'flash ' + (flash.type === 'err' ? 'flash-err' : 'flash-ok')}>{flash.msg}</div>}
+
+        {/* Per-step extras supplied by the page - the supplier form puts its
+            GST / Excel import panel on step 1 through here, so this component
+            stays unaware of anything supplier-specific. */}
+        {cfg.renderStepExtras?.({ tab, index: active, data, applyPatch })}
 
         {(tab.sections || []).map((s, si) => (
           <div key={si} className="mb-4">
@@ -276,9 +377,33 @@ export default function TabbedFormView({ cfg, id, slug, onSaved }) {
           </div>
         ))}
 
-        <button type="button" className="btn btn-primary mt-2 flex h-[38px] w-full max-w-[390px] justify-center" onClick={submit} disabled={saving || gstChecking || !!gstMatch}>
-          {saving ? <span className="spin" /> : <Icon name="save" size={14} />} Submit
-        </button>
+        {wizard ? (
+          /* Exactly one Submit in the whole flow, and it is on the last step.
+             Next never touches the API - it only validates and advances - so
+             an abandoned wizard leaves no half-written supplier behind, which
+             is what the per-tab save used to do. */
+          <div className="mt-4 flex items-center gap-2 border-t border-line pt-4">
+            {active > 0 && (
+              <button type="button" className="btn" onClick={goBack} disabled={saving}>
+                <Icon name="back" size={14} /> Back
+              </button>
+            )}
+            <span className="flex-1" />
+            {isLastStep ? (
+              <button type="button" className="btn btn-primary flex h-[38px] min-w-[160px] justify-center" onClick={submit} disabled={saving || gstChecking || !!gstMatch}>
+                {saving ? <span className="spin" /> : <Icon name="save" size={14} />} Submit
+              </button>
+            ) : (
+              <button type="button" className="btn btn-primary flex h-[38px] min-w-[160px] justify-center" onClick={goNext} disabled={saving}>
+                Next <span aria-hidden="true">&rarr;</span>
+              </button>
+            )}
+          </div>
+        ) : (
+          <button type="button" className="btn btn-primary mt-2 flex h-[38px] w-full max-w-[390px] justify-center" onClick={submit} disabled={saving || gstChecking || !!gstMatch}>
+            {saving ? <span className="spin" /> : <Icon name="save" size={14} />} Submit
+          </button>
+        )}
       </div>
       </div>
     </>

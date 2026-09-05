@@ -267,7 +267,16 @@ function Totals({ card, data, onChange }) {
   );
 }
 
-function VoucherSection({ card, rows, onChange, onAdd, onRemove }) {
+/* The Freight value that means "no freight on this document". Named because
+   it is checked in three places - the header lock, the voucher Freight column
+   and the total - and a bare "N/A" in each would be three chances to typo. */
+const FREIGHT_NONE = 'N/A';
+
+/* Derived columns. Read-only in the table: the figures come from Taxable, the
+   HSN rate and Freight, and letting someone type over them is exactly how a
+   voucher stops reconciling with its own lines. */
+const VOUCHER_COMPUTED = new Set(['taxAmount', 'totalAmount']);
+function VoucherSection({ card, rows, onChange, onAdd, onRemove, rates = {}, freightLocked = false }) {
   const number = (value) => Number(value) || 0;
   const totals = rows.reduce((result, row) => ({
     invoiceQty: result.invoiceQty + number(row.invoiceQty),
@@ -291,17 +300,36 @@ function VoucherSection({ card, rows, onChange, onAdd, onRemove }) {
           <tbody>
             {rows.map((row, index) => (
               <tr key={index}>
-                {card.fields.map((field) => (
-                  <td key={field.k} className="min-w-[150px]">
-                    <input
-                      type={field.type === 'number' ? 'number' : 'text'}
-                      className="f-input"
-                      value={row[field.k] ?? ''}
-                      onChange={(event) => onChange(index, field.k, event.target.value)}
-                      onWheel={(e) => e.currentTarget.blur()}
-                    />
-                  </td>
-                ))}
+                {card.fields.map((field) => {
+                  const computed = VOUCHER_COMPUTED.has(field.k);
+                  /* Freight follows the header: N/A there means no freight
+                     anywhere, so the column locks at 0 rather than quietly
+                     accepting a number that the totals would then ignore. */
+                  const lockedFreight = freightLocked && field.k === 'freightAmount';
+                  const readOnly = computed || lockedFreight;
+                  const rate = field.k === 'hsnCode' ? rates[String(row.hsnCode || '').trim()] : undefined;
+                  return (
+                    <td key={field.k} className="min-w-[150px]">
+                      <input
+                        type={field.type === 'number' ? 'number' : 'text'}
+                        className={'f-input' + (readOnly ? ' cursor-not-allowed bg-[#f3f5f9] text-inkmuted' : '')}
+                        value={row[field.k] ?? ''}
+                        readOnly={readOnly}
+                        tabIndex={readOnly ? -1 : undefined}
+                        title={computed ? 'Calculated automatically' : (lockedFreight ? 'Freight is N/A on this document' : undefined)}
+                        onChange={readOnly ? undefined : (event) => onChange(index, field.k, event.target.value)}
+                        onWheel={(e) => e.currentTarget.blur()}
+                      />
+                      {/* the rate is why Tax Amount reads what it reads - without
+                          it an unmatched HSN just shows 0.00 with no explanation */}
+                      {field.k === 'hsnCode' && String(row.hsnCode || '').trim().length >= 4 && (
+                        <div className="mt-0.5 text-[11px] text-inkmuted">
+                          {rate === undefined ? 'Looking up rate...' : rate === null ? 'No tax rate on this HSN' : `GST ${rate}%`}
+                        </div>
+                      )}
+                    </td>
+                  );
+                })}
                 <td>
                   <button type="button" className="act-btn bg-danger" onClick={() => onRemove(index)} disabled={rows.length === 1}>
                     <Icon name="x" size={12} />
@@ -485,6 +513,102 @@ export default function TransactionFormView({ cfg, id, slug }) {
   const [quickAddTarget, setQuickAddTarget] = useState(null);
   const [quickAddNonce, setQuickAddNonce] = useState(0);
 
+  /* A field with `disabledWhen` locks itself once its condition holds - the
+     Freight selector does this at "N/A", so a choice that switches off the
+     freight columns below cannot be nudged afterwards by a stray click. It is
+     a guard rail, not a one-way door: `unlockable` puts an Unlock button next
+     to it. Resetting or reloading the form clears this, since the state lives
+     with the form. */
+  const [unlocked, setUnlocked] = useState({});
+  const isLocked = (f) => Boolean(
+    f.disabledWhen
+    && !unlocked[f.k]
+    && Object.entries(f.disabledWhen).every(([key, expected]) => data[key] === expected)
+  );
+  /* AUTO-CALCULATED VOUCHER ROWS.
+
+     Tax Amount and Total Amount are derived, never typed:
+       Tax Amount   = Taxable x rate / 100      (rate from the HSN master)
+       Total Amount = Taxable + Tax Amount + Freight
+     Both inputs are read-only in the table, so a hand-typed figure cannot
+     drift away from the numbers the rest of the document is built from.
+
+     The rate is resolved the same way the barcode screen does it: /api/hsn to
+     find the code, then /api/tax/<id> for the slab. Results are cached per
+     code in a ref - the effect re-runs on every keystroke, and without the
+     cache each one would be two more requests. Codes shorter than four
+     characters are skipped: they are half-typed, not real HSN codes. */
+  const hsnRateCache = useRef(new Map());
+  const [hsnRates, setHsnRates] = useState({});
+  const freightLocked = data.freightMode === FREIGHT_NONE;
+
+  useEffect(() => {
+    if (!voucherCard) return undefined;
+    const codes = Array.from(new Set(
+      voucherRows.map((row) => String(row.hsnCode || '').trim()).filter((c) => c.length >= 4)
+    )).filter((code) => !hsnRateCache.current.has(code));
+    if (!codes.length) return undefined;
+
+    let cancelled = false;
+    /* claim them before awaiting, so a re-render mid-flight does not refetch */
+    codes.forEach((code) => hsnRateCache.current.set(code, undefined));
+
+    Promise.all(codes.map(async (code) => {
+      try {
+        const hsnResponse = await fetch('/api/hsn?perPage=20&search=' + encodeURIComponent(code));
+        const hsnPayload = await hsnResponse.json();
+        const rows = hsnPayload.rows || [];
+        /* the search is a contains-match, so prefer the exact code */
+        const match = rows.find((r) => String(r.code || '').trim() === code) || rows[0];
+        const taxId = match?.taxSlabs?.[0]?.gstTaxNameId;
+        if (!taxId) return [code, null];
+        const taxResponse = await fetch('/api/tax/' + taxId);
+        const taxPayload = await taxResponse.json();
+        const doc = taxPayload.doc || {};
+        /* IGST when it is set, otherwise CGST + SGST, which is the same total */
+        const split = Number(doc.cgst || 0) + Number(doc.sgst || 0);
+        const rate = Number(doc.igst) || split || Number(doc.gst) || 0;
+        return [code, rate > 0 ? rate : null];
+      } catch {
+        return [code, null];
+      }
+    })).then((pairs) => {
+      if (cancelled) return;
+      pairs.forEach(([code, rate]) => hsnRateCache.current.set(code, rate));
+      setHsnRates((current) => ({ ...current, ...Object.fromEntries(pairs) }));
+    });
+
+    return () => { cancelled = true; };
+  }, [voucherRows, voucherCard]);
+
+  /* Recompute after anything that feeds the formulas: a Taxable edit, an HSN
+     code, a rate arriving, the Freight mode, a row added or removed.
+
+     Writing back into voucherRows rather than only rendering the numbers is
+     deliberate - submit() sends voucherRows, so a display-only total would
+     save blank. The identity guard below returns the SAME array when nothing
+     moved, which is what stops this from looping: React bails out of a state
+     update that returns the current reference. */
+  useEffect(() => {
+    if (!voucherCard) return;
+    setVoucherRows((current) => {
+      let changed = false;
+      const next = current.map((row) => {
+        const rate = hsnRates[String(row.hsnCode || '').trim()];
+        const taxable = Number(row.taxableValue) || 0;
+        const freightValue = freightLocked ? '0' : (row.freightAmount ?? '');
+        const freight = Number(freightValue) || 0;
+        const tax = rate ? Math.round(taxable * rate) / 100 : 0;
+        const taxAmount = tax.toFixed(2);
+        const totalAmount = (taxable + tax + freight).toFixed(2);
+        if (row.taxAmount === taxAmount && row.totalAmount === totalAmount && row.freightAmount === freightValue) return row;
+        changed = true;
+        return { ...row, taxAmount, totalAmount, freightAmount: freightValue };
+      });
+      return changed ? next : current;
+    });
+  }, [voucherRows, hsnRates, freightLocked, voucherCard]);
+
   useEffect(() => {
     if (!id) return;
     fetch(cfg.endpoint + '/' + id)
@@ -660,7 +784,7 @@ export default function TransactionFormView({ cfg, id, slug }) {
                     <div key={f.k}>
                       <Field 
                         key={f.k + '-' + quickAddNonce} 
-                        f={f} 
+                        f={isLocked(f) ? { ...f, disabled: true } : f} 
                         value={data[f.k]} 
                         error={errors[f.k]} 
                         onChange={set} 
@@ -671,6 +795,15 @@ export default function TransactionFormView({ cfg, id, slug }) {
                         }}
                         selectedOption={selectedOptions[f.k]}
                       />
+                      {isLocked(f) && f.unlockable && (
+                        <button
+                          type="button"
+                          className="mt-1 text-[12px] font-semibold text-brand-link hover:underline"
+                          onClick={() => setUnlocked((current) => ({ ...current, [f.k]: true }))}
+                        >
+                          Locked - click to unlock
+                        </button>
+                      )}
                       {(cfg.quickAdds?.[f.k] || (cfg.quickAdd?.field === f.k ? cfg.quickAdd : null)) && (
                         <button type="button" className="btn btn-primary mt-2" onClick={() => { setQuickAddTarget(f.k); setQuickAddOpen(true); }}>
                           <Icon name="plus" size={13} /> {(cfg.quickAdds?.[f.k] || cfg.quickAdd).label}
@@ -768,6 +901,8 @@ export default function TransactionFormView({ cfg, id, slug }) {
               key={i}
               card={card}
               rows={voucherRows}
+              rates={hsnRates}
+              freightLocked={freightLocked}
               onChange={updateVoucherRow}
               onAdd={() => setVoucherRows((rows) => [
                 ...rows,

@@ -271,7 +271,14 @@ export async function GET(req) {
     });
   }
 
-  /* Available LR for GRC - returns deliveries with full supplier details */
+  /* Available LR for GRC - returns only deliveries that have NOT yet had a
+     GRC raised against them.
+
+     One LR → one GRC is enforced by the POST handler, so the moment a GRC
+     is created its lrTransactionId appears in the GRC collection and the
+     delivery must leave this dropdown.  Without this exclusion every
+     already-converted LR kept showing here, letting the operator attempt to
+     raise a second GRC and only finding out at submit time. */
   if (sp.get('availableLr') === '1') {
     const deliveryFilter = {};
     const business = sp.get('business');
@@ -279,6 +286,20 @@ export async function GET(req) {
     if (business && isValidObjectId(business)) deliveryFilter.businessId = business;
     if (location && isValidObjectId(location)) deliveryFilter.locationId = location;
     if (sp.get('finYear')) deliveryFilter.finYear = sp.get('finYear');
+
+    /* Collect every delivery ID that already has a GRC.  Scoped to the same
+       business/location/finYear so two tenants never interfere with each
+       other.  $ne: null ensures rows with a null lrTransactionId (which
+       should not exist but may in older data) are not accidentally matched. */
+    const usedGrcs = await Grc.find({
+      ...(deliveryFilter.businessId ? { businessId: deliveryFilter.businessId } : {}),
+      ...(deliveryFilter.locationId ? { locationId: deliveryFilter.locationId } : {}),
+      ...(deliveryFilter.finYear   ? { finYear:   deliveryFilter.finYear }   : {}),
+      lrTransactionId: { $ne: null },
+    }).select('lrTransactionId').lean();
+
+    const usedIds = usedGrcs.map((g) => g.lrTransactionId).filter(Boolean);
+    if (usedIds.length) deliveryFilter._id = { $nin: usedIds };
 
     const rows = await Delivery.find(deliveryFilter)
       .sort({ createdAt: -1 })
