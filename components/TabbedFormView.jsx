@@ -1,5 +1,5 @@
 'use client';
-import { Fragment, useEffect, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import Icon from './Icon';
 import Field from './Field';
@@ -37,7 +37,12 @@ export default function TabbedFormView({ cfg, id, slug, onSaved }) {
 
   const [data, setData] = useState(() => {
     const d = {};
-    allFields.forEach((f) => { d[f.k] = f.def !== undefined ? f.def : (f.type === 'checkbox' ? false : ''); });
+    /* a composite (`f.parts`) holds nothing of its own - see joinParts below -
+       so it is kept out of the state and therefore out of the payload */
+    allFields.forEach((f) => {
+      if (f.parts) return;
+      d[f.k] = f.def !== undefined ? f.def : (f.type === 'checkbox' ? false : '');
+    });
     tabs.forEach((t) => (t.sections || []).forEach((s) => { if (s.toggle) d[s.toggle.k] = false; }));
     return d;
   });
@@ -63,16 +68,54 @@ export default function TabbedFormView({ cfg, id, slug, onSaved }) {
 
   const set = (k, v) => { setData((d) => ({ ...d, [k]: v })); setErrors((e) => ({ ...e, [k]: undefined })); };
 
-  /* WIZARD MODE - opt in with cfg.wizard.
+  /* COMPOSITE FIELDS - opt in with `parts` on a field.
 
-     Without it this component behaves exactly as it always has: a tab strip,
-     a Submit on every tab, and a save on each one. Customer, Agent and the
-     supplier dialog embedded in the LR screen all rely on that, so the old
-     path is left untouched and the new behaviour is switched on per page.
+     One input standing in for two real columns: Address over
+     billingAddressLine1 + billingAddressLine2. Nothing new is stored and no
+     schema changes - the value shown is joined from the parts on every
+     render and split back into them on every keystroke, so the payload, the
+     API field list and the collection keep the exact keys they always had.
 
-     With it: Next validates the current step and moves on WITHOUT saving, and
-     the only Submit is on the last step. `data` was already one shared state
-     across all tabs, so stepping back and forth cannot lose anything. */
+     The parts stay in the tab definition marked `hidden`, which is what keeps
+     them in the API's field list while taking their inputs off the form. A
+     form that declares no `parts` anywhere (Customers) never reaches any of
+     this. */
+  const PART_SEP = ', ';
+  const joinParts = (f) => (f.parts || [])
+    .map((k) => String(data[k] ?? '').trim())
+    .filter(Boolean)
+    .join(PART_SEP);
+
+  /* Split on the FIRST separator only. That makes the round trip stable:
+     "Shop 5" + "Ring Road, Surat" shows as "Shop 5, Ring Road, Surat" and
+     comes back apart exactly as it went in, so opening a supplier and saving
+     without touching the address rewrites the same two values it read. */
+  function setParts(f, v) {
+    const [head, tail] = f.parts;
+    const text = String(v);
+    const at = text.indexOf(PART_SEP);
+    const patch = at === -1
+      ? { [head]: text, [tail]: '' }
+      : { [head]: text.slice(0, at), [tail]: text.slice(at + PART_SEP.length) };
+    setData((d) => ({ ...d, ...patch }));
+    setErrors((e) => ({ ...e, [f.k]: undefined, [head]: undefined, [tail]: undefined }));
+  }
+
+  /* STEP FLOW - opt in with cfg.wizard.
+
+     Only the footer changes. The tab strip above stays exactly as it is, so
+     the page keeps the look it shares with every other contact form; what
+     this switches is Submit-on-every-tab for Next / Back+Next / Back+Submit.
+
+     Without it the component behaves as it always has: a Submit on each tab
+     that saves that tab. The Agent form and the supplier dialog embedded in
+     the LR screen both rely on that, so the old path is left untouched and
+     the new behaviour is switched on per page.
+
+     With it: Next validates the current step and moves on WITHOUT saving, so
+     the API is called once, from Submit on the last step. `data` is one
+     shared state across all tabs, so stepping back and forth cannot lose
+     anything. */
   const wizard = cfg.wizard === true;
   const isLastStep = active === tabs.length - 1;
 
@@ -87,6 +130,9 @@ export default function TabbedFormView({ cfg, id, slug, onSaved }) {
     (t.sections || []).forEach((s) => (s.fields || []).forEach((fld) => {
       if (!fld.req) return;
       if (cfg.isFieldVisible && !cfg.isFieldVisible(fld, data)) return;
+      /* the server drops this requirement for the same callers, so the client
+         must not block on a field the API would have accepted blank */
+      if (fld.k === 'firstName' && cfg.allowBlankFirstName === true) return;
       const v = data[fld.k];
       const empty = v === undefined || v === null
         || (Array.isArray(v) ? v.length === 0 : String(v).trim() === '');
@@ -112,6 +158,21 @@ export default function TabbedFormView({ cfg, id, slug, onSaved }) {
     setActive((a) => Math.max(a - 1, 0));
   }
 
+  /* Every step at once, for Submit. Steps the operator skipped by clicking
+     the tab strip have never been through goNext, so without this the only
+     thing standing between them and a 422 is the server. Returns the first
+     failing step so the form can land them on it. */
+  function validateAll() {
+    const found = {};
+    let firstBad = -1;
+    tabs.forEach((_, i) => {
+      const step = validateStep(i);
+      if (Object.keys(step).length && firstBad === -1) firstBad = i;
+      Object.assign(found, step);
+    });
+    return { found, firstBad };
+  }
+
   /* Used by the import panel: merge reviewed values into the shared state.
      Only the keys the operator ticked arrive here, so a field they typed by
      hand and did not tick is not in the patch and is left alone. */
@@ -120,7 +181,7 @@ export default function TabbedFormView({ cfg, id, slug, onSaved }) {
     if (!keys.length) return;
     setData((d) => ({ ...d, ...patch }));
     setErrors((e) => { const next = { ...e }; keys.forEach((k) => { next[k] = undefined; }); return next; });
-    setFlash({ type: 'ok', msg: `${keys.length} field${keys.length === 1 ? '' : 's'} filled from ${source}. Nothing is saved until you Submit on the last step.` });
+    setFlash({ type: 'ok', msg: `${keys.length} field${keys.length === 1 ? '' : 's'} filled from ${source}. Review them, then Submit.` });
   }
 
   useEffect(() => {
@@ -174,6 +235,17 @@ export default function TabbedFormView({ cfg, id, slug, onSaved }) {
   }
 
   async function submit() {
+    /* the whole form, before anything is sent. The server still re-checks -
+       this only saves a round trip and lands the operator on the right tab. */
+    if (wizard) {
+      const { found, firstBad } = validateAll();
+      if (firstBad >= 0) {
+        setErrors((e) => ({ ...e, ...found }));
+        setActive(firstBad);
+        setFlash({ type: 'err', msg: 'Please complete the highlighted fields before submitting.' });
+        return;
+      }
+    }
     setSaving(true); setFlash(null);
     try {
       /* contactKind is NOT sent - the API stamps it server-side so the
@@ -236,57 +308,21 @@ export default function TabbedFormView({ cfg, id, slug, onSaved }) {
           --tab-count custom property, with the rule in globals.css: a
           dynamically built `md:grid-cols-${n}` class would never be generated,
           since there is no Tailwind safelist in this project. */}
-      {wizard ? (
-        /* Numbered steps with arrows between them, so the operator can see
-           where they are and how many are left. Clicking a step still jumps
-           to it - that is what the tab strip did before, and on an edit page
-           being made to click Next four times to reach the bank details would
-           be worse than useless. Next is what validates; jumping does not. */
-        <div className="flex flex-wrap items-center gap-y-2 border-b border-line bg-white px-3 py-2.5">
-          {tabs.map((t, i) => (
-            <Fragment key={t.key}>
-              {i > 0 && <span aria-hidden="true" className="px-1.5 text-inkmuted">&rarr;</span>}
-              <button
-                type="button"
-                onClick={() => { setFlash(null); setActive(i); }}
-                aria-current={i === active ? 'step' : undefined}
-                className={
-                  'flex items-center gap-2 rounded-md px-3 py-1.5 text-[13px] '
-                  + (i === active
-                    ? 'bg-brand font-bold text-white'
-                    : 'border border-line bg-white text-brand-link hover:bg-[#f5f8fd]')
-                }
-              >
-                <span
-                  className={
-                    'flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-[11px] font-bold '
-                    + (i === active ? 'bg-white text-brand' : 'bg-[#eef2f8] text-inkmuted')
-                  }
-                >
-                  {i + 1}
-                </span>
-                {t.label}
-              </button>
-            </Fragment>
-          ))}
-        </div>
-      ) : (
-        <div className="tabstrip border-b border-line" style={{ '--tab-count': tabs.length }}>
-          {tabs.map((t, i) => (
-            <button
-              key={t.key}
-              type="button"
-              onClick={() => setActive(i)}
-              className={
-                'py-3 text-center text-[13.5px] ' +
-                (i === active ? 'bg-brand font-bold text-white' : 'bg-white text-brand-link hover:bg-[#f5f8fd]')
-              }
-            >
-              {t.label}
-            </button>
-          ))}
-        </div>
-      )}
+      <div className="tabstrip border-b border-line" style={{ '--tab-count': tabs.length }}>
+        {tabs.map((t, i) => (
+          <button
+            key={t.key}
+            type="button"
+            onClick={() => { setFlash(null); setActive(i); }}
+            className={
+              'py-3 text-center text-[13.5px] ' +
+              (i === active ? 'bg-brand font-bold text-white' : 'bg-white text-brand-link hover:bg-[#f5f8fd]')
+            }
+          >
+            {t.label}
+          </button>
+        ))}
+      </div>
 
       <div className="card-body">
         {flash && <div className={'flash ' + (flash.type === 'err' ? 'flash-err' : 'flash-ok')}>{flash.msg}</div>}
@@ -327,16 +363,22 @@ export default function TabbedFormView({ cfg, id, slug, onSaved }) {
                     : 'form-grid-4'
               }
             >
-              {(s.fields || []).filter((f) => !cfg.isFieldVisible || cfg.isFieldVisible(f, data)).map((f) => {
+              {(s.fields || []).filter((f) => !f.hidden && (!cfg.isFieldVisible || cfg.isFieldVisible(f, data))).map((f) => {
                 const add = cfg.quickAdds?.[f.k];
+                /* cfg.isFieldReadOnly is the sibling of cfg.isFieldVisible:
+                   the page decides, this component only asks. The Supplier
+                   form uses it to freeze the GST-registered billing address.
+                   A page that supplies neither hook is unaffected. */
+                const locked = cfg.isFieldReadOnly?.(f, data) === true;
+                const shown = locked ? { ...f, readOnly: true } : f;
                 return (
                   <div key={f.k} className={add ? 'flex items-end gap-1.5' : ''}>
                     <div className={add ? 'min-w-0 flex-1' : ''}>
                       <Field
-                        f={f}
-                        value={data[f.k]}
-                        error={errors[f.k]}
-                        onChange={set}
+                        f={shown}
+                        value={f.parts ? joinParts(f) : data[f.k]}
+                        error={f.parts ? (errors[f.k] || f.parts.map((k) => errors[k]).find(Boolean)) : errors[f.k]}
+                        onChange={f.parts ? ((_k, v) => setParts(f, v)) : set}
                         onOptionChange={(option) => {
                           const patch = cfg.onOptionChange?.(f, option, data) || {};
                           setData((current) => ({
@@ -359,7 +401,7 @@ export default function TabbedFormView({ cfg, id, slug, onSaved }) {
                         </button>
                       )}
                     </div>
-                    {add && (
+                    {add && !locked && (
                       <button
                         type="button"
                         title={add.label || 'Add'}

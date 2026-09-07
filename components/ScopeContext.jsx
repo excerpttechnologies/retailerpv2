@@ -88,6 +88,15 @@ const ScopeContext = createContext(null);
 
 export const FIN_YEARS = ['2026-2027', '2025-2026', '2024-2025', '2023-2024'];
 
+/* Both selections are remembered by _id, never by name or list position: two
+   branches can share a name and the list order shifts as branches are added
+   or renamed, so anything but the id eventually resolves to the wrong row.
+   Location is keyed per business - a location exists only inside one branch,
+   and a single shared key meant switching branch overwrote the location the
+   previous branch had been left on. */
+const BUSINESS_KEY = 'orbit.business';
+const locationKey = (businessId) => 'orbit.location.' + businessId;
+
 export function ScopeProvider({ children }) {
   const [businesses, setBusinesses] = useState([]);
   const [locations, setLocations] = useState([]);
@@ -126,15 +135,21 @@ export function ScopeProvider({ children }) {
       .then((d) => {
         const list = d.options || [];
         setBusinesses(list);
-        /* Every load starts on the main branch. /api/options flags it with
-           isDefault and sorts it first; the fallback only matters on a
-           database that hasn't been seeded, where no branch is marked main.
+        /* The branch the operator last selected wins, looked up by id in
+           the list that just came back. This provider is mounted by the
+           /admin layout, so it remounts on every hard load - a refresh, or
+           the redirect out of /login - and with no restore step each of those
+           silently re-selected the main branch. Switching to any other branch
+           therefore looked like it reverted on its own.
 
-           The previously remembered choice is deliberately not restored -
-           without that, the selector opened on whichever business sorted
-           first alphabetically. */
+           Only then the main branch: /api/options flags it with isDefault and
+           sorts it first, which is the right landing place on a first visit.
+           list[0] is the last resort, for a database where no branch carries
+           the flag. */
+        const saved = localStorage.getItem(BUSINESS_KEY);
+        const remembered = list.find((o) => o.value === saved)?.value;
         const main = list.find((o) => o.isDefault);
-        setBusiness(main?.value || list[0]?.value || '');
+        setBusiness(remembered || main?.value || list[0]?.value || '');
       })
       .catch(() => {})
       .finally(() => setBusinessReady(true));
@@ -147,7 +162,7 @@ export function ScopeProvider({ children }) {
       .then((d) => {
         const list = d.options || [];
         setLocations(list);
-        const saved = localStorage.getItem('orbit.location');
+        const saved = localStorage.getItem(locationKey(business));
         
         /* Auto-select TEMPLE FABRICS WAREHOUSE on first load, but allow
            switching to other locations. The saved location is restored if
@@ -169,7 +184,17 @@ export function ScopeProvider({ children }) {
       .finally(() => setLocationsFor(business));
   }, [business]);
 
-  useEffect(() => { if (location) localStorage.setItem('orbit.location', location); }, [location]);
+  useEffect(() => { if (business) localStorage.setItem(BUSINESS_KEY, business); }, [business]);
+
+  /* Only once the list for THIS business has settled. On the render right
+     after a branch change `location` still holds the previous branch's value,
+     and writing that under the new branch's key would remember a location
+     that does not belong to it. */
+  useEffect(() => {
+    if (business && location && locationsFor === business) {
+      localStorage.setItem(locationKey(business), location);
+    }
+  }, [business, location, locationsFor]);
 
   const value = {
     user,

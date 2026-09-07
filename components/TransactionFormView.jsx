@@ -272,19 +272,21 @@ function Totals({ card, data, onChange }) {
    and the total - and a bare "N/A" in each would be three chances to typo. */
 const FREIGHT_NONE = 'N/A';
 
-/* Derived columns. Read-only in the table: the figures come from Taxable, the
-   HSN rate and Freight, and letting someone type over them is exactly how a
-   voucher stops reconciling with its own lines. */
+/* Derived columns. They are normally read-only, except when Freight is N/A,
+  where the operator may enter the tax and total amounts manually. */
 const VOUCHER_COMPUTED = new Set(['taxAmount', 'totalAmount']);
 function VoucherSection({ card, rows, onChange, onAdd, onRemove, rates = {}, freightLocked = false }) {
   const number = (value) => Number(value) || 0;
-  const totals = rows.reduce((result, row) => ({
-    invoiceQty: result.invoiceQty + number(row.invoiceQty),
-    taxableValue: result.taxableValue + number(row.taxableValue),
-    taxAmount: result.taxAmount + number(row.taxAmount),
-    totalAmount: result.totalAmount + number(row.totalAmount),
-    freightAmount: result.freightAmount + number(row.freightAmount),
-  }), { invoiceQty: 0, taxableValue: 0, taxAmount: 0, totalAmount: 0, freightAmount: 0 });
+  /* Summed per column key rather than as a fixed list, so the Total row is
+     driven by the same card.fields the header and the body are. The old
+     version listed the five figures in a hardcoded order, which meant
+     reordering a column silently printed one column's total under another's
+     heading. The sums themselves are unchanged - every numeric column, added
+     down the rows. */
+  const totals = (card.fields || []).reduce((result, field) => {
+    if (field.type === 'number') result[field.k] = rows.reduce((sum, row) => sum + number(row[field.k]), 0);
+    return result;
+  }, {});
 
   return (
     <div className="card">
@@ -302,11 +304,12 @@ function VoucherSection({ card, rows, onChange, onAdd, onRemove, rates = {}, fre
               <tr key={index}>
                 {card.fields.map((field) => {
                   const computed = VOUCHER_COMPUTED.has(field.k);
+                  const manualAmount = freightLocked && computed;
                   /* Freight follows the header: N/A there means no freight
                      anywhere, so the column locks at 0 rather than quietly
                      accepting a number that the totals would then ignore. */
                   const lockedFreight = freightLocked && field.k === 'freightAmount';
-                  const readOnly = computed || lockedFreight;
+                  const readOnly = (computed && !manualAmount) || lockedFreight;
                   const rate = field.k === 'hsnCode' ? rates[String(row.hsnCode || '').trim()] : undefined;
                   return (
                     <td key={field.k} className="min-w-[150px]">
@@ -316,7 +319,7 @@ function VoucherSection({ card, rows, onChange, onAdd, onRemove, rates = {}, fre
                         value={row[field.k] ?? ''}
                         readOnly={readOnly}
                         tabIndex={readOnly ? -1 : undefined}
-                        title={computed ? 'Calculated automatically' : (lockedFreight ? 'Freight is N/A on this document' : undefined)}
+                        title={manualAmount ? 'Enter manually when Freight is N/A' : (computed ? 'Calculated automatically' : (lockedFreight ? 'Freight is N/A on this document' : undefined))}
                         onChange={readOnly ? undefined : (event) => onChange(index, field.k, event.target.value)}
                         onWheel={(e) => e.currentTarget.blur()}
                       />
@@ -339,13 +342,17 @@ function VoucherSection({ card, rows, onChange, onAdd, onRemove, rates = {}, fre
             ))}
           </tbody>
           <tfoot>
+            {/* one cell per column, in column order: the first carries the
+                "Total" caption, every numeric column carries its own sum, and
+                the last empty cell lines up under Delete */}
             <tr>
-              <th>Total</th>
-              <th>{totals.invoiceQty.toFixed(2)}</th>
-              <th>{totals.taxableValue.toFixed(2)}</th>
-              <th>{totals.taxAmount.toFixed(2)}</th>
-              <th>{totals.totalAmount.toFixed(2)}</th>
-              <th>{totals.freightAmount.toFixed(2)}</th>
+              {card.fields.map((field, columnIndex) => (
+                <th key={field.k}>
+                  {columnIndex === 0
+                    ? 'Total'
+                    : (totals[field.k] === undefined ? '' : totals[field.k].toFixed(2))}
+                </th>
+              ))}
               <th />
             </tr>
           </tfoot>
@@ -598,6 +605,11 @@ export default function TransactionFormView({ cfg, id, slug }) {
         const taxable = Number(row.taxableValue) || 0;
         const freightValue = freightLocked ? '0' : (row.freightAmount ?? '');
         const freight = Number(freightValue) || 0;
+        if (freightLocked) {
+          if (row.freightAmount === freightValue) return row;
+          changed = true;
+          return { ...row, freightAmount: freightValue };
+        }
         const tax = rate ? Math.round(taxable * rate) / 100 : 0;
         const taxAmount = tax.toFixed(2);
         const totalAmount = (taxable + tax + freight).toFixed(2);

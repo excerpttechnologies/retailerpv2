@@ -1,7 +1,14 @@
-/* Tab + section layout for Suppliers.
-   Production Details removed on request - Basic / Purchase / Financial only. */
+/* Tab + section layout for Suppliers - the same three-tab shape the Customer
+   form uses: Basic Information (identity + Billing + Shipping), Purchase
+   Details, Financial Details. Production Details removed on request.
 
-const RAW_TABS = [
+   TabbedFormView renders this as a tab strip with a Submit on each tab, which
+   is the original behaviour and the one Contacts > Customers still uses.
+
+   /api/supplier flattens THIS array to build its validation field list, so a
+   section that lost its fields would silently stop validating them. */
+
+export const TABS = [
     {
       "key": "basic",
       "label": "Basic Information",
@@ -88,30 +95,152 @@ const RAW_TABS = [
               "ph": true,
               "type": "date"
             },
+            /* Constitution of Business on the GST portal. Same options and
+               same key as the Customer form, so the two contact types spell a
+               proprietorship the same way. Added at the END of this section
+               deliberately: dropped in beside GST NO it would push Business
+               Name onto the next grid row, and those fields were to keep the
+               positions they have. */
+            {
+              "k": "businessType",
+              "label": "Business Type",
+              "type": "select",
+              "placeholder": "--Select--",
+              "opts": [
+                { "v": "Un-Registered", "l": "Un-Registered" },
+                { "v": "Proprietorship", "l": "Proprietorship" },
+                { "v": "Partnership", "l": "Partnership" },
+                { "v": "Private Limited", "l": "Private Limited" },
+                { "v": "Public Limited", "l": "Public Limited" },
+                { "v": "LLP", "l": "LLP" },
+                { "v": "HUF", "l": "HUF" },
+                { "v": "Trust", "l": "Trust" },
+                { "v": "Individual", "l": "Individual" },
+                /* the constitutions the portal returns that none of the above
+                   covers - Government Department, Statutory Body, Foreign
+                   Company and the like - land here rather than being forced
+                   into a shape they are not */
+                { "v": "Others", "l": "Others" }
+              ]
+            }
+          ]
+        },
+        /* ------------------------------------------------------------------
+           GST Details - everything the GST portal prints about the
+           registration itself. Its own section rather than extra fields in
+           the identity block above, so nothing that was already on this form
+           moves; it sits directly under GST NO's row, which is where the
+           brief asked for it.
+
+           Four of these are read-only badges: they are the portal's answer,
+           not the operator's, and typing over them would only make the record
+           disagree with the registration. They show a dash until a GST paste
+           fills them. Additional Trade Name is a plain editable field - the
+           portal often has none, and the operator may know it.
+
+           The two jurisdiction offices have no field of their own. They are
+           stored with the supplier (hidden, so they stay in the API's field
+           list) instead of being read and thrown away. */
+        {
+          "title": "GST Details",
+          "fields": [
+            {
+              "k": "gstRegDate",
+              "label": "GST Registration Date",
+              "type": "date"
+            },
+            {
+              "k": "gstStatus",
+              "label": "GST Status",
+              "type": "badge"
+            },
+            {
+              "k": "gstTaxpayerType",
+              "label": "Taxpayer Type",
+              "type": "badge"
+            },
+            {
+              "k": "gstAadhaarAuthenticated",
+              "label": "Aadhaar Authenticated",
+              "type": "badge"
+            },
+            {
+              "k": "gstEkycVerified",
+              "label": "e-KYC Verified",
+              "type": "badge"
+            },
+            {
+              "k": "additionalTradeName",
+              "label": "Additional Trade Name",
+              "type": "text",
+              "span": 2
+            },
+            {
+              "k": "gstAdministrativeOffice",
+              "label": "GST Administrative Office",
+              "type": "text",
+              "hidden": true
+            },
+            {
+              "k": "gstOtherOffice",
+              "label": "GST Other Office",
+              "type": "text",
+              "hidden": true
+            }
           ]
         },
         {
           "title": "Billing Details",
           "fields": [
+            /* One Address input over the two columns the collection has always
+               had. `parts` makes TabbedFormView join them for display and
+               split them back on edit; the two entries below stay in the tab
+               definition - and so in the API's field list - but `hidden`
+               takes their inputs off the form. No schema change, no new key
+               in the payload. */
+            {
+              "k": "billingAddress",
+              "label": "Address",
+              "ph": true,
+              /* a textarea, not a one-line box: a full street address runs
+                 past what a single line can show, and .f-textarea is the
+                 project's own control - no new styling, and it resizes. */
+              "type": "textarea",
+              /* span 3 of the section's 4 tracks - a full street address needs
+                 the room, and City still flows onto the same row. Collapses to
+                 the full width of the 2-track md grid and to one column below
+                 that, so nothing has to scroll sideways. */
+              "span": 3,
+              "parts": ["billingAddressLine1", "billingAddressLine2"]
+            },
             {
               "k": "billingAddressLine1",
               "label": "Address line 1",
               "ph": true,
               "type": "text",
-              "span": 2
+              "hidden": true
             },
             {
               "k": "billingAddressLine2",
               "label": "Address line 2",
               "ph": true,
               "type": "text",
-              "span": 2
+              "hidden": true
             },
             {
               "k": "billingCity",
               "label": "City",
               "ph": true,
               "type": "city"
+            },
+            /* The registered address names a district as well as a city, and
+               the collection has always had a column for it. Free text, not
+               the city dropdown: there is no district master to pick from. */
+            {
+              "k": "billingDistrict",
+              "label": "District",
+              "ph": true,
+              "type": "text"
             },
             {
               "k": "billingState",
@@ -133,7 +262,8 @@ const RAW_TABS = [
               "fill": {
                 "city": "billingCity",
                 "state": "billingState",
-                "country": "billingCountry"
+                "country": "billingCountry",
+                "district": "billingDistrict"
               }
             },
             {
@@ -188,19 +318,40 @@ const RAW_TABS = [
             "label": "Same as Billing Address"
           },
           "fields": [
+            /* One Address input over the two columns the collection has always
+               had. `parts` makes TabbedFormView join them for display and
+               split them back on edit; the two entries below stay in the tab
+               definition - and so in the API's field list - but `hidden`
+               takes their inputs off the form. No schema change, no new key
+               in the payload. */
+            {
+              "k": "shippingAddress",
+              "label": "Address",
+              "ph": true,
+              /* a textarea, not a one-line box: a full street address runs
+                 past what a single line can show, and .f-textarea is the
+                 project's own control - no new styling, and it resizes. */
+              "type": "textarea",
+              /* span 3 of the section's 4 tracks - a full street address needs
+                 the room, and City still flows onto the same row. Collapses to
+                 the full width of the 2-track md grid and to one column below
+                 that, so nothing has to scroll sideways. */
+              "span": 3,
+              "parts": ["shippingAddressLine1", "shippingAddressLine2"]
+            },
             {
               "k": "shippingAddressLine1",
               "label": "Address line 1",
               "ph": true,
               "type": "text",
-              "span": 2
+              "hidden": true
             },
             {
               "k": "shippingAddressLine2",
               "label": "Address line 2",
               "ph": true,
               "type": "text",
-              "span": 2
+              "hidden": true
             },
             {
               "k": "shippingCity",
@@ -632,42 +783,7 @@ const RAW_TABS = [
     }
   ];
 
-/* The five wizard steps.
 
-   Derived from RAW_TABS rather than retyped: the Basic Information tab always
-   held three blocks - identity, Billing Details, Shipping Details - and the
-   wizard just promotes each block to a step of its own. Splitting it here
-   means the field definitions above stay the single source of truth, so a
-   field added to a section shows up in its step with no second edit.
-
-   Purchase and Financial follow unchanged as steps 4 and 5. Nothing is
-   dropped: /api/supplier flattens THIS array to build its validation field
-   list, so a step that lost its fields would silently stop validating them.
-
-   The section titles are kept even though they now repeat the step name - the
-   grey section header is where the "Same as Billing Address" toggle lives. */
-const SHIPPING_TITLE = 'Shipping Details';
-const BILLING_TITLE = 'Billing Details';
-
-export const TABS = (() => {
-  const basic = RAW_TABS.find((t) => t.key === 'basic');
-  const rest = RAW_TABS.filter((t) => t.key !== 'basic');
-  const sections = basic?.sections || [];
-  const billing = sections.filter((s) => s.title === BILLING_TITLE);
-  const shipping = sections.filter((s) => s.title === SHIPPING_TITLE);
-  const identity = sections.filter((s) => s.title !== BILLING_TITLE && s.title !== SHIPPING_TITLE);
-
-  /* If the Basic tab is ever restructured and these blocks stop matching,
-     fall back to the original tabs rather than rendering an empty step. */
-  if (!basic || !billing.length || !shipping.length || !identity.length) return RAW_TABS;
-
-  return [
-    { key: 'basic', label: 'Basic Details', sections: identity },
-    { key: 'billing', label: 'Billing Details', sections: billing },
-    { key: 'shipping', label: 'Shipping Details', sections: shipping },
-    ...rest,
-  ];
-})();
 
 /* k -> label for every supplier field, so the import preview can name a row
    the way the form does instead of showing the raw key. */

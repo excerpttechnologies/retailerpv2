@@ -15,6 +15,19 @@ const ContactSchema = new mongoose.Schema(
     contactType2: { type: String, default: "Individual" },
     businessName: { type: String, default: '' },
     shortName: { type: String, default: '' },
+    /* Read off the GST portal's taxpayer result and kept as the portal
+       printed it - Active / Cancelled, Regular / Composition, Yes / No. They
+       are stored so the registration a supplier was accepted on can still be
+       seen later; nothing computes from them. The two jurisdiction offices
+       have no field on the form at all and are held only as a record of what
+       the search returned. */
+    additionalTradeName: { type: String, default: '' },
+    gstStatus: { type: String, default: '' },
+    gstTaxpayerType: { type: String, default: '' },
+    gstAadhaarAuthenticated: { type: String, default: '' },
+    gstEkycVerified: { type: String, default: '' },
+    gstAdministrativeOffice: { type: String, default: '' },
+    gstOtherOffice: { type: String, default: '' },
     prefix: { type: String, default: "Mr." },
     firstName: { type: String, default: '' },
     middleName: { type: String, default: '' },

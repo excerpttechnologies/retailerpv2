@@ -431,38 +431,69 @@ function SearchSelect({ placeholder, value, label, onSearch, options, loading, o
 
 /* Serial No., rendered TWICE - once in row 2, once in row 3.
 
-   ONE value, two windows. Both call sites pass form.serialNo and write back
-   through the same handler, so typing in either box updates the other and
-   there is no way for the pair to disagree. It is a component rather than
-   copied JSX so the two can never drift apart.
+   ONE value, two windows. Both call sites pass form.serialNo, so row 3 always
+   shows whatever row 2 holds; there is no second serial and no second state.
+   The difference between them is only who may write it:
 
-   Editable: the number is seeded from the row count and advanced by
-   incrementSerial() after every submit, but the operator has the final say -
-   a GRC that continues a supplier's existing run has to be able to start
-   where that run left off.
+     row 2  editable  - this is where the number is entered
+     row 3  locked    - a read-back of the same value, beside HSN
 
-   Digits only. Stripping anything else on the way in is what makes "positive
-   whole number" true by construction: a minus sign, a decimal point or a
-   pasted "12abc" never reach state, so there is no invalid value for the
-   submit check to catch later. Empty IS allowed while typing - clearing the
-   box to retype it is normal - and submit() rejects a blank one. */
-function SerialNoField({ value, onChange, editableClass }) {
+   readOnly rather than disabled for the locked one: a disabled input is left
+   out of form submission in plain HTML, and although this form reads from React
+   state rather than the DOM, readOnly keeps the two consistent. The handlers
+   below close what readOnly leaves open - a caret keystroke in a clicked box, a
+   drop, a scroll - while Tab and Ctrl/Cmd still work, so focus can leave and
+   the value can still be copied.
+
+   Digits only on the editable one. Stripping the rest on the way in is what
+   makes "positive whole number" true by construction: a minus sign, a decimal
+   point or a pasted "12abc" never reach state. Empty IS allowed while typing;
+   submit() rejects a blank one. */
+function SerialNoField({ value, onChange, editableClass, readOnlyClass, locked = false }) {
+  const lockedProps = {
+    readOnly: true,
+    tabIndex: -1,
+    "aria-readonly": "true",
+    title: "Shows the Serial No. entered above",
+    onKeyDown: (event) => { if (event.key !== "Tab" && !event.ctrlKey && !event.metaKey) event.preventDefault(); },
+    onPaste: (event) => event.preventDefault(),
+    onCut: (event) => event.preventDefault(),
+    onDrop: (event) => event.preventDefault(),
+  };
+
   return (
     <div className="max-w-[110px] space-y-1 xl:max-w-none">
       <label className="block text-[11px] font-semibold text-gray-700">Serial No. *</label>
-      <input
-        value={value ?? ""}
-        inputMode="numeric"
-        aria-label="Serial No."
-        placeholder="1"
-        onChange={(event) => onChange(event.target.value)}
-        /* a scroll over a focused box must not nudge the number */
-        onWheel={(event) => event.currentTarget.blur()}
-        className={`w-full rounded-md px-2 py-2 text-sm ${editableClass}`}
-      />
+      <div className="relative">
+        <input
+          value={value ?? ""}
+          inputMode="numeric"
+          aria-label="Serial No."
+          placeholder="1"
+          {...(locked ? lockedProps : { onChange: (event) => onChange(event.target.value) })}
+          onWheel={(event) => event.currentTarget.blur()}
+          className={`w-full rounded-md px-2 py-2 text-sm ${locked ? `cursor-not-allowed pr-7 ${readOnlyClass}` : editableClass}`}
+        />
+        {locked && (
+          <svg
+            viewBox="0 0 24 24"
+            aria-hidden="true"
+            className="pointer-events-none absolute right-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-gray-400"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          >
+            <rect x="5" y="11" width="14" height="9" rx="2" />
+            <path d="M8 11V8a4 4 0 0 1 8 0v3" />
+          </svg>
+        )}
+      </div>
     </div>
   );
 }
+
 function AddItemModal({ open, onClose, onSubmit, onSubmitAndPrint, rowCount = 0, barcodeFormat, reserveNumbers, business = "" }) {
   const createBlankForm = (overrides = {}) => ({
     oldBarcode: "",
@@ -474,6 +505,8 @@ function AddItemModal({ open, onClose, onSubmit, onSubmitAndPrint, rowCount = 0,
     hsn: "",
     gst: "0",
     goodsType: "",
+    sm: "",
+    p_m_f: "",
     /* the vendor's own wording for the goods. Was previously never a form
        field - the generated row just copied itemName into it - so it is
        seeded from the Old Barcode lookup and editable from row 2. */
@@ -1015,12 +1048,8 @@ function AddItemModal({ open, onClose, onSubmit, onSubmitAndPrint, rowCount = 0,
       return;
     }
     if (!form.itemName?.trim()) return;
-    if (!form.goodsType?.trim()) {
-      setReserveError("Goods Type is required. Please select SM or P-M-F.");
-      return;
-    }
-    if (form.goodsType !== "SM" && form.goodsType !== "P-M-F") {
-      setReserveError("Invalid Goods Type. Please select SM or P-M-F.");
+    if (!form.sm?.trim() || !form.p_m_f?.trim()) {
+      setReserveError("SM and P-M-F are required.");
       return;
     }
     if (reserving) return;                       // guards the double-click
@@ -1070,6 +1099,8 @@ function AddItemModal({ open, onClose, onSubmit, onSubmitAndPrint, rowCount = 0,
         itemCode: form.itemCode || form.itemName.replace(/\s+/g, "-").toUpperCase(),
         itemName: form.itemName,
         goodsType: form.goodsType,
+        sm: form.sm,
+        p_m_f: form.p_m_f,
         hsn: form.hsn,
         gst: form.gst,
         uom: form.isMtr ? "MTR" : "PC",
@@ -1124,6 +1155,8 @@ function AddItemModal({ open, onClose, onSubmit, onSubmitAndPrint, rowCount = 0,
       hsn: current.hsn,
       gst: current.gst,
       goodsType: current.goodsType,
+      sm: current.sm,
+      p_m_f: current.p_m_f,
       printDescription: current.printDescription,
       /* carried forward alongside printDescription - consecutive pieces off
          the same GRC line share the vendor's wording */
@@ -1144,7 +1177,7 @@ function AddItemModal({ open, onClose, onSubmit, onSubmitAndPrint, rowCount = 0,
   return (
     <div className="mt-4 w-full rounded-[8px] border border-slate-200 bg-white shadow-sm">
       <div className="px-5 py-4">
-          {/* ROW 1: Old Barcode | Item Code | HSN | GST% | Attribute Add On.
+          {/* ROW 1: Old Barcode | Item Code | HSN | GST% | SM | P-M-F.
 
               Four tracks for five fields: HSN and GST% share the third cell.
               GST% is not typed - resolveHsnGst() fills it from whichever HSN
@@ -1153,9 +1186,8 @@ function AddItemModal({ open, onClose, onSubmit, onSubmitAndPrint, rowCount = 0,
               grouping is only the cell they share.
 
               Explicit widths rather than equal quarters: GST% holds two digits
-              and Attribute Add On holds two fixed checkboxes, so both are
-              pinned to what they need and Old Barcode / Item Code split the
-              rest. The two-column md: stage exists because the sidebar is a
+              and the two add-on inputs share the final track. The two-column
+              md: stage exists because the sidebar is a
               fixed 280px - at 768px viewport a four-across row leaves each
               field about 90px, which is unreadable. */}
           <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_270px_230px]">
@@ -1214,27 +1246,14 @@ function AddItemModal({ open, onClose, onSubmit, onSubmitAndPrint, rowCount = 0,
               </div>
             </div>
 
-            <div className="space-y-1">
-              <label className="block text-[11px] font-semibold text-gray-700">Attribute Add On *</label>
-              <div className="flex flex-wrap gap-x-5 gap-y-2 rounded-md border border-linestrong bg-white px-3 py-2">
-                <label className="flex cursor-pointer items-center gap-1.5 text-[13px]">
-                  <input
-                    type="checkbox"
-                    checked={form.goodsType === "SM"}
-                    onChange={(e) => updateField("goodsType", e.target.checked ? "SM" : "")}
-                    className="h-4 w-4 accent-[#0d5ddc]"
-                  />
-                  SM
-                </label>
-                <label className="flex cursor-pointer items-center gap-1.5 text-[13px]">
-                  <input
-                    type="checkbox"
-                    checked={form.goodsType === "P-M-F"}
-                    onChange={(e) => updateField("goodsType", e.target.checked ? "P-M-F" : "")}
-                    className="h-4 w-4 accent-[#0d5ddc]"
-                  />
-                  P-M-F
-                </label>
+            <div className="grid grid-cols-2 gap-2">
+              <div className="space-y-1">
+                <label className="block text-[11px] font-semibold text-gray-700">SM *</label>
+                <input value={form.sm} onChange={(event) => updateField("sm", event.target.value)} className={`w-full rounded-md px-2 py-2 text-sm ${editableClass}`} />
+              </div>
+              <div className="space-y-1">
+                <label className="block text-[11px] font-semibold text-gray-700">P-M-F *</label>
+                <input value={form.p_m_f} onChange={(event) => updateField("p_m_f", event.target.value)} className={`w-full rounded-md px-2 py-2 text-sm ${editableClass}`} />
               </div>
             </div>
           </div>
@@ -1269,7 +1288,7 @@ function AddItemModal({ open, onClose, onSubmit, onSubmitAndPrint, rowCount = 0,
               generates a second serial: the pair is two windows onto one
               number, and neither window is writable. */}
           <div className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-[90px_170px_230px_230px]">
-            <SerialNoField value={form.serialNo} onChange={updateSerialNo} editableClass={editableClass} />
+            <SerialNoField value={form.serialNo} readOnlyClass={readOnlyClass} locked />
 
             {renderHsnField()}
 
@@ -1616,6 +1635,8 @@ export default function GCRBarcodeGeneration({ grcId = null, initialRows = [] })
       id: row._id || row.id || `${row.itemCode || row.itemName || 'saved-row'}-${index}`,
       itemCode: row.itemCode || '',
       itemName: row.itemName || row.supplierDescription || row.printDescription || '',
+      sm: row.sm || (row.goodsType === 'SM' ? 'SM' : ''),
+      p_m_f: row.p_m_f || (row.goodsType === 'P-M-F' ? 'P-M-F' : ''),
       hsn: row.hsn || '',
       gst: row.gst || '',
       qty: row.qty || '',

@@ -132,13 +132,13 @@ export const POST = handler(async (req) => {
     return json({ error: 'No rows to save', code: 'EMPTY' }, 400);
   }
 
-  /* Validate goodsType is present and valid for all rows */
+  /* Validate both attribute add-on inputs. Legacy goodsType values are
+     accepted as a migration fallback for rows created before the split. */
   for (const row of rows) {
-    if (!row.goodsType || !row.goodsType.trim()) {
-      return json({ error: 'Goods Type is required for all rows', code: 'INVALID_INPUT' }, 400);
-    }
-    if (row.goodsType !== 'SM' && row.goodsType !== 'P-M-F') {
-      return json({ error: 'Invalid Goods Type. Allowed values are SM or P-M-F', code: 'INVALID_INPUT' }, 400);
+    const sm = String(row.sm || '').trim() || (row.goodsType === 'SM' ? 'SM' : '');
+    const p_m_f = String(row.p_m_f || '').trim() || (row.goodsType === 'P-M-F' ? 'P-M-F' : '');
+    if (!sm || !p_m_f) {
+      return json({ error: 'SM and P-M-F are required for all rows', code: 'INVALID_INPUT' }, 400);
     }
   }
 
@@ -399,6 +399,8 @@ async function buildDocs({ rows, business, location, finYear, grcId, supplierId,
       dummy: r.dummy || '',
       supplierDescription: r.supplierDescription || '',
       goodsType: r.goodsType || '',
+      sm: r.sm || (r.goodsType === 'SM' ? 'SM' : ''),
+      p_m_f: r.p_m_f || (r.goodsType === 'P-M-F' ? 'P-M-F' : ''),
       qty: String(r.qty ?? ''),
       uom: r.uom || '',
       hsn: r.hsn || '',

@@ -438,6 +438,7 @@ function CityField({ f, value, onChange, multi }) {
       options={options}
       value={multi ? (value || []) : (value || '')}
       placeholder={f.placeholder || 'Select City'}
+      disabled={f.readOnly || f.disabled}
       onChange={onChange}
     />
   );
@@ -499,6 +500,7 @@ function PincodeField({ f, value, onChange, patch }) {
         maxLength={6}
         className="f-input"
         value={value ?? ''}
+        readOnly={!!f.readOnly}
         placeholder={f.placeholder || (f.ph ? f.label : '')}
         /* digits only - the lookup keys off exactly six of them */
         onChange={(e) => onChange(e.target.value.replace(/\D/g, '').slice(0, 6))}
@@ -511,6 +513,10 @@ function PincodeField({ f, value, onChange, patch }) {
     </>
   );
 }
+
+/* "Active" / "active" / "In-Active" -> one comparable word, so a badge's
+   colour does not depend on the portal's capitalisation or hyphens. */
+const squashWord = (v) => String(v ?? '').toLowerCase().replace(/[^a-z]/g, '');
 
 export default function Field({ f, value, error, onChange, onOptionChange, selectedOption }) {
   /* Written as literal class strings: Tailwind scans source text, so a class
@@ -533,7 +539,11 @@ export default function Field({ f, value, error, onChange, onOptionChange, selec
   switch (f.type) {
     case 'textarea':
       control = (
-        <textarea className="f-input f-textarea" value={value ?? ''} onChange={(e) => set(e.target.value)} />
+        <textarea
+          className="f-input f-textarea" value={value ?? ''}
+          readOnly={!!f.readOnly} placeholder={f.placeholder || (f.ph ? f.label : '')}
+          onChange={(e) => set(e.target.value)}
+        />
       );
       break;
 
@@ -751,6 +761,46 @@ export default function Field({ f, value, error, onChange, onOptionChange, selec
         />
       );
       break;
+
+    /* ----------------------------------------------------------------------
+       Read-only pill.
+
+       For a value the record carries but nobody types: the GST portal's own
+       answer - Active, Regular, Yes, No. An input would invite editing it,
+       and a hand-edited copy of a registration detail is worse than none, so
+       this renders as text at input height and sits in the grid like any
+       other field. Empty reads as a dash rather than as a blank cell, which
+       is how it looks before a GST paste has filled anything in.
+
+       The value still travels in the form state and the payload exactly as a
+       text field's would - only the control is different.
+       ---------------------------------------------------------------------- */
+    case 'badge': {
+      const shown = String(value ?? '').trim();
+      const tone = squashWord(shown);
+      const good = tone === 'active' || tone === 'yes';
+      const bad = tone === 'no' || tone === 'cancelled' || tone === 'suspended'
+        || tone === 'inactive' || tone === 'inactivepending';
+      control = (
+        <div className="flex h-9 items-center">
+          {shown ? (
+            <span
+              className={
+                'inline-flex items-center rounded-full px-2.5 py-1 text-[12.5px] font-bold '
+                + (good ? 'bg-okgreenbg text-okgreen'
+                  : bad ? 'bg-[#fdeceb] text-danger'
+                    : 'bg-pillgrey text-cell')
+              }
+            >
+              {shown}
+            </span>
+          ) : (
+            <span className="text-[13.5px] text-inkmuted">&mdash;</span>
+          )}
+        </div>
+      );
+      break;
+    }
 
     default:
       control = (

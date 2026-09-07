@@ -22,18 +22,44 @@ export default function Topbar({ onToggleSidebar }) {
 
       <div className="flex-1" />
 
-      <div className="tb-select-wrapper">
-        <select className="tb-select" value={business} onChange={(e) => setBusiness(e.target.value)}>
-          {businesses.length === 0 && <option value="">Select Business</option>}
-          {businesses.map((b) => <option key={b.value} value={b.value}>{b.label}</option>)}
-        </select>
+      {/* Company and Location sit side by side, are styled identically and are
+          both ellipsised at 200px - and here they are named from the same words:
+          the branch TEMPLE FABRICS, SILKS & SAREES holds a location recorded as
+          OMSHREE FABS (TEMPLE FABRICS RRN). With no caption over either box the
+          location reads as though the branch had switched to it. Both selects
+          were already keyed on _id and neither has ever matched on a name; what
+          was missing was saying which box is which. `title` carries the full
+          name, since the visible text is cut off. */}
+      <div>
+        <span className="block text-[11px] leading-tight text-inkmuted">Company</span>
+        <div className="tb-select-wrapper">
+          <select
+            className="tb-select"
+            aria-label="Company"
+            title={businesses.find((b) => b.value === business)?.label || 'Select Business'}
+            value={business}
+            onChange={(e) => setBusiness(e.target.value)}
+          >
+            {businesses.length === 0 && <option value="">Select Business</option>}
+            {businesses.map((b) => <option key={b.value} value={b.value}>{b.label}</option>)}
+          </select>
+        </div>
       </div>
 
-      <div className="tb-select-wrapper">
-        <select className="tb-select" value={location} onChange={(e) => setLocation(e.target.value)}>
-          {locations.length === 0 && <option value="">Select Location</option>}
-          {locations.map((l) => <option key={l.value} value={l.value}>{l.label}</option>)}
-        </select>
+      <div>
+        <span className="block text-[11px] leading-tight text-inkmuted">Location</span>
+        <div className="tb-select-wrapper">
+          <select
+            className="tb-select"
+            aria-label="Location"
+            title={locations.find((l) => l.value === location)?.label || 'Select Location'}
+            value={location}
+            onChange={(e) => setLocation(e.target.value)}
+          >
+            {locations.length === 0 && <option value="">Select Location</option>}
+            {locations.map((l) => <option key={l.value} value={l.value}>{l.label}</option>)}
+          </select>
+        </div>
       </div>
 
       <div className="flex items-center gap-2">

@@ -2,11 +2,13 @@
 import TabbedFormView from '@/components/TabbedFormView';
 import SupplierImportPanel from '@/components/SupplierImportPanel';
 import { AGENT_QUICK_FIELDS, FIELD_LABELS, TABS } from '../tabs';
+import { isGstLockedField } from '../gstAddress';
 
-/* Add Suppliers - a five step wizard: Basic, Billing, Shipping, Purchase,
-   Financial. The supplier is created by the Submit on the last step and
-   nowhere else, so abandoning the form half way leaves no partial record -
-   which is what the old per-tab save did. */
+/* Add Suppliers - the three tabs walked in order: Next, Next, Submit. The
+   tab strip and everything under it are unchanged; `wizard` only swaps the
+   per-tab Submit for the Back / Next footer, so the record is written once,
+   by the Submit on the last tab, and abandoning the form half way leaves no
+   partial supplier behind. */
 
 export default function AddSupplierPage() {
 
@@ -21,7 +23,15 @@ export default function AddSupplierPage() {
         scope: ["business"],
         contactKind: "Supplier",
         tabs: TABS,
+        /* GST entered -> the registered billing address is read-only;
+           GST cleared -> it is editable again. The rule itself lives in
+           ../gstAddress.js so the add and edit pages cannot drift apart. */
+        isFieldReadOnly: isGstLockedField,
         wizard: true,
+        /* GST / Excel import belongs with the identity fields it fills, so
+           it is rendered on the Basic Information tab only. applyPatch writes
+           into the form's shared state - nothing reaches the API until the
+           operator hits Submit. */
         renderStepExtras: ({ tab, data, applyPatch }) => (
           tab.key === 'basic'
             ? <SupplierImportPanel data={data} labels={FIELD_LABELS} onApply={applyPatch} />

@@ -3,11 +3,11 @@ import { use } from 'react';
 import TabbedFormView from '@/components/TabbedFormView';
 import SupplierImportPanel from '@/components/SupplierImportPanel';
 import { FIELD_LABELS, TABS } from '../tabs';
+import { isGstLockedField } from '../gstAddress';
 
-/* Edit Suppliers - a five step wizard: Basic, Billing, Shipping, Purchase,
-   Financial. Next only validates and moves on; the record is written once,
-   by the Submit on the last step. The id below is what makes that a PUT
-   rather than a POST, so editing never creates a second supplier. */
+/* Edit Suppliers - three tabs, one Submit per tab, exactly as Contacts >
+   Customers works. The id below is what makes each save a PUT rather than a
+   POST, so editing never creates a second supplier. */
 
 export default function EditSupplierPage({ params }) {
   const { id } = use(params);
@@ -24,10 +24,14 @@ export default function EditSupplierPage({ params }) {
         scope: ["business"],
         contactKind: "Supplier",
         tabs: TABS,
-        wizard: true,
-        /* GST / Excel import belongs with the identity fields it fills, so it
-           is rendered on step 1 only. applyPatch writes into the wizard's
-           shared state - nothing reaches the API until Submit. */
+        /* GST entered -> the registered billing address is read-only;
+           GST cleared -> it is editable again. The rule itself lives in
+           ../gstAddress.js so the add and edit pages cannot drift apart. */
+        isFieldReadOnly: isGstLockedField,
+        /* GST / Excel import belongs with the identity fields it fills, so
+           it is rendered on the Basic Information tab only. applyPatch writes
+           into the form's shared state - nothing reaches the API until the
+           operator hits Submit. */
         renderStepExtras: ({ tab, data, applyPatch }) => (
           tab.key === 'basic'
             ? <SupplierImportPanel data={data} labels={FIELD_LABELS} onApply={applyPatch} />

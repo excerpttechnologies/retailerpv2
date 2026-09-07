@@ -2,8 +2,18 @@
 import { useRef, useState } from 'react';
 import * as XLSX from 'xlsx';
 import Icon from './Icon';
+import { useScope } from './ScopeContext';
+import { matchOption, parseGstText, squash } from '@/lib/gstPasteParser';
 
-/* Import Supplier Data - GSTIN lookup and Excel, sharing one review step.
+/* Import Supplier Data - a pasted GST portal result and Excel, sharing one
+   review step.
+
+   The GST side calls NO external service. GSTIN lookup is a paid, per-call
+   API, so the operator searches the GSTIN on the government portal in their
+   own browser, copies the result, and pastes it here; the parsing happens
+   locally in lib/gstPasteParser.js. Nothing leaves this machine except the
+   two lookups against our OWN database - does this GSTIN already exist, and
+   do these HSN codes / this city exist in our masters - which are free.
 
    Both sources end at the same confirmation table rather than writing into the
    form directly. That is what keeps the promise in the brief: a value the
@@ -13,31 +23,86 @@ import Icon from './Icon';
    act. Untouched fields are not in the patch at all.
 
    Nothing here saves. The chosen values land in the form's state and the
-   supplier is written only when the wizard's final Submit runs. */
+   supplier is written only when the operator hits Submit. */
 
-/* GSTIN -> supplier form. The right-hand side is a real key in the supplier
-   TABS; anything the form has no home for (state code, registration date,
-   taxpayer type) is shown in the review table as read-only context. */
-const GST_TO_FIELD = {
-  gstin: 'gstNo',
-  legalName: 'businessName',
-  tradeName: 'shortName',
-  addressLine1: 'billingAddressLine1',
-  addressLine2: 'billingAddressLine2',
-  city: 'billingCity',
-  state: 'billingState',
-  country: 'billingCountry',
-  pincode: 'billingZipCode',
-  mobile: 'billingMobile',
-  email: 'billingEmail',
-};
+/* Parsed GST -> supplier form. Everything the portal prints that this form
+   has a home for now goes into a field; only the core business activity, the
+   activity list and the HSN table are left as read-only context in the
+   preview, because there is nowhere on a supplier to put them. */
 
-const GST_CONTEXT_ONLY = [
-  ['stateCode', 'State Code'],
-  ['taxpayerType', 'Taxpayer Type'],
-  ['registrationDate', 'Registration Date'],
-  ['status', 'Status'],
-];
+/* Taxpayer Type is the portal's word; gstType is ours, and its options are
+   fixed by the supplier form. Composition and SEZ line up exactly; every
+   other taxpayer type on the portal is a registered dealer. */
+function gstTypeFromTaxpayer(taxpayerType) {
+  const v = squash(taxpayerType);
+  if (!v) return '';
+  if (v.includes('composition')) return 'Composition';
+  if (v.includes('sez')) return 'SEZ';
+  return 'Registered';
+}
+
+/* Constitution of Business -> the Business Type dropdown.
+
+   Written out rather than left to matchOption, because a loose match gets
+   this wrong in a way that looks right: "Limited Liability Partnership"
+   contains "Partnership", so a partial match would file every LLP as a
+   partnership. Order matters here too - the LLP test runs before the
+   partnership one for the same reason.
+
+   A constitution none of these covers ("Government Department", "Statutory
+   Body", "Foreign Company") is answered with 'Others', which the dropdown
+   holds; an empty or unreadable one is answered with nothing at all, and the
+   caller says so rather than picking something plausible. */
+function businessTypeFromConstitution(constitution) {
+  const v = squash(constitution);
+  if (!v) return '';
+  if (v.includes('proprietor')) return 'Proprietorship';
+  if (v.includes('limitedliabilitypartnership') || v.includes('llp')) return 'LLP';
+  if (v.includes('privatelimited')) return 'Private Limited';
+  if (v.includes('publiclimited')) return 'Public Limited';
+  if (v.includes('partnership')) return 'Partnership';
+  if (v.includes('hindu') || v === 'huf') return 'HUF';
+  if (v.includes('trust') || v.includes('society') || v.includes('club') || v.includes('aop')) return 'Trust';
+  if (v.includes('individual')) return 'Individual';
+  if (v.includes('unregistered')) return 'Un-Registered';
+  return 'Others';
+}
+
+/* `cityMatch` is the city as our own master spells it, or '' when we could
+   not match it - in which case the field is deliberately left for the
+   operator rather than filled with a name the dropdown does not hold. */
+function mapParsedToFields(parsed, cityMatch) {
+  const values = {};
+  const put = (field, value) => { if (String(value ?? '').trim()) values[field] = String(value).trim(); };
+
+  put('gstNo', parsed.gstin);
+  put('pan', parsed.pan);
+  put('businessName', parsed.legalName);
+  put('shortName', parsed.tradeName);
+  put('additionalTradeName', parsed.additionalTradeName);
+  put('gstRegDate', parsed.registrationDate?.iso);
+  put('businessType', businessTypeFromConstitution(parsed.constitution));
+  put('gstType', gstTypeFromTaxpayer(parsed.taxpayerType));
+  put('gstStatus', parsed.gstStatus);
+  put('gstTaxpayerType', parsed.taxpayerType);
+  put('gstAadhaarAuthenticated', parsed.aadhaarAuthenticated);
+  put('gstEkycVerified', parsed.ekycVerified);
+  /* no field of their own - stored against the supplier so the jurisdiction
+     the search returned is not simply discarded */
+  put('gstAdministrativeOffice', parsed.administrativeOffice);
+  put('gstOtherOffice', parsed.otherOffice);
+  put('billingAddressLine1', parsed.address?.line1);
+  put('billingAddressLine2', parsed.address?.line2);
+  put('billingDistrict', parsed.address?.district);
+  put('billingState', parsed.address?.state);
+  put('billingZipCode', parsed.address?.pincode);
+  put('billingCity', cityMatch);
+  /* Country is not printed - a GSTIN is an Indian registration, so an address
+     read off one is in India by definition. Only claimed when there was an
+     address to read. */
+  if (parsed.address?.line1 || parsed.address?.state) put('billingCountry', 'India');
+  return values;
+}
 
 /* Excel headers -> supplier form. Matched on a squashed lowercase form of the
    header, so "Contact Number", "contact_number" and "CONTACT NUMBER" are the
@@ -49,7 +114,8 @@ const EXCEL_ALIASES = {
   gstNo: ['gstin', 'gstno', 'gst', 'gstnumber'],
   billingAddressLine1: ['address', 'addressline1', 'address1', 'billingaddress'],
   billingAddressLine2: ['addressline2', 'address2'],
-  billingCity: ['city', 'town', 'district'],
+  billingCity: ['city', 'town'],
+  billingDistrict: ['district'],
   billingState: ['state'],
   billingZipCode: ['pincode', 'pin', 'zipcode', 'zip', 'postalcode'],
   billingCountry: ['country'],
@@ -62,8 +128,6 @@ const EXCEL_ALIASES = {
   billingFax: ['fax'],
   pan: ['pan', 'panno', 'pannumber'],
 };
-
-const squash = (v) => String(v ?? '').trim().toLowerCase().replace(/[^a-z0-9]/g, '');
 
 const FIELD_BY_HEADER = (() => {
   const map = new Map();
@@ -110,13 +174,16 @@ function mapExcelRow(headers, row) {
   return { values, unmapped };
 }
 
-function Modal({ title, onClose, children, wide }) {
+function Modal({ title, onClose, children, wide, headerAction }) {
   return (
     <div className="fixed inset-0 z-[80] flex items-center justify-center bg-black/40 p-4">
       <div className={'flex max-h-[calc(100vh-2rem)] w-full flex-col rounded-lg bg-white shadow-xl ' + (wide ? 'max-w-[760px]' : 'max-w-[460px]')}>
         <div className="flex shrink-0 items-center justify-between border-b border-line px-5 py-3">
           <span className="text-[15px] font-bold uppercase tracking-wide">{title}</span>
-          <button type="button" onClick={onClose} className="text-2xl leading-none text-inkmuted" aria-label="Close">×</button>
+          <div className="flex items-center gap-1">
+            {headerAction}
+            <button type="button" onClick={onClose} className="text-2xl leading-none text-inkmuted" aria-label="Close">×</button>
+          </div>
         </div>
         {children}
       </div>
@@ -125,20 +192,21 @@ function Modal({ title, onClose, children, wide }) {
 }
 
 export default function SupplierImportPanel({ data = {}, labels = {}, onApply }) {
+  const scope = useScope();
   const [mode, setMode] = useState(null);          // 'gst' | 'excel' | null
-  const [gstin, setGstin] = useState('');
+  const [paste, setPaste] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
-  const [review, setReview] = useState(null);      // { source, rows, context, unmapped }
+  const [review, setReview] = useState(null);      // { source, rows, context, unmapped, gst }
   const [chosen, setChosen] = useState({});        // field -> boolean
   const fileRef = useRef(null);
 
   const labelFor = (k) => labels[k] || k;
-  const close = () => { setMode(null); setError(''); setReview(null); setChosen({}); setGstin(''); };
+  const close = () => { setMode(null); setError(''); setReview(null); setChosen({}); setPaste(''); };
 
   /* Build the review table from a {field: value} patch. A row is pre-ticked
      only when the form field is currently empty - see the note at the top. */
-  function openReview(source, values, context = [], unmapped = []) {
+  function openReview(source, values, context = [], unmapped = [], gst = null) {
     const rows = Object.entries(values)
       .filter(([, v]) => String(v ?? '').trim() !== '')
       .map(([field, incoming]) => {
@@ -147,43 +215,97 @@ export default function SupplierImportPanel({ data = {}, labels = {}, onApply })
       })
       .filter((r) => r.current !== r.incoming);
 
-    if (!rows.length) {
+    /* With a GST paste the preview is still worth showing when every value
+       already matches the form - the detected/not-detected report and the
+       HSN and duplicate checks are the point of it, not just the patch. */
+    if (!rows.length && !gst) {
       setError('Nothing new to import - the form already holds these values.');
       return;
     }
     setChosen(Object.fromEntries(rows.map((r) => [r.field, !r.conflict])));
-    setReview({ source, rows, context, unmapped });
+    setReview({ source, rows, context, unmapped, gst });
     setError('');
   }
 
-  async function fetchGst() {
-    const code = gstin.trim().toUpperCase();
-    if (!code) { setError('Enter a GSTIN.'); return; }
+  /* Look a value up in one of OUR masters. Free, local, and the reason the
+     preview can say "5210 is not in your HSN master" instead of guessing. */
+  async function lookup(url) {
+    try {
+      const r = await fetch(url);
+      return r.ok ? await r.json() : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /* Paste -> parse -> match against our masters -> preview. No GST API. */
+  async function parsePaste() {
+    const text = paste.trim();
+    if (!text) { setError('Paste the GST taxpayer details first.'); return; }
+
+    const parsed = parseGstText(text);
+    if (!parsed.ok) {
+      setError('Unable to identify GST taxpayer information. Please paste the complete GST taxpayer result from the GST portal.');
+      return;
+    }
+    if (!parsed.gstin) {
+      setError('GSTIN could not be detected. Please include the full search result, which carries the GSTIN/UIN.');
+      return;
+    }
+
     setBusy(true); setError('');
     try {
-      const response = await fetch('/api/gst/lookup', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ gstin: code }),
-      });
-      const payload = await response.json();
-      if (!response.ok) {
-        setError(payload.requires
-          ? `${payload.error} Ask your administrator to set ${payload.requires.join(' and ')} on the server.`
-          : (payload.error || 'GST lookup failed.'));
-        return;
+      const business = scope.business || '';
+      const warnings = [];
+
+      /* City: only fill it if our own city master actually holds it. A city
+         the dropdown does not have would either sit there invalid or tempt a
+         duplicate master record, so an unmatched one is left blank and said
+         out loud instead. */
+      let cityMatch = '';
+      const wantCity = parsed.address?.city || '';
+      if (wantCity) {
+        const cities = await lookup('/api/cities?q=' + encodeURIComponent(wantCity));
+        cityMatch = matchOption(wantCity, cities?.options || []);
+        if (!cityMatch) warnings.push(`City "${wantCity}" could not be confidently matched. Please verify manually.`);
       }
-      const values = {};
-      Object.entries(GST_TO_FIELD).forEach(([from, field]) => {
-        const v = payload.data?.[from];
-        if (v) values[field] = v;
+
+      /* HSN: reported only. This form has no HSN field, and nothing here
+         creates master records. */
+      const hsn = [];
+      for (const entry of parsed.hsnCodes) {
+        const found = await lookup(`/api/hsn?q=${encodeURIComponent(entry.code)}&business=${business}`);
+        const known = (found?.rows || []).some((r) => String(r.code).trim() === entry.code);
+        hsn.push({ ...entry, known });
+        if (!known) warnings.push(`HSN ${entry.code} could not be found in the local HSN master.`);
+      }
+
+      /* Duplicate GSTIN, against our suppliers - not the GST portal. */
+      const existing = await lookup(`/api/supplier?gstNo=${encodeURIComponent(parsed.gstin)}&business=${business}`);
+      const duplicate = existing?.doc || null;
+
+      /* 'Others' is the dropdown's honest answer for a constitution it has no
+         entry for, but the operator should know it was not an exact match. */
+      if (parsed.constitution && businessTypeFromConstitution(parsed.constitution) === 'Others') {
+        warnings.push(`Constitution "${parsed.constitution}" has no exact Business Type option; it was set to "Others". Please review it.`);
+      }
+
+      if (!parsed.gstinChecksumValid) {
+        warnings.push('The detected GSTIN appears to be invalid - its check digit does not match. Please verify it.');
+      }
+
+      const values = mapParsedToFields(parsed, cityMatch);
+      /* Only what still has nowhere to go. Constitution, status and taxpayer
+         type moved out of here and into real fields, so listing them again
+         as "no field for these" would now be untrue. */
+      const context = [
+        ['Core Business Activity', parsed.coreBusinessActivity],
+        ['Business Activities', parsed.businessActivities.join(', ')],
+      ].filter(([, v]) => String(v || '').trim());
+
+      openReview('GST', values, context, [], {
+        parsed, hsn, warnings, duplicate, cityMatch,
       });
-      const context = GST_CONTEXT_ONLY
-        .map(([k, label]) => [label, payload.data?.[k]])
-        .filter(([, v]) => v);
-      openReview('GST', values, context);
-    } catch {
-      setError('Could not reach the server.');
     } finally {
       setBusy(false);
     }
@@ -232,29 +354,58 @@ export default function SupplierImportPanel({ data = {}, labels = {}, onApply })
         <button type="button" className="btn" onClick={() => { setMode('gst'); setError(''); }}>
           <Icon name="search" size={14} /> Import from GST
         </button>
+        <span className="self-center text-[12px] text-inkmuted">
+          Paste the taxpayer details you copied from the GST portal - no lookup fee.
+        </span>
         <button type="button" className="btn" onClick={() => { setMode('excel'); setError(''); fileRef.current?.click(); }}>
           <Icon name="file" size={14} /> Import from Excel
         </button>
         <input ref={fileRef} type="file" accept=".xlsx,.xls" onChange={pickExcel} className="hidden" />
       </div>
 
-      {/* GSTIN entry - only until the review table takes over */}
+      {/* Paste box - only until the review table takes over. No lookup runs
+          from here; parsing is local. */}
       {mode === 'gst' && !review && (
-        <Modal title="Import from GST" onClose={close}>
-          <div className="p-5">
-            <label className="mb-1 block text-[13px] font-semibold">GSTIN</label>
-            <input
-              value={gstin}
+        <Modal
+          title="Import Supplier From GST"
+          onClose={close}
+          wide
+          headerAction={(
+            /* Same blue, radius and hover as the .btn-primary below it - the
+               Parse GST Details button, and the active tab - so the shortcut
+               to the portal reads as an action rather than as chrome. Size,
+               position and tooltip are untouched. */
+            <a
+              href="https://services.gst.gov.in/services/searchtp"
+              target="_blank"
+              rel="noopener noreferrer"
+              title="Search GST Portal"
+              aria-label="Search GST Portal"
+              className="flex h-8 w-8 items-center justify-center rounded-md bg-brand leading-none text-white hover:bg-brand-hover"
+            >
+              <Icon name="plus" size={16} />
+            </a>
+          )}
+        >
+          <div className="flex-1 overflow-y-auto p-5">
+            <p className="mb-3 text-[13px] text-inkmuted">
+              Copy the complete taxpayer details from the GST portal and paste them below.
+              The system will automatically identify and populate the matching supplier information.
+            </p>
+            <textarea
+              value={paste}
               autoFocus
-              placeholder="Enter GSTIN, e.g. 22AAAAA0000A1Z5"
-              maxLength={15}
-              onChange={(e) => { setGstin(e.target.value.toUpperCase()); setError(''); }}
-              onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); fetchGst(); } }}
-              className="h-9 w-full rounded-md border border-linestrong px-2.5 text-[13.5px] uppercase"
+              rows={14}
+              placeholder="Paste complete GST taxpayer details here..."
+              onChange={(e) => { setPaste(e.target.value); setError(''); }}
+              className="w-full resize-y rounded-md border border-linestrong p-2.5 font-mono text-[12.5px] leading-[1.5]"
             />
             {error && <div className="flash flash-err mt-3">{error}</div>}
-            <button type="button" className="btn btn-primary mt-4 flex h-[38px] w-full justify-center" onClick={fetchGst} disabled={busy}>
-              {busy ? <span className="spin" /> : <Icon name="search" size={14} />} Fetch Details
+          </div>
+          <div className="flex shrink-0 items-center justify-end gap-2 border-t border-line px-5 py-3">
+            <button type="button" className="btn" onClick={close}>Cancel</button>
+            <button type="button" className="btn btn-primary flex h-[38px] min-w-[160px] justify-center" onClick={parsePaste} disabled={busy}>
+              {busy ? <span className="spin" /> : <Icon name="check" size={14} />} Parse GST Details
             </button>
           </div>
         </Modal>
@@ -277,8 +428,50 @@ export default function SupplierImportPanel({ data = {}, labels = {}, onApply })
           <div className="flex-1 overflow-y-auto p-5">
             <p className="mb-3 text-[13px] text-inkmuted">
               Tick the values to bring into the form. Rows that would replace something you already
-              entered are left unticked. Nothing is saved until you Submit on the last step.
+              entered are left unticked. Nothing is saved until you Submit.
             </p>
+
+            {/* Every value below is text the operator pasted. It is rendered
+                as text - no markup is interpreted anywhere in this panel. */}
+            {review.gst?.duplicate && (
+              <div className="flash flash-err mb-3">
+                Supplier with this GSTIN already exists
+                {review.gst.duplicate.businessName ? ' - ' + review.gst.duplicate.businessName : ''}
+                {review.gst.duplicate.contactId ? ' (' + review.gst.duplicate.contactId + ')' : ''}.
+                <a className="ml-1 font-semibold underline" href={'/admin/contact/supplier/' + review.gst.duplicate._id}>
+                  View Existing Supplier
+                </a>
+              </div>
+            )}
+
+            {review.gst && (
+              <div className="mb-4 grid gap-3 md:grid-cols-2">
+                <div>
+                  <div className="mb-1 text-[13px] font-bold">Detected</div>
+                  <ul className="text-[12.5px] leading-[1.7]">
+                    {review.gst.parsed.found.map((name) => (
+                      <li key={name}><span className="text-success">&#10003;</span> {name}</li>
+                    ))}
+                  </ul>
+                </div>
+                {review.gst.parsed.missing.length > 0 && (
+                  <div>
+                    <div className="mb-1 text-[13px] font-bold">Not found in the pasted text</div>
+                    <ul className="text-[12.5px] leading-[1.7] text-inkmuted">
+                      {review.gst.parsed.missing.map((name) => (
+                        <li key={name}>&#9888; {name} - left unchanged</li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {review.gst?.warnings.length > 0 && (
+              <div className="mb-4 rounded-md border border-[#f0d9a0] bg-[#fff8e6] px-3 py-2 text-[12.5px]">
+                {review.gst.warnings.map((w) => <div key={w}>&#9888; {w}</div>)}
+              </div>
+            )}
 
             <table className="w-full border-collapse text-[13px]">
               <thead>
@@ -328,6 +521,30 @@ export default function SupplierImportPanel({ data = {}, labels = {}, onApply })
               </div>
             )}
 
+            {review.gst?.hsn.length > 0 && (
+              <div className="mt-4">
+                <div className="mb-1 text-[13px] font-bold">HSN in the pasted result</div>
+                <table className="w-full border-collapse text-[13px]">
+                  <tbody>
+                    {review.gst.hsn.map((h) => (
+                      <tr key={h.code}>
+                        <td className="w-8 border border-line px-2 py-1.5 text-center">
+                          {h.known
+                            ? <span className="text-success">&#10003;</span>
+                            : <span className="text-danger">&#9888;</span>}
+                        </td>
+                        <td className="w-20 border border-line px-2 py-1.5 font-semibold">{h.code}</td>
+                        <td className="border border-line px-2 py-1.5 text-inkmuted">{h.description}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+                <p className="mt-1 text-[12px] text-inkmuted">
+                  Reference only - the supplier form has no HSN field, and nothing here creates HSN master records.
+                </p>
+              </div>
+            )}
+
             {review.unmapped?.length > 0 && (
               <p className="mt-3 text-[12px] text-inkmuted">
                 Ignored columns: {review.unmapped.join(', ')} - no matching supplier field.
@@ -338,7 +555,10 @@ export default function SupplierImportPanel({ data = {}, labels = {}, onApply })
           <div className="flex shrink-0 items-center justify-end gap-2 border-t border-line px-5 py-3">
             <button type="button" className="btn" onClick={close}>Cancel</button>
             <button type="button" className="btn btn-primary" onClick={applyChosen} disabled={chosenCount === 0}>
-              <Icon name="check" size={14} /> Import {chosenCount} field{chosenCount === 1 ? '' : 's'}
+              <Icon name="check" size={14} />
+              {review.source === 'GST'
+                ? ` Import & Fill Form (${chosenCount})`
+                : ` Import ${chosenCount} field${chosenCount === 1 ? '' : 's'}`}
             </button>
           </div>
         </Modal>
