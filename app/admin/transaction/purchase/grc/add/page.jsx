@@ -17,12 +17,12 @@ export default function AddTransactionPurchaseGrcPage() {
         docType: "Goods Receipt Challan",
         form: FORM,
         quickAdd: {
-          field: 'supplierId', label: '', title: '', slug: 'supplier',
+          field: 'supplierId', label: '', title: '', slug: 'supplier', inline: true,
           endpoint: '/api/supplier', fields: SUPPLIER_QUICK_FIELDS,
         },
         quickAdds: {
           agentId: {
-            label: '', title: '', slug: 'agent', endpoint: '/api/agent',
+            label: '', title: '', slug: 'agent', endpoint: '/api/agent', inline: true,
             fields: [
               { k: 'typeId', label: 'Type', type: 'ref', ref: 'contact-type-agent', req: true },
               { k: 'shortName', label: 'Short Name', type: 'text' },

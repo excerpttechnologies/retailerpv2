@@ -132,13 +132,11 @@ export const POST = handler(async (req) => {
     return json({ error: 'No rows to save', code: 'EMPTY' }, 400);
   }
 
-  /* Validate both attribute add-on inputs. Legacy goodsType values are
-     accepted as a migration fallback for rows created before the split. */
+  /* P-M-F is required; SM remains optional. */
   for (const row of rows) {
-    const sm = String(row.sm || '').trim() || (row.goodsType === 'SM' ? 'SM' : '');
-    const p_m_f = String(row.p_m_f || '').trim() || (row.goodsType === 'P-M-F' ? 'P-M-F' : '');
-    if (!sm || !p_m_f) {
-      return json({ error: 'SM and P-M-F are required for all rows', code: 'INVALID_INPUT' }, 400);
+    const p_m_f = String(row.p_m_f || '').trim();
+    if (!p_m_f) {
+      return json({ error: 'P-M-F is required for all rows', code: 'INVALID_INPUT' }, 400);
     }
   }
 

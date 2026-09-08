@@ -6,7 +6,7 @@ import Field from './Field';
 import MultiSelect from './MultiSelect';
 import ModalForm from './ModalForm';
 import { useScope } from './ScopeContext';
-import { refreshOptions } from './useOptions';
+import { refreshOptions, useOptions } from './useOptions';
 import { fmt } from '@/lib/format';
 import { sourceLabel } from '@/lib/sourceLabel';
 
@@ -274,7 +274,7 @@ const FREIGHT_NONE = 'N/A';
 
 /* Derived columns. They are normally read-only, except when Freight is N/A,
   where the operator may enter the tax and total amounts manually. */
-const VOUCHER_COMPUTED = new Set(['taxAmount', 'totalAmount']);
+const VOUCHER_COMPUTED = new Set(['taxAmount']);
 function VoucherSection({ card, rows, onChange, onAdd, onRemove, rates = {}, freightLocked = false }) {
   const number = (value) => Number(value) || 0;
   /* Summed per column key rather than as a fixed list, so the Total row is
@@ -325,10 +325,8 @@ function VoucherSection({ card, rows, onChange, onAdd, onRemove, rates = {}, fre
                       />
                       {/* the rate is why Tax Amount reads what it reads - without
                           it an unmatched HSN just shows 0.00 with no explanation */}
-                      {field.k === 'hsnCode' && String(row.hsnCode || '').trim().length >= 4 && (
-                        <div className="mt-0.5 text-[11px] text-inkmuted">
-                          {rate === undefined ? 'Looking up rate...' : rate === null ? 'No tax rate on this HSN' : `GST ${rate}%`}
-                        </div>
+                      {field.k === 'hsnCode' && rate !== undefined && rate !== null && (
+                        <div className="mt-0.5 text-[11px] text-inkmuted">GST {rate}%</div>
                       )}
                     </td>
                   );
@@ -516,9 +514,19 @@ export default function TransactionFormView({ cfg, id, slug }) {
   const [flash, setFlash] = useState(null);
   const [saving, setSaving] = useState(false);
   const [savedId, setSavedId] = useState(id || null);
+  const [savedGrcNumber, setSavedGrcNumber] = useState('');
   const [quickAddOpen, setQuickAddOpen] = useState(false);
   const [quickAddTarget, setQuickAddTarget] = useState(null);
   const [quickAddNonce, setQuickAddNonce] = useState(0);
+  const { options: stockPointOptions } = useOptions('stockpoint');
+
+  useEffect(() => {
+    if (id || data.stockPointId || !stockPointOptions.length) return;
+    const warehouse = stockPointOptions.find((option) => String(option.label || '').trim().toLowerCase() === 'warehouse');
+    if (!warehouse) return;
+    setData((current) => ({ ...current, stockPointId: warehouse.value }));
+    setSelectedOptions((current) => ({ ...current, stockPointId: warehouse }));
+  }, [id, data.stockPointId, stockPointOptions]);
 
   /* A field with `disabledWhen` locks itself once its condition holds - the
      Freight selector does this at "N/A", so a choice that switches off the
@@ -612,10 +620,11 @@ export default function TransactionFormView({ cfg, id, slug }) {
         }
         const tax = rate ? Math.round(taxable * rate) / 100 : 0;
         const taxAmount = tax.toFixed(2);
-        const totalAmount = (taxable + tax + freight).toFixed(2);
-        if (row.taxAmount === taxAmount && row.totalAmount === totalAmount && row.freightAmount === freightValue) return row;
+        const totalAmount = (taxable + tax).toFixed(2);
+        const totalValue = String(row.totalAmount ?? '').trim() || totalAmount;
+        if (row.taxAmount === taxAmount && row.totalAmount === totalValue && row.freightAmount === freightValue) return row;
         changed = true;
-        return { ...row, taxAmount, totalAmount, freightAmount: freightValue };
+        return { ...row, taxAmount, totalAmount: totalValue, freightAmount: freightValue };
       });
       return changed ? next : current;
     });
@@ -717,9 +726,14 @@ export default function TransactionFormView({ cfg, id, slug }) {
   };
 
   const updateVoucherRow = (index, key, value) => {
-    setVoucherRows((current) => current.map((row, rowIndex) => (
-      rowIndex === index ? { ...row, [key]: value } : row
-    )));
+    setVoucherRows((current) => current.map((row, rowIndex) => {
+      if (rowIndex !== index) return row;
+      const next = { ...row, [key]: value };
+      if (['invoiceQty', 'taxableValue', 'taxAmount'].includes(key)) {
+        next.totalAmount = (Number(next.taxableValue) + Number(next.taxAmount)).toFixed(2);
+      }
+      return next;
+    }));
   };
 
   async function submit() {
@@ -761,7 +775,10 @@ export default function TransactionFormView({ cfg, id, slug }) {
         setFlash({ type: 'err', msg: d.error || ('Save failed (' + r.status + ')') });
         return;
       }
-      if (cfg.afterSaveBarcode && d.id) setSavedId(d.id);
+      if (cfg.afterSaveBarcode && d.id) {
+        setSavedId(d.id);
+        setSavedGrcNumber(d.grcNumber || '');
+      }
       else router.push(listUrl);
     } catch (err) {
       /* Network failure, JSON parse error, etc. — previously swallowed silently */
@@ -791,9 +808,9 @@ export default function TransactionFormView({ cfg, id, slug }) {
                 <div className="card-head"><span className="card-title">{cfg.form.title}</span></div>
               )}
               <div className="card-body">
-                <div className="form-grid-4">
+                <div className={card.gridClass || 'form-grid-4'}>
                   {(card.fields || []).filter((f) => !f.visibleWhen || Object.entries(f.visibleWhen).every(([key, expected]) => data[key] === expected)).map((f) => (
-                    <div key={f.k}>
+                    <div key={f.k} className={(f.layoutClass || '') + ((cfg.quickAdds?.[f.k] || (cfg.quickAdd?.field === f.k && cfg.quickAdd?.inline)) ? ' flex items-end gap-1.5' : '')}>
                       <Field 
                         key={f.k + '-' + quickAddNonce} 
                         f={isLocked(f) ? { ...f, disabled: true } : f} 
@@ -817,7 +834,7 @@ export default function TransactionFormView({ cfg, id, slug }) {
                         </button>
                       )}
                       {(cfg.quickAdds?.[f.k] || (cfg.quickAdd?.field === f.k ? cfg.quickAdd : null)) && (
-                        <button type="button" className="btn btn-primary mt-2" onClick={() => { setQuickAddTarget(f.k); setQuickAddOpen(true); }}>
+                        <button type="button" className="btn btn-primary mt-2 shrink-0" title="Add" aria-label="Add" onClick={() => { setQuickAddTarget(f.k); setQuickAddOpen(true); }}>
                           <Icon name="plus" size={13} /> {(cfg.quickAdds?.[f.k] || cfg.quickAdd).label}
                         </button>
                       )}
@@ -946,15 +963,17 @@ export default function TransactionFormView({ cfg, id, slug }) {
               <div className="card-body">
                 <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
                   <div>
-                  <SourceSelect
-                    card={card}
-                    supplierId={data.supplierId}
-                    value={source}
-                    onChange={(next) => {
-                      setSource(next);
-                      if (card.sourceKey) set(card.sourceKey, next);
-                    }}
-                    onSelect={(selection) => {
+                  <div className="flex items-end gap-4">
+                    <div className="min-w-0 flex-1">
+                      <SourceSelect
+                        card={card}
+                        supplierId={data.supplierId}
+                        value={source}
+                        onChange={(next) => {
+                          setSource(next);
+                          if (card.sourceKey) set(card.sourceKey, next);
+                        }}
+                        onSelect={(selection) => {
                       const selectedRows = Array.isArray(selection) ? selection : [selection];
                       const sourceItems = selectedRows.flatMap((sourceRow) => (Array.isArray(sourceRow?.items) ? sourceRow.items : []).map((item) => {
                         const qty = Number(item.qty) || 0;
@@ -1004,8 +1023,15 @@ export default function TransactionFormView({ cfg, id, slug }) {
                       fillEntries.forEach(([target, sourceKey]) => {
                         set(target, row[sourceKey] ?? '');
                       });
-                    }}
-                  />
+                        }}
+                      />
+                    </div>
+                    {savedGrcNumber && (
+                      <div className="shrink-0 pb-2 text-[15px] font-bold text-slate-700">
+                        GRC Number: {savedGrcNumber}
+                      </div>
+                    )}
+                  </div>
                   {/* Inline validation error for required source fields
                       (e.g. LR / Transaction Number on GRC Add) */}
                   {card.sourceKey && errors[card.sourceKey] && (

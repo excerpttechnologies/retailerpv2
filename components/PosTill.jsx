@@ -8,6 +8,7 @@ import MultiSelect from '@/components/MultiSelect';
 import ProductImage from '@/components/ProductImage';
 import CustomerProfilePanel from '@/components/CustomerProfilePanel';
 import { useScanner, useBarcodeLookup, useScanSound } from '@/components/useScanner';
+import { useOptions } from '@/components/useOptions';
 
 const PAYMENT_MODES = ['Cash', 'Credit', 'Export', 'COD'];
 const MULTI_PAYMENT_METHODS = ['Cash', 'PayTM', 'Bank Deposit'];
@@ -31,6 +32,7 @@ const customerLabel = (customer) => {
 
 function MultiplePay({ totalItems, totalPayable, onClose, onSubmit }) {
   const [payments, setPayments] = useState(() => MULTI_PAYMENT_METHODS.map((method) => ({ method, amount: '', note: '' })));
+  const [selectedMethod, setSelectedMethod] = useState('');
   const [sellNote, setSellNote] = useState('');
   const [staffNote, setStaffNote] = useState('');
   const totalPaying = payments.reduce((sum, payment) => sum + Number(payment.amount || 0), 0);
@@ -39,6 +41,22 @@ function MultiplePay({ totalItems, totalPayable, onClose, onSubmit }) {
 
   function updatePayment(index, key, value) {
     setPayments((current) => current.map((payment, i) => i === index ? { ...payment, [key]: value } : payment));
+  }
+
+  /* Picking a method moves the whole payable onto that row and clears the
+     others, so choosing PayTM after Cash swaps the amount across rather than
+     leaving the bill paid twice. Nothing is pre-selected: the cashier chooses,
+     and until they do every row reads 0.
+
+     Split payments still work - type into a second row after choosing, and
+     Total Paying / Balance add up as before. */
+  function chooseMethod(method) {
+    setSelectedMethod(method);
+    setPayments((current) => current.map((payment) => (
+      payment.method === method
+        ? { ...payment, amount: String(totalPayable) }
+        : { ...payment, amount: '' }
+    )));
   }
 
   return (
@@ -51,8 +69,8 @@ function MultiplePay({ totalItems, totalPayable, onClose, onSubmit }) {
         <div className="grid gap-4 pt-3 md:grid-cols-[1fr_220px]">
           <div>
             <div className="mb-3 text-[12px] text-danger">Enter payment amounts across one or more methods. The totals update automatically.</div>
-            <div className="grid grid-cols-[1fr_1fr_1.5fr] border-b border-line px-2 py-2 text-[12px] font-semibold text-inkmuted"><span>Method</span><span>Amount</span><span>Payment note</span></div>
-            {payments.map((payment, index) => <div className="grid grid-cols-[1fr_1fr_1.5fr] items-center gap-2 border-b border-line px-2 py-2" key={payment.method}><span className="text-[13px] font-semibold">{payment.method}</span><input className="f-input" type="number" min="0" step="0.01" placeholder="Enter amount" value={payment.amount} onChange={(event) => updatePayment(index, 'amount', event.target.value)} onWheel={(e) => e.currentTarget.blur()} /><input className="f-input" placeholder="Payment note" value={payment.note} onChange={(event) => updatePayment(index, 'note', event.target.value)} /></div>)}
+            <div className="grid grid-cols-[1fr_1fr_1.5fr] border-b border-line px-2 py-2 text-[12px] font-semibold text-inkmuted"><span>Method *</span><span>Amount</span><span>Payment note</span></div>
+            {payments.map((payment, index) => <div className="grid grid-cols-[1fr_1fr_1.5fr] items-center gap-2 border-b border-line px-2 py-2" key={payment.method}><label className={'flex cursor-pointer items-center text-[13px] ' + (selectedMethod === payment.method ? 'font-bold text-brand' : 'font-semibold text-ink')}><input type="radio" name="pos-pay-method" className="sr-only" checked={selectedMethod === payment.method} onChange={() => chooseMethod(payment.method)} />{payment.method}</label><input className="f-input" type="number" min="0" step="0.01" placeholder="Enter amount" value={payment.amount} onChange={(event) => updatePayment(index, 'amount', event.target.value)} onWheel={(e) => e.currentTarget.blur()} /><input className="f-input" placeholder="Payment note" value={payment.note} onChange={(event) => updatePayment(index, 'note', event.target.value)} /></div>)}
             <div className="mt-3 grid gap-2 md:grid-cols-2"><label className="field-label">Sell note<input className="f-input" value={sellNote} onChange={(event) => setSellNote(event.target.value)} /></label><label className="field-label">Staff note<input className="f-input" value={staffNote} onChange={(event) => setStaffNote(event.target.value)} /></label></div>
             <button type="button" className="btn btn-primary mx-auto mt-4 flex min-w-52 justify-center" onClick={() => onSubmit({ payments, sellNote, staffNote })}>Submit</button>
           </div>
@@ -112,7 +130,11 @@ export default function PosTill() {
   const [location, setLocation] = useState(initialLocation);
   const [counters, setCounters] = useState([]);
   const [counter, setCounter] = useState('');
-  const [salesPeople, setSalesPeople] = useState([]);
+  /* Staff Management -> Sales Persons, via /api/options?ref=salesperson.
+     This was `useState([])` with no setter ever called, so both the header
+     picker and the per-line Sales Person column were permanently empty. */
+  const { options: salesPeople } = useOptions('salesperson');
+
   const [salesPerson, setSalesPerson] = useState('');
   const [payMode, setPayMode] = useState('Cash');
   const [customerOptions, setCustomerOptions] = useState([{ value: 'walkin', label: 'Walk-in Customer' }]);
@@ -309,6 +331,11 @@ export default function PosTill() {
          single unit. Defaulting to the unit's own quantity is what makes a
          5-metre batch label bill as 5 metres rather than as 1. */
       qty: Number(unit.qty) || 1,
+      /* This barcode's own stock quantity, straight off the barcodeLabel row
+         the server just validated - what prints as "Closing: n" and caps the
+         QTY stepper. Kept separate from `qty` above, which is the quantity
+         being SOLD and is edited by the operator. */
+      closing: Number(unit.qty) || 0,
       rsp: Number(unit.offerPrice || unit.rsp || 0),
       discountPct: 0,
       image: unit.image || '',
@@ -394,7 +421,8 @@ export default function PosTill() {
       />
       {previewImage && <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/75 p-6" onClick={() => setPreviewImage(null)}><div className="relative max-h-full max-w-4xl rounded bg-white p-2 shadow-2xl" onClick={(e) => e.stopPropagation()}><button type="button" aria-label="Close image preview" className="absolute right-2 top-2 z-10 flex h-8 w-8 items-center justify-center rounded-full bg-black/70 text-white" onClick={() => setPreviewImage(null)}><Icon name="x" size={16} /></button><img src={previewImage.src} alt={previewImage.alt} className="max-h-[80vh] max-w-[80vw] object-contain" /></div></div>}
       {msg && <div className="mx-4 mt-2 flash flash-err">{msg}</div>}
-      <div className="mt-3 flex-1 overflow-x-auto px-4"><table className="dt"><thead><tr>{['#', 'Barcode No', 'Item Code', 'Item / Description', 'HSN', 'GST%', 'Qty', 'RSP Price', 'Disc %', 'Disc Amt', 'Line Total', 'Sales Person', 'Image', ''].map((heading) => <th key={heading}>{heading}</th>)}</tr></thead><tbody>{rows.length === 0 ? <tr><td colSpan="14" className="dt-empty">No Items Added</td></tr> : rows.map((row, index) => <tr key={`${row.itemId}-${index}`} className="cursor-pointer" onClick={() => setSelectedProduct(row)}><td>{index + 1}</td><td>{row.barcode || '-'}</td><td>{row.code}</td><td>{row.description || row.name}</td><td>{row.hsn}</td><td>{money(row.gst)}</td><td><input className="f-input w-20" type="number" min="0" value={row.qty} onWheel={(e) => e.currentTarget.blur()} onChange={(e) => updateItem(index, 'qty', e.target.value)} /></td><td><input className="f-input w-24" type="number" min="0" value={row.rsp} onWheel={(e) => e.currentTarget.blur()} onChange={(e) => updateItem(index, 'rsp', e.target.value)} /></td><td><input className="f-input w-20" type="number" min="0" value={row.discountPct} onWheel={(e) => e.currentTarget.blur()} onChange={(e) => updateItem(index, 'discountPct', e.target.value)} /></td><td>{money(row.discountAmount)}</td><td>{money(row.lineTotal)}</td><td><select className="f-input min-w-28" value={row.salesPerson || ''} onChange={(e) => updateItem(index, 'salesPerson', e.target.value)}><option value="">Select...</option>{salesPeople.map((person) => <option key={person.value} value={person.value}>{person.label}</option>)}</select></td><td><ProductImage src={row.image} alt={row.name} size={56} onOpen={() => { setSelectedProduct(row); setPreviewImage({ src: row.image, alt: row.name }); }} /></td><td><button type="button" className="act-btn bg-danger" onClick={(e) => { e.stopPropagation(); setItems((current) => current.filter((_, itemIndex) => itemIndex !== index)); if (selectedProduct?.itemId === row.itemId) setSelectedProduct(null); }}><Icon name="x" size={12} /></button></td></tr>)}</tbody></table></div>
+      <div className="mt-3 flex-1 overflow-x-auto px-4"><table className="dt"><thead><tr>{['#', 'Barcode No', 'Stock Issue', 'Item Code', 'Item / Description', 'HSN', 'GST%', 'Qty', 'RSP Price', 'Disc %', 'Disc Amt', 'Line Total', 'Sales Person', 'Image', ''].map((heading) => <th key={heading}>{heading}</th>)}</tr></thead><tbody>{rows.length === 0 ? <tr><td colSpan="15" className="dt-empty">No Items Added</td></tr> : rows.map((row, index) => <tr key={`${row.itemId}-${index}`} className="cursor-pointer !bg-[#FFF3CD]" onClick={() => setSelectedProduct(row)}><td>{index + 1}</td><td>{row.barcode || '-'}</td><td><input type="checkbox" checked={!!row.stockIssue} onClick={(e) => e.stopPropagation()} onChange={(e) => updateItem(index, 'stockIssue', e.target.checked)} /></td><td>{row.code}</td><td>{row.description || row.name}</td><td>{row.hsn}</td><td>{money(row.gst)}</td><td>{(() => { const closing = row.closing; const known = closing !== undefined && closing !== null; const over = known && Number(row.qty || 0) > Number(closing); return (<div className="flex flex-col items-center gap-0.5" onClick={(e) => e.stopPropagation()}><div className="flex items-center justify-center gap-1"><button type="button" aria-label="Decrease quantity" className="inline-flex h-[26px] w-[26px] shrink-0 items-center justify-center rounded border border-line bg-pillgrey text-[15px] font-bold leading-none text-ink hover:bg-linestrong disabled:opacity-40" disabled={Number(row.qty || 0) <= 1} onClick={() => updateItem(index, 'qty', Math.max(1, Number(row.qty || 1) - 1))}>-</button><input className={'f-input w-14 text-center' + (over ? ' border-danger text-danger' : '')} type="number" min="1" max={known ? closing : undefined} value={row.qty} onWheel={(e) => e.currentTarget.blur()} onChange={(e) => updateItem(index, 'qty', e.target.value)} /><button type="button" aria-label="Increase quantity" className="inline-flex h-[26px] w-[26px] shrink-0 items-center justify-center rounded border border-line bg-pillgrey text-[15px] font-bold leading-none text-ink hover:bg-linestrong disabled:opacity-40" disabled={known && Number(row.qty || 0) >= Number(closing)} onClick={() => updateItem(index, 'qty', Number(row.qty || 0) + 1)}>+</button></div>{known && <span className={'text-[11px] ' + (over ? 'font-semibold text-danger' : 'text-inkmuted')}>{over ? 'Only ' + closing + ' in stock' : 'Closing: ' + closing}</span>}</div>); })()}</td><td><input className="f-input w-24" type="number" min="0" value={row.rsp} onWheel={(e) => e.currentTarget.blur()} onChange={(e) => updateItem(index, 'rsp', e.target.value)} /></td><td><input className="f-input w-20" type="number" min="0" value={row.discountPct} onWheel={(e) => e.currentTarget.blur()} onChange={(e) => updateItem(index, 'discountPct', e.target.value)} /></td><td>{money(row.discountAmount)}</td><td>{money(row.lineTotal)}</td><td><select className="f-input min-w-28" value={row.salesPerson || ''} onChange={(e) => updateItem(index, 'salesPerson', e.target.value)}><option value="">Select...</option>{salesPeople.map((person) => <option key={person.value} value={person.value}>{person.label}</option>)}</select></td><td><ProductImage src={row.image} alt={row.name} size={56} onOpen={() => { setSelectedProduct(row); setPreviewImage({ src: row.image, alt: row.name }); }} /></td><td><button type="button" className="act-btn bg-danger" onClick={(e) => { e.stopPropagation(); setItems((current) => current.filter((_, itemIndex) => itemIndex !== index)); if (selectedProduct?.itemId === row.itemId) setSelectedProduct(null); }}><Icon name="x" size={12} /></button></td></tr>)}</tbody></table></div>
+      
       <div className="border-t border-line px-4 pt-2"><div className="grid grid-cols-2 gap-2 text-[13px] md:grid-cols-6"><div><div className="text-cell">Qty</div><div>{qty}</div></div><div><div className="text-cell">Bill Value</div><div>{money(rows.reduce((sum, row) => sum + Number(row.rsp || 0) * Number(row.qty || 0), 0))}</div></div><div><div className="text-cell">Total Discount</div><div>{money(rows.reduce((sum, row) => sum + row.discountAmount, 0))}</div></div><div><div className="text-cell">Sub Total</div><div>{money(billValue)}</div></div><div><div className="text-cell">Tax</div><div>{money(tax)}</div></div><div><div className="text-cell">Net Amount</div><div className="font-bold text-danger">{money(billValue + tax)}</div></div></div></div>
       <div className="mt-2 flex flex-wrap items-center gap-3 bg-[#eef1f7] px-4 py-3"><button type="button" className="btn bg-[#17a2b8] text-white"><Icon name="register" size={14} /> Hold</button><button type="button" className="btn bg-[#2563a9] text-white" onClick={() => setShowMultiplePay(true)}><Icon name="register" size={14} /> Multiple Pay</button><span className="text-[15px] font-bold">Total Payable: <span className="text-okgreen">{money(billValue + tax)}</span></span><button type="button" className="btn bg-[#f2a19b] text-white" onClick={() => setItems([])}><Icon name="x" size={14} /> Clear Screen</button><span className="flex-1" /><button type="button" className="btn btn-primary" onClick={() => router.push('/admin/transaction/sell/pos')}>Recent Transactions</button></div>
       {showMultiplePay && <MultiplePay totalItems={qty} totalPayable={billValue + tax} onClose={() => setShowMultiplePay(false)} onSubmit={submitPayment} />}

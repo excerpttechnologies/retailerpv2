@@ -24,6 +24,8 @@ const ContactSchema = new mongoose.Schema(
     additionalTradeName: { type: String, default: '' },
     gstStatus: { type: String, default: '' },
     gstTaxpayerType: { type: String, default: '' },
+   gstCoreBusinessActivity: { type: String, default: '' },
+   hsn: { type: String, default: '' },
     gstAadhaarAuthenticated: { type: String, default: '' },
     gstEkycVerified: { type: String, default: '' },
     gstAdministrativeOffice: { type: String, default: '' },

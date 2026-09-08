@@ -1,0 +1,91 @@
+╔══════════════════════════════════════════════════════════════╗
+║                                                              ║
+║         SUPPLIER DATA DELETION - QUICK START GUIDE          ║
+║                                                              ║
+╚══════════════════════════════════════════════════════════════╝
+
+📊 CURRENT DATABASE STATUS:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  Suppliers:  442 records  ← WILL BE DELETED
+  Customers:  15,440 records  ← WILL BE PRESERVED
+  Agents:     8 records  ← WILL BE PRESERVED
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+🚀 TO DELETE SUPPLIERS, RUN THIS COMMAND:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+    npm run delete:suppliers
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+📝 WHAT HAPPENS:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  1. Script connects to MongoDB
+  2. Finds all 442 supplier records
+  3. Checks if they're used in purchase/inventory
+  4. Creates backup file (supplier_backup_*.json)
+  5. Asks you to confirm (type "yes")
+  6. Deletes supplier records
+  7. Verifies deletion
+  8. Shows final report
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+⚠️  WHAT GETS DELETED:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  ✗ 442 supplier records from database
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+✅ WHAT IS PRESERVED:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  ✓ Supplier module UI pages
+  ✓ Supplier API routes
+  ✓ All customer data (15,440 records)
+  ✓ All agent data (8 records)
+  ✓ Purchase records
+  ✓ Inventory data
+  ✓ All other ERP modules
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+💡 AFTER DELETION:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  • Supplier list page will be empty
+  • You can still add new suppliers
+  • Supplier module still works 100%
+  • Backup saved for rollback if needed
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+🔧 ALTERNATIVE OPTIONS:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+FORCE DELETE (deletes all suppliers even with dependencies):
+
+    npm run delete:suppliers:force
+
+
+MANUAL DELETE (via MongoDB Compass):
+
+    1. Filter: { "contactKind": "Supplier" }
+    2. Export to backup file
+    3. Run: db.contact.deleteMany({ "contactKind": "Supplier" })
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+📚 MORE INFO:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  Read: SUPPLIER_DELETION_SUMMARY.md
+  Read: SEEDDELETE_README.md
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+═══════════════════════════════════════════════════════════════
+
+              READY TO RUN: npm run delete:suppliers
+
+═══════════════════════════════════════════════════════════════

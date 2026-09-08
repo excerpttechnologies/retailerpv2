@@ -144,6 +144,12 @@ const REFS = {
   purchasegroup:             { load: () => import('@/models/PurchaseGroup') },
   stockpoint:                { load: () => import('@/models/StockPoint') },
   poscounter:                { load: () => import('@/models/PosCounter') },
+  /* Staff Management -> Sales Persons. Only Active people are offered:
+     retiring someone should take them out of the till's picker without
+     deleting the record the past bills point at. codeField appends the
+     SP Code for display and makes it searchable, the same way supplier
+     does with the G-code. */
+  salesperson:               { load: () => import('@/models/SalesPerson'), where: { status: 'Active' }, codeField: 'spCode' },
   paymentmethod:             { load: () => import('@/models/PaymentMethod') },
   tax:                       { load: () => import('@/models/Tax') },
   hsn:                       { load: () => import('@/models/Hsn') },

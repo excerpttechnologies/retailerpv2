@@ -93,6 +93,26 @@ select {
   .btn-dark { @apply border-[#6b7280] bg-[#6b7280] text-white hover:bg-[#5b6472]; }
   .btn-submit { @apply mx-auto mt-2 flex h-[38px] w-full max-w-[280px] justify-center; }
 
+  .grc-header-fields-grid {
+    display: grid;
+    grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr) 140px minmax(0, 0.75fr) 140px;
+    gap: 16px;
+  }
+  .grc-header-fields-grid .grc-bottom-freight { grid-row: 3; grid-column: 1; }
+  .grc-header-fields-grid .grc-bottom-stock-point { grid-row: 3; grid-column: 2; }
+  .grc-header-fields-grid .grc-bottom-invoice-copy { grid-row: 3; grid-column: 3; }
+  .grc-header-fields-grid .grc-bottom-waybill { grid-row: 3; grid-column: 4; }
+  @media (max-width: 900px) {
+    .grc-header-fields-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .grc-header-fields-grid .grc-bottom-freight,
+    .grc-header-fields-grid .grc-bottom-stock-point,
+    .grc-header-fields-grid .grc-bottom-invoice-copy,
+    .grc-header-fields-grid .grc-bottom-waybill {
+      grid-row: auto;
+      grid-column: auto;
+    }
+  }
+
   .search-input {
     @apply h-[34px] w-[220px] rounded-md border border-linestrong pl-[30px] pr-2.5
            text-[13px] outline-none focus:border-[#8fb0e8];

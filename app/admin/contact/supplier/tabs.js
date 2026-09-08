@@ -176,6 +176,18 @@ export const TABS = [
               "span": 2
             },
             {
+              "k": "gstCoreBusinessActivity",
+              "label": "Business Activities",
+              "type": "badge",
+              "span": 2
+            },
+            {
+              "k": "hsn",
+              "label": "HSN",
+              "type": "text",
+              "span": 2
+            },
+            {
               "k": "gstAdministrativeOffice",
               "label": "GST Administrative Office",
               "type": "text",

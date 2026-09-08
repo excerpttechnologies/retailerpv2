@@ -5,6 +5,7 @@ import Business from '@/models/Business';
 import CompanyLocation from '@/models/CompanyLocation';
 import Contact from '@/models/Contact';
 import PosCounter from '@/models/PosCounter';
+import StockAdjustment from '@/models/StockAdjustment';
 import { requireSession } from '@/lib/session';
 import { resolveRefLabels } from '@/lib/refLabels';
 import { validate, escapeRegex } from '@/lib/validate';
@@ -178,6 +179,43 @@ export const POST = handler(async (req) => {
       await sellUnits({
         units, invoice, locationId: doc.locationId, user: session, session: dbSession,
       });
+    }
+
+    /* Lines the operator ticked STOCK ISSUE on are also recorded as a Stock
+       Adjustment, so they show on Inventory -> Stock Adjustment. One document
+       per bill carrying only the ticked lines; an untouched line stays a
+       plain sale and is not repeated here.
+
+       DELIBERATELY NOT calling adjustStock(). That is what the manual
+       adjustment screen does, and it is right there because nothing else has
+       moved the stock yet. Here sellUnits() above has ALREADY taken these
+       units out (IN_STOCK -> SOLD) and written their POS_OUT ledger rows, so
+       adjusting again would remove the same stock twice and leave the
+       movement ledger disagreeing with the barcode rows. This record is the
+       register entry, not a second movement.
+
+       Inside the same transaction as the invoice: a bill that rolls back must
+       not leave an adjustment behind pointing at a sale that never happened. */
+    const issueLines = (doc.items || []).filter((l) => l.stockIssue === true);
+    if (issueLines.length) {
+      const adjustmentNo = await nextDocNumber(
+        StockAdjustment, 'adjustmentNo', 'Stock Adjustment',
+        { businessId: doc.businessId, locationId: doc.locationId, finYear: doc.finYear },
+        dbSession
+      );
+
+      await StockAdjustment.create([{
+        businessId: doc.businessId,
+        locationId: doc.locationId,
+        finYear: doc.finYear,
+        adjustmentNo,
+        type: 'ISSUE',
+        adjustmentReason: 'POS Stock Issue',
+        adjustmentDate: doc.date,
+        remarks: 'Auto-created from POS invoice ' + (invoice.invoiceNo || ''),
+        createdBy: session?.name || session?.email || '',
+        items: issueLines,
+      }], dbSession ? { session: dbSession } : {});
     }
 
     return invoice;

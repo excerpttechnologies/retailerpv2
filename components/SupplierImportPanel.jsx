@@ -87,6 +87,7 @@ function mapParsedToFields(parsed, cityMatch) {
   put('gstTaxpayerType', parsed.taxpayerType);
   put('gstAadhaarAuthenticated', parsed.aadhaarAuthenticated);
   put('gstEkycVerified', parsed.ekycVerified);
+  put('gstCoreBusinessActivity', parsed.coreBusinessActivity || parsed.businessActivities.join(', '));
   /* no field of their own - stored against the supplier so the jurisdiction
      the search returned is not simply discarded */
   put('gstAdministrativeOffice', parsed.administrativeOffice);
@@ -262,12 +263,11 @@ export default function SupplierImportPanel({ data = {}, labels = {}, onApply })
          the dropdown does not have would either sit there invalid or tempt a
          duplicate master record, so an unmatched one is left blank and said
          out loud instead. */
-      let cityMatch = '';
       const wantCity = parsed.address?.city || '';
+      let cityMatch = wantCity;
       if (wantCity) {
         const cities = await lookup('/api/cities?q=' + encodeURIComponent(wantCity));
-        cityMatch = matchOption(wantCity, cities?.options || []);
-        if (!cityMatch) warnings.push(`City "${wantCity}" could not be confidently matched. Please verify manually.`);
+        cityMatch = matchOption(wantCity, cities?.options || []) || wantCity;
       }
 
       /* HSN: reported only. This form has no HSN field, and nothing here
@@ -298,10 +298,7 @@ export default function SupplierImportPanel({ data = {}, labels = {}, onApply })
       /* Only what still has nowhere to go. Constitution, status and taxpayer
          type moved out of here and into real fields, so listing them again
          as "no field for these" would now be untrue. */
-      const context = [
-        ['Core Business Activity', parsed.coreBusinessActivity],
-        ['Business Activities', parsed.businessActivities.join(', ')],
-      ].filter(([, v]) => String(v || '').trim());
+      const context = [];
 
       openReview('GST', values, context, [], {
         parsed, hsn, warnings, duplicate, cityMatch,

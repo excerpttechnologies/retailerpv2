@@ -242,5 +242,5 @@ export async function POST(req) {
 
   const created = await Grc.create(doc);
 
-  return json({ ok: true, id: String(created._id) });
+  return json({ ok: true, id: String(created._id), grcNumber: created.grcNumber });
 }

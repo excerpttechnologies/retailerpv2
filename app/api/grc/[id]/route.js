@@ -64,7 +64,7 @@ export async function GET(_req, { params }) {
 
   const [rows, supplier] = await Promise.all([
     BarcodeLabel.find({ grcId: id }).sort({ createdAt: 1 }).lean(),
-    grc.supplierId ? Contact.findById(grc.supplierId).select('businessName firstName lastName').lean() : null,
+      grc.supplierId ? Contact.findById(grc.supplierId).select('businessName firstName lastName markUpOnCostRsp markUpOnCostWsp markUpOnCostDp').lean() : null,
   ]);
 
   return json({
@@ -72,6 +72,11 @@ export async function GET(_req, { params }) {
       ...grc,
       _id: String(grc._id),
       supplierName: supplier?.businessName || [supplier?.firstName, supplier?.lastName].filter(Boolean).join(' '),
+        supplierMarkup: {
+          rsp: supplier?.markUpOnCostRsp ?? null,
+          wsp: supplier?.markUpOnCostWsp ?? null,
+          dp: supplier?.markUpOnCostDp ?? null,
+        },
     },
     rows: rows.map((r) => ({ ...r, _id: String(r._id) })),
   });

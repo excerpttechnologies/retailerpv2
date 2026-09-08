@@ -500,27 +500,30 @@ export const NAV = [
 
 
 
-  // {
-  //   label: 'Staff Management',
-  //   icon: LuUsers,
-  //   children: [
-  //     {
-  //       label: 'Roles & Permissions',
-  //       icon: LuShieldCheck,
-  //       href: '/admin/staff-management/roles-permissions',
-  //     },
-  //     {
-  //       label: 'Staffs',
-  //       icon: LuUsers,
-  //       href: '/admin/staff-management/staff',
-  //     },
-  //     {
-  //       label: 'Sales Persons',
-  //       icon: LuUserRound,
-  //       href: '/admin/staff-management/staff/salesperson',
-  //     },
-  //   ],
-  // },
+  {
+    label: 'Staff Management',
+    icon: LuUsers,
+    children: [
+      /* Roles & Permissions and Staffs have no screen yet - both 404.
+         Kept commented rather than shipped as dead links, the same call the
+         E-commerce block's Orders and Coupons entries got. */
+      // {
+      //   label: 'Roles & Permissions',
+      //   icon: LuShieldCheck,
+      //   href: '/admin/staff-management/roles-permissions',
+      // },
+      // {
+      //   label: 'Staffs',
+      //   icon: LuUsers,
+      //   href: '/admin/staff-management/staff',
+      // },
+      {
+        label: 'Sales Persons',
+        icon: LuUserRound,
+        href: '/admin/staff-management/staff/salesperson',
+      },
+    ],
+  },
   
  
   // {

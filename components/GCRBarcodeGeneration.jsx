@@ -17,6 +17,13 @@ const money = (value) => {
 };
 
 const round2 = (value) => Math.round((Number(value || 0) + Number.EPSILON) * 100) / 100;
+const decimal2 = (value) => {
+  const raw = String(value ?? '').replace(/[^0-9.]/g, '');
+  const dot = raw.indexOf('.');
+  if (dot < 0) return raw;
+  return raw.slice(0, dot + 1) + raw.slice(dot + 1).replace(/\./g, '').slice(0, 2);
+};
+const fixed2 = (value) => (Number.isFinite(Number(value)) ? Number(value).toFixed(2) : '');
 
 const meterRegex = /(mtr|meter|metre|meters|metres)/i;
 const pcRegex = /(pc|pcs|piece|pieces)/i;
@@ -494,7 +501,7 @@ function SerialNoField({ value, onChange, editableClass, readOnlyClass, locked =
   );
 }
 
-function AddItemModal({ open, onClose, onSubmit, onSubmitAndPrint, rowCount = 0, barcodeFormat, reserveNumbers, business = "" }) {
+function AddItemModal({ open, onClose, onSubmit, onSubmitAndPrint, rowCount = 0, barcodeFormat, reserveNumbers, business = "", markupDefaults = {} }) {
   const createBlankForm = (overrides = {}) => ({
     oldBarcode: "",
     itemCode: "",
@@ -521,11 +528,11 @@ function AddItemModal({ open, onClose, onSubmit, onSubmitAndPrint, rowCount = 0,
     discountType: "Percentage",
     discount: "0",
     finalPrice: "0.00",
-    markupRSP: 100,
+    markupRSP: markupDefaults.rsp ?? 100,
     rspPrice: "0.00",
-    markupWSP: 15,
+    markupWSP: markupDefaults.wsp ?? 15,
     wspPrice: "0.00",
-    markupDP: 15,
+    markupDP: markupDefaults.dp ?? 15,
     dpPrice: "0.00",
     rspOfferPct: 0,
     rspOfferPrice: "0.00",
@@ -533,6 +540,7 @@ function AddItemModal({ open, onClose, onSubmit, onSubmitAndPrint, rowCount = 0,
     wspOfferPrice: "0.00",
     dpOfferPct: 0,
     dpOfferPrice: "0.00",
+    offerApplicable: false,
     serialNo: 1,
     ...overrides,
   });
@@ -551,6 +559,7 @@ function AddItemModal({ open, onClose, onSubmit, onSubmitAndPrint, rowCount = 0,
   const [hsnLabel, setHsnLabel] = useState('');
   const itemTimerRef = useRef(null);
   const hsnTimerRef = useRef(null);
+  const itemDetailRef = useRef(0);
   const [cutRows, setCutRows] = useState([{ id: 1, value: "" }]);
   const [focusedCutIndex, setFocusedCutIndex] = useState(0);
   const cutTargetRef = useRef(0);
@@ -732,7 +741,18 @@ function AddItemModal({ open, onClose, onSubmit, onSubmitAndPrint, rowCount = 0,
 
   const resolveHsnGst = async (hsnDoc) => {
     const code = hsnDoc?.code || hsnDoc?.label || "";
-    const taxId = hsnDoc?.taxSlabs?.[0]?.gstTaxNameId || "";
+    let taxId = hsnDoc?.taxSlabs?.[0]?.gstTaxNameId || "";
+
+    if (!taxId && code) {
+      try {
+        const response = await fetch(`/api/hsn?perPage=20&search=${encodeURIComponent(code)}`);
+        const payload = await response.json();
+        const match = (payload.rows || []).find((row) => String(row.code || '').trim() === String(code).trim());
+        taxId = match?.taxSlabs?.[0]?.gstTaxNameId || '';
+      } catch {
+        taxId = '';
+      }
+    }
 
     setForm((current) => ({ ...current, hsn: code, hsnId: hsnDoc?.value || current.hsnId }));
 
@@ -848,10 +868,18 @@ function AddItemModal({ open, onClose, onSubmit, onSubmitAndPrint, rowCount = 0,
 
   const handleItemSelection = async (opt) => {
     if (!opt) {
+      itemDetailRef.current += 1;
       setItemLabel('');
-      setForm((current) => ({ ...current, itemId: "", itemName: "", itemCode: "", subGroupName: "", groupName: "", printDescription: "" }));
+      setForm((current) => ({
+        ...current,
+        itemId: "", itemName: "", itemCode: "", subGroupName: "", groupName: "", printDescription: "",
+        hsnId: "", hsn: "", gst: "0",
+        markupRSP: markupDefaults.rsp ?? "", markupWSP: markupDefaults.wsp ?? "", markupDP: markupDefaults.dp ?? "",
+      }));
       return;
     }
+    const detailRequest = itemDetailRef.current + 1;
+    itemDetailRef.current = detailRequest;
     const itemCode = opt.itemCode || opt.primaryLabel || "";
     const itemName = opt.name || opt.secondaryLabel || "";
     setItemLabel(itemCode);
@@ -861,7 +889,33 @@ function AddItemModal({ open, onClose, onSubmit, onSubmitAndPrint, rowCount = 0,
       itemCode,
       itemName,
       printDescription: opt.description || "",
+      hsnId: "",
+      hsn: "",
+      gst: "0",
+      markupRSP: markupDefaults.rsp ?? "",
+      markupWSP: markupDefaults.wsp ?? "",
+      markupDP: markupDefaults.dp ?? "",
     }));
+    try {
+      const response = await fetch(`/api/item/${encodeURIComponent(opt.value)}/detail`);
+      const payload = await response.json();
+      if (!response.ok || itemDetailRef.current !== detailRequest) return;
+      const item = payload?.item || {};
+      const firstSlab = item.slabs?.[0] || {};
+      const gst = Number(firstSlab.igst ?? firstSlab.cgst ?? firstSlab.sgst ?? 0);
+      setHsnLabel(item.hsnCode || '');
+      setForm((current) => ({
+        ...current,
+        hsnId: item.hsnId || "",
+        hsn: item.hsnCode || "",
+        gst: String(gst || 0),
+        markupRSP: item.markupRSP == null ? (markupDefaults.rsp ?? "") : fixed2(item.markupRSP),
+        markupWSP: item.markupWSP == null ? (markupDefaults.wsp ?? "") : fixed2(item.markupWSP),
+        markupDP: item.markupDP == null ? (markupDefaults.dp ?? "") : fixed2(item.markupDP),
+      }));
+    } catch {
+      if (itemDetailRef.current === detailRequest) setHsnLabel('');
+    }
     await resolveProductGroup(opt.subGroupId || "");
   };
 
@@ -907,7 +961,7 @@ function AddItemModal({ open, onClose, onSubmit, onSubmitAndPrint, rowCount = 0,
       }
       if (key === "rspPrice") {
         const price = Number(value || 0);
-        next.markupRSP = netPrice > 0 ? (((price / netPrice) - 1) * 100) : 0;
+        next.markupRSP = netPrice > 0 ? fixed2(((price / netPrice) - 1) * 100) : '0.00';
         next.rspOfferPrice = (price * (1 - Number(current.rspOfferPct || 0) / 100)).toFixed(2);
       }
       if (key === "markupWSP") {
@@ -917,7 +971,7 @@ function AddItemModal({ open, onClose, onSubmit, onSubmitAndPrint, rowCount = 0,
       }
       if (key === "wspPrice") {
         const price = Number(value || 0);
-        next.markupWSP = netPrice > 0 ? (((price / netPrice) - 1) * 100) : 0;
+        next.markupWSP = netPrice > 0 ? fixed2(((price / netPrice) - 1) * 100) : '0.00';
         next.wspOfferPrice = (price * (1 - Number(current.wspOfferPct || 0) / 100)).toFixed(2);
       }
       if (key === "markupDP") {
@@ -927,7 +981,7 @@ function AddItemModal({ open, onClose, onSubmit, onSubmitAndPrint, rowCount = 0,
       }
       if (key === "dpPrice") {
         const price = Number(value || 0);
-        next.markupDP = netPrice > 0 ? (((price / netPrice) - 1) * 100) : 0;
+        next.markupDP = netPrice > 0 ? fixed2(((price / netPrice) - 1) * 100) : '0.00';
         next.dpOfferPrice = (price * (1 - Number(current.dpOfferPct || 0) / 100)).toFixed(2);
       }
 
@@ -948,7 +1002,7 @@ function AddItemModal({ open, onClose, onSubmit, onSubmitAndPrint, rowCount = 0,
       }
       if (key === "rspOfferPrice") {
         const offerPrice = Number(value || 0);
-        next.rspOfferPct = rspBase > 0 ? (((rspBase - offerPrice) / rspBase) * 100) : 0;
+        next.rspOfferPct = rspBase > 0 ? fixed2(((rspBase - offerPrice) / rspBase) * 100) : '0.00';
       }
       if (key === "wspOfferPct") {
         const pct = Number(value || 0);
@@ -956,7 +1010,7 @@ function AddItemModal({ open, onClose, onSubmit, onSubmitAndPrint, rowCount = 0,
       }
       if (key === "wspOfferPrice") {
         const offerPrice = Number(value || 0);
-        next.wspOfferPct = wspBase > 0 ? (((wspBase - offerPrice) / wspBase) * 100) : 0;
+        next.wspOfferPct = wspBase > 0 ? fixed2(((wspBase - offerPrice) / wspBase) * 100) : '0.00';
       }
       if (key === "dpOfferPct") {
         const pct = Number(value || 0);
@@ -964,7 +1018,7 @@ function AddItemModal({ open, onClose, onSubmit, onSubmitAndPrint, rowCount = 0,
       }
       if (key === "dpOfferPrice") {
         const offerPrice = Number(value || 0);
-        next.dpOfferPct = dpBase > 0 ? (((dpBase - offerPrice) / dpBase) * 100) : 0;
+        next.dpOfferPct = dpBase > 0 ? fixed2(((dpBase - offerPrice) / dpBase) * 100) : '0.00';
       }
 
       return next;
@@ -1047,9 +1101,12 @@ function AddItemModal({ open, onClose, onSubmit, onSubmitAndPrint, rowCount = 0,
       setReserveError("Serial No. must be 1 or more.");
       return;
     }
-    if (!form.itemName?.trim()) return;
-    if (!form.sm?.trim() || !form.p_m_f?.trim()) {
-      setReserveError("SM and P-M-F are required.");
+    if (!form.itemName?.trim()) {
+      setReserveError("Please select an Item Code.");
+      return;
+    }
+    if (!form.p_m_f?.trim()) {
+      setReserveError("P-M-F is required.");
       return;
     }
     if (reserving) return;                       // guards the double-click
@@ -1125,19 +1182,19 @@ function AddItemModal({ open, onClose, onSubmit, onSubmitAndPrint, rowCount = 0,
         rsp: String(form.rspPrice || 0),
         wsp: String(form.wspPrice || 0),
         dp: String(form.dpPrice || 0),
-        offerPrice: String(form.rspOfferPrice || form.rspPrice || 0),
-        wspPrice: String(form.wspOfferPrice || form.wspPrice || 0),
-        dpPrice: String(form.dpOfferPrice || form.dpPrice || 0),
-        rspOfferPct: form.rspOfferPct,
-        wspOfferPct: form.wspOfferPct,
-        dpOfferPct: form.dpOfferPct,
+        offerPrice: form.offerApplicable ? String(form.rspOfferPrice || form.rspPrice || 0) : '',
+        wspPrice: form.offerApplicable ? String(form.wspOfferPrice || form.wspPrice || 0) : '',
+        dpPrice: form.offerApplicable ? String(form.dpOfferPrice || form.dpPrice || 0) : '',
+        rspOfferPct: form.offerApplicable ? form.rspOfferPct : '',
+        wspOfferPct: form.offerApplicable ? form.wspOfferPct : '',
+        dpOfferPct: form.offerApplicable ? form.dpOfferPct : '',
         markupRSP: form.markupRSP,
         markupWSP: form.markupWSP,
         markupDP: form.markupDP,
       }));
     });
 
-    if (printAfterSubmit && onSubmitAndPrint) onSubmitAndPrint(generatedRows);
+    if (printAfterSubmit && onSubmitAndPrint) await onSubmitAndPrint(generatedRows);
     else onSubmit(generatedRows);
 
     const nextSerial = incrementSerial(baseSerial);
@@ -1168,6 +1225,7 @@ function AddItemModal({ open, onClose, onSubmit, onSubmitAndPrint, rowCount = 0,
       markupRSP: current.markupRSP,
       markupWSP: current.markupWSP,
       markupDP: current.markupDP,
+      offerApplicable: current.offerApplicable,
       serialNo: nextSerial,
     }));
     setCutRows([{ id: 1, value: "" }]);
@@ -1248,8 +1306,8 @@ function AddItemModal({ open, onClose, onSubmit, onSubmitAndPrint, rowCount = 0,
 
             <div className="grid grid-cols-2 gap-2">
               <div className="space-y-1">
-                <label className="block text-[11px] font-semibold text-gray-700">SM *</label>
-                <input value={form.sm} onChange={(event) => updateField("sm", event.target.value)} className={`w-full rounded-md px-2 py-2 text-sm ${editableClass}`} />
+                <label className="block text-[11px] font-semibold text-gray-700">SM(Number)</label>
+                <input type="number" step="1" min={0} value={form.sm} onChange={(event) => updateField("sm", event.target.value)} className={`w-full rounded-md px-2 py-2 text-sm ${editableClass}`} />
               </div>
               <div className="space-y-1">
                 <label className="block text-[11px] font-semibold text-gray-700">P-M-F *</label>
@@ -1292,14 +1350,11 @@ function AddItemModal({ open, onClose, onSubmit, onSubmitAndPrint, rowCount = 0,
 
             {renderHsnField()}
 
-            <div className="space-y-1 flex items-end">
-              <label className="flex w-full cursor-pointer items-center justify-start gap-3 rounded-md border border-[#dfe4eb] bg-white px-3 py-2 text-sm text-gray-700">
+            <div className="flex items-end gap-0">
+              <label className="flex w-fit cursor-pointer items-center justify-start gap-3 whitespace-nowrap rounded-md border border-[#dfe4eb] bg-white px-3 py-2 text-sm text-gray-700">
                 <input type="checkbox" checked={form.uniqueBarcode} onChange={(event) => updateField("uniqueBarcode", event.target.checked)} className="h-4 w-4 accent-[#0d5ddc]" /> Unique Barcode
               </label>
-            </div>
-
-            <div className="space-y-1 flex items-end">
-              <label className="flex w-full cursor-pointer items-center justify-start gap-3 rounded-md border border-[#dfe4eb] bg-white px-3 py-2 text-sm text-gray-700">
+              <label className="flex w-fit cursor-pointer items-center justify-start gap-3 whitespace-nowrap rounded-md border border-[#dfe4eb] bg-white px-3 py-2 text-sm text-gray-700">
                 <input type="checkbox" checked={form.isMtr} onChange={(event) => {
                   const checked = event.target.checked;
                   updateField("isMtr", checked);
@@ -1314,6 +1369,9 @@ function AddItemModal({ open, onClose, onSubmit, onSubmitAndPrint, rowCount = 0,
                     setCutRows([{ id: 1, value: "" }]);
                   }
                 }} className="h-4 w-4 accent-[#0d5ddc]" /> MTR
+              </label>
+              <label className="flex w-fit cursor-pointer items-center justify-start gap-3 whitespace-nowrap rounded-md border border-[#dfe4eb] bg-white px-3 py-2 text-sm text-gray-700">
+                <input type="checkbox" checked={form.offerApplicable} onChange={(event) => updateField("offerApplicable", event.target.checked)} className="h-4 w-4 accent-[#0d5ddc]" /> OFFER APPLICABLE
               </label>
             </div>
           </div>
@@ -1350,7 +1408,7 @@ function AddItemModal({ open, onClose, onSubmit, onSubmitAndPrint, rowCount = 0,
                     setCutRows(makeMeterCutRows(count, Number(form.totalMtr || 0)));
                   }} className={`w-full rounded-md px-2 py-2 text-sm ${editableClass}`} />
                 ) : (
-                  <input type="number" min={1} value={form.qty} onWheel={(e) => e.currentTarget.blur()} onChange={(event) => updateField("qty", event.target.value)} className={`w-full rounded-md px-2 py-2 text-sm ${editableClass}`} />
+                  <input type="text" inputMode="decimal" value={form.qty} onWheel={(e) => e.currentTarget.blur()} onChange={(event) => updateField("qty", decimal2(event.target.value))} className={`w-full rounded-md px-2 py-2 text-sm ${editableClass}`} />
                 )}
               </div>
 
@@ -1386,7 +1444,7 @@ function AddItemModal({ open, onClose, onSubmit, onSubmitAndPrint, rowCount = 0,
 
               <div className="space-y-1">
                 <label className="block text-[11px] font-semibold text-gray-700">Purchase Rate *</label>
-                <input type="number" step="0.01" min={0} value={form.purchaseRate} onWheel={(e) => e.currentTarget.blur()} onChange={(event) => updateField("purchaseRate", event.target.value)} className={`w-full rounded-md px-2 py-2 text-sm ${editableClass}`} />
+                <input type="text" inputMode="decimal" value={form.purchaseRate} onWheel={(e) => e.currentTarget.blur()} onChange={(event) => updateField("purchaseRate", decimal2(event.target.value))} className={`w-full rounded-md px-2 py-2 text-sm ${editableClass}`} />
               </div>
 
               <div className="space-y-1">
@@ -1399,7 +1457,7 @@ function AddItemModal({ open, onClose, onSubmit, onSubmitAndPrint, rowCount = 0,
 
               <div className="space-y-1">
                 <label className="block text-[11px] font-semibold text-gray-700">Discount *</label>
-                <input type="number" step="0.01" min={0} value={form.discount} onWheel={(e) => e.currentTarget.blur()} onChange={(event) => updateField("discount", event.target.value)} className={`w-full rounded-md px-2 py-2 text-sm ${editableClass}`} />
+                <input type="text" inputMode="decimal" value={form.discount} onWheel={(e) => e.currentTarget.blur()} onChange={(event) => updateField("discount", decimal2(event.target.value))} className={`w-full rounded-md px-2 py-2 text-sm ${editableClass}`} />
               </div>
 
               {!form.isMtr && (
@@ -1414,27 +1472,27 @@ function AddItemModal({ open, onClose, onSubmit, onSubmitAndPrint, rowCount = 0,
             <div className="mt-4 grid grid-cols-1 gap-3 md:grid-cols-6">
               <div className="space-y-1">
                 <label className="block text-[11px] font-semibold text-gray-700">Markup RSP % *</label>
-                <input type="text" inputMode="numeric" maxLength={2} value={form.markupRSP} onChange={(event) => updateMarkupValue("markupRSP", twoDigitPercent(event.target.value))} className={`w-full rounded-md px-2 py-2 text-sm ${editableClass}`} />
+                <input type="text" inputMode="decimal" value={form.markupRSP} onChange={(event) => updateMarkupValue("markupRSP", decimal2(event.target.value))} className={`w-full rounded-md px-2 py-2 text-sm ${editableClass}`} />
               </div>
               <div className="space-y-1">
                 <label className="block text-[11px] font-semibold text-gray-700">RSP Price *</label>
-                <input type="number" step="0.01" min={0} value={form.rspPrice} onWheel={(e) => e.currentTarget.blur()} onChange={(event) => updateMarkupValue("rspPrice", event.target.value)} className={`w-full rounded-md px-2 py-2 text-sm ${editableClass}`} />
+                <input type="text" inputMode="decimal" value={form.rspPrice} onWheel={(e) => e.currentTarget.blur()} onChange={(event) => updateMarkupValue("rspPrice", decimal2(event.target.value))} className={`w-full rounded-md px-2 py-2 text-sm ${editableClass}`} />
               </div>
               <div className="space-y-1">
                 <label className="block text-[11px] font-semibold text-gray-700">Markup WSP % *</label>
-                <input type="number" min={0} value={form.markupWSP} onWheel={(e) => e.currentTarget.blur()} onChange={(event) => updateMarkupValue("markupWSP", event.target.value)} className={`w-full rounded-md px-2 py-2 text-sm ${editableClass}`} />
+                <input type="text" inputMode="decimal" value={form.markupWSP} onWheel={(e) => e.currentTarget.blur()} onChange={(event) => updateMarkupValue("markupWSP", decimal2(event.target.value))} className={`w-full rounded-md px-2 py-2 text-sm ${editableClass}`} />
               </div>
               <div className="space-y-1">
                 <label className="block text-[11px] font-semibold text-gray-700">WSP Price *</label>
-                <input type="number" step="0.01" min={0} value={form.wspPrice} onWheel={(e) => e.currentTarget.blur()} onChange={(event) => updateMarkupValue("wspPrice", event.target.value)} className={`w-full rounded-md px-2 py-2 text-sm ${editableClass}`} />
+                <input type="text" inputMode="decimal" value={form.wspPrice} onWheel={(e) => e.currentTarget.blur()} onChange={(event) => updateMarkupValue("wspPrice", decimal2(event.target.value))} className={`w-full rounded-md px-2 py-2 text-sm ${editableClass}`} />
               </div>
               <div className="space-y-1">
                 <label className="block text-[11px] font-semibold text-gray-700">Markup E-COMM % *</label>
-                <input type="number" min={0} value={form.markupDP} onWheel={(e) => e.currentTarget.blur()} onChange={(event) => updateMarkupValue("markupDP", event.target.value)} className={`w-full rounded-md px-2 py-2 text-sm ${editableClass}`} />
+                <input type="text" inputMode="decimal" value={form.markupDP} onWheel={(e) => e.currentTarget.blur()} onChange={(event) => updateMarkupValue("markupDP", decimal2(event.target.value))} className={`w-full rounded-md px-2 py-2 text-sm ${editableClass}`} />
               </div>
               <div className="space-y-1">
                 <label className="block text-[11px] font-semibold text-gray-700">E-COMM Price *</label>
-                <input type="number" step="0.01" min={0} value={form.dpPrice} onWheel={(e) => e.currentTarget.blur()} onChange={(event) => updateMarkupValue("dpPrice", event.target.value)} className={`w-full rounded-md px-2 py-2 text-sm ${editableClass}`} />
+                <input type="text" inputMode="decimal" value={form.dpPrice} onWheel={(e) => e.currentTarget.blur()} onChange={(event) => updateMarkupValue("dpPrice", decimal2(event.target.value))} className={`w-full rounded-md px-2 py-2 text-sm ${editableClass}`} />
               </div>
             </div>
 
@@ -1442,27 +1500,27 @@ function AddItemModal({ open, onClose, onSubmit, onSubmitAndPrint, rowCount = 0,
             <div className="mt-4 grid grid-cols-1 gap-3 md:grid-cols-6">
               <div className="space-y-1">
                 <label className="block text-[11px] font-semibold text-gray-700">RSP Offer %</label>
-                <input type="text" inputMode="numeric" maxLength={2} value={form.rspOfferPct} onChange={(event) => updateOfferValue("rspOfferPct", twoDigitPercent(event.target.value))} className={`w-full rounded-md px-2 py-2 text-sm ${editableClass}`} />
+                <input disabled={!form.offerApplicable} type="text" inputMode="decimal" value={form.rspOfferPct} onChange={(event) => updateOfferValue("rspOfferPct", decimal2(event.target.value))} className={`w-full rounded-md px-2 py-2 text-sm ${form.offerApplicable ? editableClass : readOnlyClass}`} />
               </div>
               <div className="space-y-1">
                 <label className="block text-[11px] font-semibold text-gray-700">RSP Offer Price</label>
-                <input type="number" step="0.01" min={0} value={form.rspOfferPrice} onWheel={(e) => e.currentTarget.blur()} onChange={(event) => updateOfferValue("rspOfferPrice", event.target.value)} className={`w-full rounded-md px-2 py-2 text-sm ${editableClass}`} />
+                <input disabled={!form.offerApplicable} type="text" inputMode="decimal" value={form.rspOfferPrice} onWheel={(e) => e.currentTarget.blur()} onChange={(event) => updateOfferValue("rspOfferPrice", decimal2(event.target.value))} className={`w-full rounded-md px-2 py-2 text-sm ${form.offerApplicable ? editableClass : readOnlyClass}`} />
               </div>
               <div className="space-y-1">
                 <label className="block text-[11px] font-semibold text-gray-700">WSP Offer %</label>
-                <input type="number" min={0} value={form.wspOfferPct} onWheel={(e) => e.currentTarget.blur()} onChange={(event) => updateOfferValue("wspOfferPct", event.target.value)} className={`w-full rounded-md px-2 py-2 text-sm ${editableClass}`} />
+                <input disabled={!form.offerApplicable} type="text" inputMode="decimal" value={form.wspOfferPct} onWheel={(e) => e.currentTarget.blur()} onChange={(event) => updateOfferValue("wspOfferPct", decimal2(event.target.value))} className={`w-full rounded-md px-2 py-2 text-sm ${form.offerApplicable ? editableClass : readOnlyClass}`} />
               </div>
               <div className="space-y-1">
                 <label className="block text-[11px] font-semibold text-gray-700">WSP Offer Price</label>
-                <input type="number" step="0.01" min={0} value={form.wspOfferPrice} onWheel={(e) => e.currentTarget.blur()} onChange={(event) => updateOfferValue("wspOfferPrice", event.target.value)} className={`w-full rounded-md px-2 py-2 text-sm ${editableClass}`} />
+                <input disabled={!form.offerApplicable} type="text" inputMode="decimal" value={form.wspOfferPrice} onWheel={(e) => e.currentTarget.blur()} onChange={(event) => updateOfferValue("wspOfferPrice", decimal2(event.target.value))} className={`w-full rounded-md px-2 py-2 text-sm ${form.offerApplicable ? editableClass : readOnlyClass}`} />
               </div>
               <div className="space-y-1">
                 <label className="block text-[11px] font-semibold text-gray-700">E-COMM Offer %</label>
-                <input type="number" min={0} value={form.dpOfferPct} onWheel={(e) => e.currentTarget.blur()} onChange={(event) => updateOfferValue("dpOfferPct", event.target.value)} className={`w-full rounded-md px-2 py-2 text-sm ${editableClass}`} />
+                <input disabled={!form.offerApplicable} type="text" inputMode="decimal" value={form.dpOfferPct} onWheel={(e) => e.currentTarget.blur()} onChange={(event) => updateOfferValue("dpOfferPct", decimal2(event.target.value))} className={`w-full rounded-md px-2 py-2 text-sm ${form.offerApplicable ? editableClass : readOnlyClass}`} />
               </div>
               <div className="space-y-1">
                 <label className="block text-[11px] font-semibold text-gray-700">E-COMM Offer Price</label>
-                <input type="number" step="0.01" min={0} value={form.dpOfferPrice} onWheel={(e) => e.currentTarget.blur()} onChange={(event) => updateOfferValue("dpOfferPrice", event.target.value)} className={`w-full rounded-md px-2 py-2 text-sm ${editableClass}`} />
+                <input disabled={!form.offerApplicable} type="text" inputMode="decimal" value={form.dpOfferPrice} onWheel={(e) => e.currentTarget.blur()} onChange={(event) => updateOfferValue("dpOfferPrice", decimal2(event.target.value))} className={`w-full rounded-md px-2 py-2 text-sm ${form.offerApplicable ? editableClass : readOnlyClass}`} />
               </div>
             </div>
 
@@ -1602,7 +1660,7 @@ function PrintLabelPicker({ rows, open, onClose }) {
   );
 }
 
-export default function GCRBarcodeGeneration({ grcId = null, initialRows = [] }) {
+export default function GCRBarcodeGeneration({ grcId = null, initialRows = [], supplierMarkup = {} }) {
   const router = useRouter();
   const scope = useScope();
 
@@ -1920,12 +1978,14 @@ export default function GCRBarcodeGeneration({ grcId = null, initialRows = [] })
       setShowSaveConfirm(false);
       if (printAfterSave) setShowPrint(true);
       router.refresh?.();
+      return true;
     } catch (error) {
       console.error(error);
       /* the confirm dialog sits over the banner, so it has to go or the
          operator never sees why the save was refused */
       setShowSaveConfirm(false);
       setSaveError(error.message || "Save failed");
+      return false;
     } finally {
       setSaving(false);
     }
@@ -1948,13 +2008,14 @@ export default function GCRBarcodeGeneration({ grcId = null, initialRows = [] })
         /* scopes the Old Barcode lookup to the selected company, so a code
            belonging to another business reports that rather than "not found" */
         business={scope.business}
+        markupDefaults={supplierMarkup}
         onClose={() => setShowAddItem(true)}
         onSubmit={(items) => appendRows(items)}
         onSubmitAndPrint={(items) => {
           const nextRows = [...rows, ...items];
           setRows(nextRows);
           setPrintRows(nextRows);
-          saveRows(nextRows, true);
+          return saveRows(nextRows, true);
         }}
       />
 
