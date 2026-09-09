@@ -14,6 +14,7 @@ import {
   LuBarcode,
   LuSplit,
   LuTag,
+  LuKeyRound,
   LuCreditCard,
   LuPercent,
   LuReceipt,
@@ -154,6 +155,11 @@ export const NAV = [
         label: 'Barcode Label Settings',
         icon: LuTag,
         href: '/admin/setting/barcode-label-setting',
+      },
+      {
+        label: 'Purchase Rate Code Master',
+        icon: LuKeyRound,
+        href: '/admin/setting/purchase-rate-code',
       },
       {
         label: 'Payment Method Master',
