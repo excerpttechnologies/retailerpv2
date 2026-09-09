@@ -128,6 +128,7 @@ export const POST = handler(async (req) => {
   if (body.data?.customerSnapshot) doc.customerSnapshot = body.data.customerSnapshot;
   if (body.data?.sellNote !== undefined) doc.sellNote = body.data.sellNote;
   if (body.data?.staffNote !== undefined) doc.staffNote = body.data.staffNote;
+  doc.shipping = Number(body.data?.shipping || 0);
   doc.totalAmount = Number(body.data?.totalAmount || 0);
   doc.paid = Number(body.data?.paid || 0);
   doc.sellDue = Math.max(0, doc.totalAmount - doc.paid);

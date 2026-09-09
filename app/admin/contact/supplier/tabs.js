@@ -29,17 +29,20 @@ export const TABS = [
               "type": "text",
               "placeholder": "ex: 22AAAAA0000A1Z5"
             },
+            /* Named the way the GST portal names them, which is also where
+               their values come from: Legal Name of Business -> businessName,
+               Trade Name -> shortName. Labelled above the box rather than
+               placeholdered inside it, so the name survives being typed into.
+               The keys are untouched - the GST paste mapping still holds. */
             {
               "k": "businessName",
-              "label": "Business Name",
-              "ph": true,
+              "label": "Legal Name of Business",
               "type": "text",
               "span": 2
             },
             {
               "k": "shortName",
-              "label": "Short Name",
-              "ph": true,
+              "label": "Trade Name",
               "type": "text",
               "span": 2
             },
@@ -88,12 +91,6 @@ export const TABS = [
               "label": "Last Name",
               "ph": true,
               "type": "text"
-            },
-            {
-              "k": "dob",
-              "label": "DOB",
-              "ph": true,
-              "type": "date"
             },
             /* Constitution of Business on the GST portal. Same options and
                same key as the Customer form, so the two contact types spell a
@@ -271,6 +268,9 @@ export const TABS = [
               "label": "Zip Code",
               "ph": true,
               "type": "zip",
+              /* the PIN still fills City / State / Country / District - only
+                 the "SURAT, GUJARAT" echo under the box is dropped */
+              "hideLookupText": true,
               "fill": {
                 "city": "billingCity",
                 "state": "billingState",
@@ -388,6 +388,7 @@ export const TABS = [
               "label": "Zip Code",
               "ph": true,
               "type": "zip",
+              "hideLookupText": true,
               "fill": {
                 "city": "shippingCity",
                 "state": "shippingState",

@@ -74,12 +74,34 @@ export function Label({ row, w, h }) {
 
   return (
     <div
-      className="flex flex-col items-center justify-center overflow-hidden border border-dashed border-[#d5dce8] px-1 text-center leading-tight"
+      data-label=""
+      className="barcode-label flex flex-col items-center justify-center overflow-hidden border border-dashed border-[#d5dce8] px-1 text-center leading-tight"
       style={{ width: w + 'mm', height: h + 'mm' }}
     >
-      {code && <BarcodeSvg value={code} height={barcodeHeight} />}
+      {/* quietZone is the blank run either side of the bars that tells a
+          scanner where the symbol starts and ends - ten modules is what
+          CODE128 asks for. It matters here and not on a document number,
+          because on a sticker the bars otherwise run to the very edge.
 
-      <div className="w-full truncate font-mono text-[7pt] font-semibold">
+          preserveAspectRatio="none" keeps the bars the height this label
+          budgeted for them. Under the default, a barcode wider than the
+          sticker is scaled down on BOTH axes, and the lost height is what
+          makes a label need a second pass under the scanner. */}
+      {code && (
+        <BarcodeSvg
+          value={code}
+          height={barcodeHeight}
+          quietZone={10}
+          preserveAspectRatio="none"
+        />
+      )}
+
+      {/* normal-case: globals.css uppercases every text node under <body>.
+          On any other line that is only a house style, but this line is the
+          fallback a human types in when the bars will not scan - and CODE128
+          is case-sensitive. Printing "tf25a" as "TF25A" would send the
+          storekeeper looking for a barcode that does not exist. */}
+      <div className="w-full truncate font-mono text-[7pt] font-semibold normal-case">
         {code}
       </div>
 
@@ -87,13 +109,22 @@ export function Label({ row, w, h }) {
         <div className="w-full truncate text-[6pt] text-[#46556f]">{desc}</div>
       )}
 
-      {/* A batch label MUST show its quantity - one barcode, several units.
-          On a unique label the quantity is always 1, so printing it only
-          wastes a line that the supplier or GRC number can use. */}
-      {isBatch && qty > 0 && (
+      {/* The quantity earns its line in two cases.
+
+          A BATCH label, because one barcode stands for several units and
+          nothing else on the sticker says how many.
+
+          And ANY length-measured label, batch or not: a unique piece label
+          carries quantity 1 and can safely leave it off, but a unique CUT of
+          cloth is one barcode for 12.65 metres, and a roll with no length on
+          it is worth nothing at the counter. That case used to print nothing.
+
+          "(batch)" still marks only the batch case - it is what warns the
+          storekeeper that this one label covers more than one item. */}
+      {qty > 0 && (isBatch || isLength(uom)) && (
         <div className="w-full truncate text-[7pt] font-bold">
           {trimQty(qty)} {uom}
-          <span className="ml-[0.6mm] font-normal text-[#46556f]">(batch)</span>
+          {isBatch && <span className="ml-[0.6mm] font-normal text-[#46556f]">(batch)</span>}
         </div>
       )}
 
@@ -103,18 +134,29 @@ export function Label({ row, w, h }) {
         </div>
       )}
 
-      {rate !== '' && rate !== null && (
+      {/* Number.isFinite, not a truthiness check: a price that arrived from an
+          Excel import as text prints "NaN" through toFixed, and a sticker
+          reading "Rs NaN" goes on the shop floor. No price at all is the
+          honest output when there is no price. */}
+      {Number.isFinite(Number(rate)) && rate !== '' && rate !== null && (
         <div className="flex w-full items-baseline justify-center gap-[1mm]">
           <span className="text-[8pt] font-extrabold">
             &#8377;{Number(rate).toFixed(2)}
           </span>
-          {roomy && cost !== '' && Number(cost) > 0 && (
+          {roomy && Number.isFinite(Number(cost)) && Number(cost) > 0 && (
             <span className="text-[5.5pt] text-[#5a6c88]">CP {Number(cost).toFixed(2)}</span>
           )}
         </div>
       )}
     </div>
   );
+}
+
+/* Goods sold by length rather than by the piece. Matched on the unit's text
+   because that is all a row carries - MTR, MTRS, METER, METRE all appear in
+   this data. */
+function isLength(uom) {
+  return /mtr|met/i.test(String(uom || ''));
 }
 
 /* 5 rather than 5.000, but 2.5 stays 2.5 - a metre label has to be exact. */
@@ -125,7 +167,7 @@ function trimQty(v) {
 
 /* Expands each row by its Barcode Copies and lays the result out in a grid
    `stickerInRow` wide. */
-export default function BarcodeLabelSheet({ rows, format }) {
+export default function BarcodeLabelSheet({ rows, format, gap = '1mm' }) {
   const { w, h } = parseSize(format?.labelSize);
   const perRow = Math.max(1, Number(format?.stickerInRow) || 1);
 
@@ -148,8 +190,19 @@ export default function BarcodeLabelSheet({ rows, format }) {
       style={{
         display: 'grid',
         gridTemplateColumns: 'repeat(' + perRow + ', ' + w + 'mm)',
-        gap: '1mm',
+        gridAutoRows: h + 'mm',
+        /* A gutter is right on a sheet of paper that gets cut, and wrong on
+           die-cut sticker stock where the sheet IS the page - there the extra
+           millimetre pushes the last column off the edge of the label. */
+        gap,
         justifyContent: 'center',
+        /* Without this the implicit rows stretch to fill whatever height the
+           sheet is given, and a single row of labels comes out a full page
+           tall with the cut line running the length of the paper. The print
+           page had to work around exactly this
+           (barcode-print/[id]/page.jsx: "content-start goes with it"); doing
+           it here fixes it for every caller. */
+        alignContent: 'start',
       }}
     >
       {labels.map(({ row, key }) => <Label key={key} row={row} w={w} h={h} />)}

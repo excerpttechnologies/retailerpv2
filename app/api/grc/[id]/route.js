@@ -64,7 +64,13 @@ export async function GET(_req, { params }) {
 
   const [rows, supplier] = await Promise.all([
     BarcodeLabel.find({ grcId: id }).sort({ createdAt: 1 }).lean(),
-      grc.supplierId ? Contact.findById(grc.supplierId).select('businessName firstName lastName markUpOnCostRsp markUpOnCostWsp markUpOnCostDp').lean() : null,
+      /* contactId is the supplier's human-facing code (models/Contact.js:143,
+         shown as "Supplier Code" in the contact master, e.g. "G515"). It was
+         already stored on every supplier but was being dropped by this
+         select, so the barcode print page had no way to reach it without a
+         second round trip. Added here rather than fetched separately - the
+         supplier is already being read on this line. */
+      grc.supplierId ? Contact.findById(grc.supplierId).select('contactId businessName firstName lastName markUpOnCostRsp markUpOnCostWsp markUpOnCostDp').lean() : null,
   ]);
 
   return json({
@@ -72,6 +78,10 @@ export async function GET(_req, { params }) {
       ...grc,
       _id: String(grc._id),
       supplierName: supplier?.businessName || [supplier?.firstName, supplier?.lastName].filter(Boolean).join(' '),
+      /* The stored code, verbatim - not derived from the name and never
+         defaulted to a placeholder. A supplier with no code must surface as
+         missing on the label rather than print something invented. */
+      supplierCode: supplier?.contactId || '',
         supplierMarkup: {
           rsp: supplier?.markUpOnCostRsp ?? null,
           wsp: supplier?.markUpOnCostWsp ?? null,

@@ -31,7 +31,17 @@ export default function GrcBarcodeGenerationPage() {
         </button>
         <div className="text-sm font-semibold">Barcode Generation - {data.grc.grcNumber}</div>
       </div>
-        <GCRBarcodeGeneration grcId={id} initialRows={data.rows} supplierMarkup={data.grc.supplierMarkup} editMode />
+        {/* grcHeader carries what the printed label needs but a barcode row
+            does not hold: which supplier the goods came from and which
+            receipt they arrived on. /api/grc/[id] already resolves the
+            supplier's name onto the header, so nothing new is fetched. */}
+        <GCRBarcodeGeneration
+          grcId={id}
+          initialRows={data.rows}
+          supplierMarkup={data.grc.supplierMarkup}
+          grcHeader={{ grcNumber: data.grc.grcNumber || '', supplierName: data.grc.supplierName || '' }}
+          editMode
+        />
     </div>
   );
 }

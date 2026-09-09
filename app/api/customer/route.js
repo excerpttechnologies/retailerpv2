@@ -21,9 +21,21 @@ const json = (d, s = 200) => Response.json(d, {
   headers: { 'Cache-Control': 'no-store' },
 });
 const PER_PAGE = 10;
+/* The POS quick-add contract. Anything not named here is dropped on save, so
+   this list has to stay in step with the dialog in components/PosTill.jsx -
+   a field the form offers but this omits saves silently as blank.
+
+   Widened to cover the whole Basic Information tab of the full customer form
+   (short name, DOB, gender, and the complete billing block) because the till's
+   dialog now mirrors that layout. Still deliberately excludes the Sales and
+   Financial tabs and the shipping block - the counter does not collect them. */
 const QUICK_FIELDS = FIELDS.filter((field) => [
-  'typeId', 'businessType', 'gstNo', 'businessName', 'prefix', 'firstName', 'middleName', 'lastName',
-  'billingAddressLine1', 'billingZipCode', 'billingCity', 'billingState', 'billingCountry', 'billingDistrict', 'billingTaluk', 'billingMobile', 'billingWebsiteUrl', 'billingEmail',
+  'typeId', 'businessType', 'gstNo', 'businessName', 'shortName',
+  'prefix', 'firstName', 'middleName', 'lastName', 'dob', 'gender',
+  'billingAddressLine1', 'billingAddressLine2', 'billingCity', 'billingState',
+  'billingCountry', 'billingDistrict', 'billingTaluk', 'billingZipCode',
+  'billingMobile', 'billingAlternateContactNumber', 'billingLandline', 'billingFax',
+  'billingEmail', 'billingEmail2', 'billingWebsiteUrl',
 ].includes(field.k));
 
 export async function GET(req) {

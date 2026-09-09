@@ -402,9 +402,26 @@ async function buildDocs({ rows, business, location, finYear, grcId, supplierId,
       qty: String(r.qty ?? ''),
       uom: r.uom || '',
       hsn: r.hsn || '',
-      purRate: r.purRate || '',
+      /* The Barcode Generation grid names these two purchaseRate and
+         finalPrice; only an imported row ever arrives under the stored names.
+         Reading just the stored names wrote an empty string for every row
+         generated on screen, so the cost price was lost on save and the
+         label's CP line came out blank after a reload. The stored name is
+         still preferred, so an import keeps behaving exactly as it did.
+
+         `disc` is deliberately NOT given the same treatment. It is read back
+         above as a PERCENTAGE (rate * disc / 100), while the grid's
+         `discount` is a percentage or a flat rupee amount depending on the
+         row's Discount Type. Feeding a flat amount into that sum would
+         quietly change the GRC's taxable value, which is worse than the
+         blank it leaves today. Reconciling the two is a separate change. */
+      purRate: r.purRate || r.purchaseRate || '',
+      /* buildDocs is a whitelist - a key the client adds to a row does not
+         reach the database unless it is copied here. Same stored/grid name
+         pair as purRate/purchaseRate above. */
+      encodedPurRate: r.encodedPurRate || r.encodedPurchaseRate || '',
       disc: r.disc || '',
-      finalNet: r.finalNet || '',
+      finalNet: r.finalNet || r.finalPrice || '',
       gst: r.gst || '',
       printDescription: r.printDescription || '',
       retailPrice: r.retailPrice || '',

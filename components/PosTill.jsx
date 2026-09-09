@@ -13,10 +13,12 @@ import { useOptions } from '@/components/useOptions';
 const PAYMENT_MODES = ['Cash', 'Credit', 'Export', 'COD'];
 const MULTI_PAYMENT_METHODS = ['Cash', 'PayTM', 'Bank Deposit'];
 const CUSTOMER_DEFAULTS = {
-  typeId: '', businessType: 'Un-Registered', gstNo: '', businessName: '', prefix: 'Mr.',
-  firstName: '', middleName: '', lastName: '', billingAddressLine1: '', billingZipCode: '',
-  billingCity: '', billingState: '', billingCountry: '', billingDistrict: '', billingTaluk: '',
-  billingMobile: '', billingWebsiteUrl: '', billingEmail: '',
+  typeId: '', businessType: 'Un-Registered', gstNo: '', businessName: '', shortName: '',
+  prefix: 'Mr.', firstName: '', middleName: '', lastName: '', dob: '', gender: '',
+  billingAddressLine1: '', billingAddressLine2: '', billingCity: '', billingState: '',
+  billingCountry: '', billingDistrict: '', billingTaluk: '', billingZipCode: '',
+  billingMobile: '', billingAlternateContactNumber: '', billingLandline: '', billingFax: '',
+  billingEmail: '', billingEmail2: '', billingWebsiteUrl: '',
 };
 const money = (value) => Number(value || 0).toFixed(2);
 const customerLabel = (customer) => {
@@ -81,36 +83,78 @@ function MultiplePay({ totalItems, totalPayable, onClose, onSubmit }) {
   );
 }
 
+/* Billing block, laid out to match the Basic Information tab of
+   /admin/contact/customer/add so the two forms ask for the same things in the
+   same order. Keys are the customer schema's own, not POS-local names. */
+const BILLING_ROWS = [
+  ['billingAddressLine1', 'Address Line 1'],
+  ['billingAddressLine2', 'Address Line 2'],
+  ['billingState', 'State'],
+  ['billingCountry', 'Country'],
+  ['billingDistrict', 'District'],
+  ['billingTaluk', 'Taluk'],
+  ['billingAlternateContactNumber', 'Alternate Contact'],
+  ['billingLandline', 'Landline'],
+  ['billingFax', 'Fax'],
+  ['billingEmail', 'Email'],
+  ['billingEmail2', 'Email 2'],
+  ['billingWebsiteUrl', 'Website URL'],
+];
+
 function CustomerForm({ values, setValues, typeOptions, onClose, onSave, saving }) {
   const set = (key, value) => setValues((current) => ({ ...current, [key]: value }));
-  const fields = [
-    ['businessName', 'Business Name'], ['firstName', 'First Name *'], ['middleName', 'Middle Name'],
-    ['lastName', 'Last Name'], ['billingAddressLine1', 'Address'],
-    ['billingCity', 'City'], ['billingState', 'State'], ['billingDistrict', 'District'],
-    ['billingTaluk', 'Taluk'], ['billingCountry', 'Country'], ['billingMobile', 'Phone Number *'],
-    ['billingEmail', 'Email'],
-  ];
+  const text = (key, label, required) => (
+    <label className="f-label" key={key}>{label}
+      <input className="f-input" value={values[key] || ''} required={required}
+        onChange={(e) => set(key, e.target.value)} />
+    </label>
+  );
+
   return (
-    <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/40 p-4">
-      <form className="w-full max-w-4xl rounded bg-white p-5 shadow-xl" onSubmit={onSave}>
-        <div className="mb-4 flex items-center justify-between border-b border-line pb-3">
-          <h2 className="text-lg font-semibold">Add Customer</h2>
+    <div className="fixed inset-0 z-[60] flex items-start justify-center overflow-y-auto bg-black/40 p-4">
+      <form className="my-4 w-full max-w-4xl rounded bg-white p-4 shadow-xl" onSubmit={onSave}>
+        <div className="mb-3 flex items-center justify-between border-b border-line pb-2">
+          <h2 className="text-[15px] font-semibold">Add Customer</h2>
           <button type="button" aria-label="Close" onClick={onClose}><Icon name="x" size={18} /></button>
         </div>
-        <div className="grid grid-cols-1 gap-3 md:grid-cols-4">
-          <label className="field-label">Customer Type *<select className="f-input" value={values.typeId} onChange={(e) => set('typeId', e.target.value)} required>
-            <option value="">Select type</option>{typeOptions.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+
+        <div className="grid grid-cols-1 gap-x-4 gap-y-2 md:grid-cols-4">
+          <label className="f-label">Type *<select className="f-input" value={values.typeId} onChange={(e) => set('typeId', e.target.value)} required>
+            <option value="">Select...</option>{typeOptions.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
           </select></label>
-          <label className="field-label">Business Type *<select className="f-input" value={values.businessType} onChange={(e) => set('businessType', e.target.value)} required>
+          <label className="f-label">Business Type *<select className="f-input" value={values.businessType} onChange={(e) => set('businessType', e.target.value)} required>
             <option>Registered</option><option>Un-Registered</option>
           </select></label>
-          <label className="field-label">GSTIN<input className="f-input" value={values.gstNo} onChange={(e) => set('gstNo', e.target.value)} /></label>
-          <label className="field-label">Prefix<select className="f-input" value={values.prefix} onChange={(e) => set('prefix', e.target.value)}><option>Mr.</option><option>Mrs.</option><option>Ms.</option><option>Dr.</option></select></label>
-          {fields.slice(0, 5).map(([key, label]) => <label className="field-label" key={key}>{label}<input className="f-input" value={values[key]} onChange={(e) => set(key, e.target.value)} required={key === 'firstName'} /></label>)}
-          <label className="field-label">Zip Code<Field f={{ k: 'billingZipCode', label: 'Zip Code', type: 'zip', fill: { city: 'billingCity', state: 'billingState', country: 'billingCountry', district: 'billingDistrict', taluk: 'billingTaluk' } }} value={values.billingZipCode} onChange={set} /></label>
-          {fields.slice(5).map(([key, label]) => <label className="field-label" key={key}>{label}<input className="f-input" value={values[key]} onChange={(e) => set(key, e.target.value)} required={key === 'billingMobile'} /></label>)}
+          {text('gstNo', 'GST NO (ex: 22AAAAA0000A1Z5)')}
+          {text('businessName', 'Business Name')}
+          {text('shortName', 'Short Name')}
+          <label className="f-label">Prefix<select className="f-input" value={values.prefix} onChange={(e) => set('prefix', e.target.value)}>
+            <option>Mr.</option><option>Mrs.</option><option>Ms.</option><option>Dr.</option>
+          </select></label>
+          {text('firstName', 'First Name *', true)}
+          {text('middleName', 'Middle Name')}
+          {text('lastName', 'Last Name')}
+          <label className="f-label">DOB<input className="f-input" type="date" value={values.dob || ''} onChange={(e) => set('dob', e.target.value)} /></label>
+          <label className="f-label">Gender<select className="f-input" value={values.gender || ''} onChange={(e) => set('gender', e.target.value)}>
+            <option value="">--Select Gender--</option><option>Male</option><option>Female</option><option>Other</option>
+          </select></label>
         </div>
-        <div className="mt-5 flex justify-end gap-2"><button type="button" className="btn" onClick={onClose}>Cancel</button><button className="btn btn-primary" disabled={saving}><Icon name="save" size={14} /> {saving ? 'Saving...' : 'Add Customer'}</button></div>
+
+        <div className="form-section-title mt-4 border-t border-line pt-3">Billing Details</div>
+        <div className="grid grid-cols-1 gap-x-4 gap-y-2 md:grid-cols-4">
+          {/* City and Zip keep their own field types: City is the searchable
+              picker, and Zip auto-fills city / state / country / district /
+              taluk, which is why it is not just another text box. */}
+          <div><Field f={{ k: 'billingCity', label: 'City', type: 'city' }} value={values.billingCity} onChange={set} /></div>
+          <div><Field f={{ k: 'billingZipCode', label: 'Zip Code', type: 'zip', fill: { city: 'billingCity', state: 'billingState', country: 'billingCountry', district: 'billingDistrict', taluk: 'billingTaluk' } }} value={values.billingZipCode} onChange={set} /></div>
+          {text('billingMobile', 'Mobile *', true)}
+          {BILLING_ROWS.map(([key, label]) => text(key, label))}
+        </div>
+
+        <div className="mt-4 flex justify-end gap-2">
+          <button type="button" className="btn" onClick={onClose}>Cancel</button>
+          <button className="btn btn-primary" disabled={saving}><Icon name="save" size={14} /> {saving ? 'Saving...' : 'Add Customer'}</button>
+        </div>
       </form>
     </div>
   );
@@ -147,6 +191,43 @@ export default function PosTill() {
   const [savingCustomer, setSavingCustomer] = useState(false);
   const [items, setItems] = useState([]);
   const [itemSuggestions, setItemSuggestions] = useState([]);
+
+  /* Line Wise Discount - the two footer boxes. Each applies ACROSS every line
+     on the bill rather than storing a bill-level figure, which is what the
+     "line wise" wording means: typing 10 here is the same as typing 10 into
+     the Disc % column of every row.
+
+     They are two ways of saying one thing, so setting either clears the other
+     - leaving both filled would leave the operator no way to tell which one
+     the lines actually took. */
+  /* Shipping is entered through the "Add Shipping Charge" dialog and adds
+     straight onto the net amount. Held as a committed value plus a draft so
+     closing the dialog cancels rather than half-applies. */
+  const [shipping, setShipping] = useState(0);
+  const [shippingDraft, setShippingDraft] = useState('');
+  const [showShipping, setShowShipping] = useState(false);
+  const [lineDiscPct, setLineDiscPct] = useState('');
+  const [lineDiscAmt, setLineDiscAmt] = useState('');
+
+  function applyLineDiscountPct(value) {
+    setLineDiscPct(value);
+    setLineDiscAmt('');
+    const pct = Math.max(0, Math.min(100, Number(value || 0) || 0));
+    setItems((rows) => rows.map((row) => ({ ...row, discountPct: pct })));
+  }
+
+  /* An absolute amount is stored as the percentage that produces it, because
+     every total on this screen is derived from discountPct (see `rows`). A
+     line with no value to discount takes 0 rather than dividing by zero. */
+  function applyLineDiscountAmt(value) {
+    setLineDiscAmt(value);
+    setLineDiscPct('');
+    const amount = Math.max(0, Number(value || 0) || 0);
+    setItems((rows) => rows.map((row) => {
+      const gross = Number(row.rsp || 0) * Number(row.qty || 0);
+      return { ...row, discountPct: gross > 0 ? Math.min(100, (amount / gross) * 100) : 0 };
+    }));
+  }
   const [selectedProduct, setSelectedProduct] = useState(null);
   const [previewImage, setPreviewImage] = useState(null);
   const [showMultiplePay, setShowMultiplePay] = useState(false);
@@ -154,6 +235,23 @@ export default function PosTill() {
   const [msg, setMsg] = useState('');
   const [cashier, setCashier] = useState('');
   const [exempted, setExempted] = useState(false);
+
+  /* Held bills. Parked server-side (models/PosHold.js) rather than in
+     localStorage so a hold survives a refresh or a crashed browser and can be
+     picked up at another till on the same counter. */
+  /* Exchange mode. Ticking it reveals the Invoice No box.
+
+     ONLY THE FIRST line added afterwards is the return - that is the piece the
+     customer is handing back against the invoice, so it is flagged isReturn,
+     prints red and counts against the bill. Everything scanned after it is the
+     replacement and behaves like a normal sale, so the net is
+     "new goods minus returned goods" - the difference the customer actually
+     pays. */
+  const [isExchange, setIsExchange] = useState(false);
+  const [exchangeInvoiceNo, setExchangeInvoiceNo] = useState('');
+  const [holds, setHolds] = useState([]);
+  const [showHolds, setShowHolds] = useState(false);
+  const [holding, setHolding] = useState(false);
 
   /* Scanner plumbing. intent SELL makes the server apply the till's rules -
      in stock, at THIS location, not already sold. */
@@ -252,6 +350,14 @@ export default function PosTill() {
     const query = String(raw || '').trim();
     if (!query) return;
 
+    /* An exchange line has to be traceable to the sale it is coming back
+       from, so the invoice number is collected before anything is scanned. */
+    if (isExchange && !exchangeInvoiceNo.trim()) {
+      setMsg('Enter the invoice number before scanning an exchange item.');
+      beep('err');
+      return;
+    }
+
     if (!business || !location) {
       setMsg('Choose the business and location before scanning.');
       beep('err');
@@ -270,6 +376,7 @@ export default function PosTill() {
        else is a real refusal and must be shown, not swallowed. */
     if (res.code !== 'BARCODE_NOT_FOUND') {
       setMsg(res.error);
+      
       beep('err');
       return;
     }
@@ -292,7 +399,7 @@ export default function PosTill() {
         rsp: Number(item.rsp ?? hit.rsp ?? 0), discountPct: 0, image: hit.image || '',
         uom: item.uom || '', salesPerson: salesPerson || '',
       };
-      setItems((rows) => [product, ...rows]);
+      setItems((rows) => [...rows, { ...product, isReturn: isExchange && !rows.some((r) => r.isReturn) }]);
       setSelectedProduct(product);
       setCode(''); setMsg('');
       beep('ok');
@@ -300,7 +407,7 @@ export default function PosTill() {
       setMsg('Item lookup failed');
       beep('err');
     }
-  }, [business, location, lookupBarcode, scannedCodes, salesPerson, beep]);
+  }, [business, location, lookupBarcode, scannedCodes, salesPerson, beep, isExchange, exchangeInvoiceNo]);
 
   /* The physical scanner: listens on the window, so it works with focus
      anywhere on the till - which is the requirement that the operator should
@@ -310,8 +417,10 @@ export default function PosTill() {
   /* Kept as the name the search box and the suggestion list already call. */
   function scan() { return addScanned(code); }
 
-  /* Adds a unit the server has just validated. Newest first, so the item the
-     operator has this second scanned is the top row of the table. */
+  /* Adds a unit the server has just validated. Appended, so the table reads in
+     scan order the way the deployed till does - which matters in exchange
+     mode, where the FIRST line is the returned piece. Prepending buried it at
+     the bottom and made the bill look like the wrong item was credited. */
   function addBarcodeUnit(unit) {
     const product = {
       itemId: unit._id,
@@ -342,7 +451,7 @@ export default function PosTill() {
       grcNo: unit.grcNo || '',
       salesPerson: salesPerson || '',
     };
-    setItems((rows) => [product, ...rows]);
+    setItems((rows) => [...rows, { ...product, isReturn: isExchange && !rows.some((r) => r.isReturn) }]);
     setSelectedProduct(product);
     setItemSuggestions([]);
     setCode('');
@@ -355,6 +464,116 @@ export default function PosTill() {
      same scan path instead of being trusted. */
   function addBarcodeItem(barcodeHit) {
     return addScanned(barcodeHit.barcodeNo || barcodeHit.itemCode);
+  }
+
+  const loadHolds = useCallback(async () => {
+    if (!business || !location) { setHolds([]); return; }
+    try {
+      const qs = new URLSearchParams({ business, location, finYear });
+      const r = await fetch('/api/pos-hold?' + qs, { cache: 'no-store' });
+      const d = await r.json();
+      setHolds(d.rows || []);
+    } catch { /* the badge is not worth an error banner */ }
+  }, [business, location, finYear]);
+
+  useEffect(() => { loadHolds(); }, [loadHolds]);
+
+  /* Park the current bill and clear the screen for the next customer. */
+  async function holdBill() {
+    if (!items.length) { setMsg('Add an item before holding the bill.'); beep('err'); return; }
+    setHolding(true);
+    try {
+      const record = selectedCustomer || customerOptions.find((o) => o.value === customer)?.customer;
+      const r = await fetch('/api/pos-hold', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          business, location, finYear,
+          data: {
+            date: saleDate,
+            customerId: customer === 'walkin' ? null : customer,
+            customerName: customerOptions.find((o) => o.value === customer)?.label || '',
+            customerContact: record?.billingMobile || '',
+            customerSnapshot: customer === 'walkin' ? null : record || null,
+            counterId: counter || null,
+            billingType: payMode,
+            exempted: exempted ? 'YES' : 'NO',
+            salesPerson,
+            items,
+            shipping: Number(shipping || 0),
+            totalAmount: netAmount,
+            totalQty: qty,
+          },
+        }),
+      });
+      const d = await r.json();
+      if (!r.ok) { setMsg(d.error || 'Could not hold this bill'); beep('err'); return; }
+
+      clearTill();
+      await loadHolds();
+      setMsg('Bill held at ' + d.holdNo + '. Resume it from Held.');
+      beep('ok');
+    } catch {
+      setMsg('Could not hold this bill');
+      beep('err');
+    } finally {
+      setHolding(false);
+    }
+  }
+
+  /* Everything the Hold and Clear Screen paths both have to reset. Kept in one
+     place so a new till field cannot be added to one and forgotten in the
+     other - which is how a "cleared" screen keeps the last customer. */
+  function clearTill() {
+    setItems([]);
+    setSelectedProduct(null);
+    setCustomer('walkin');
+    setSelectedCustomer(null);
+    setCounter('');
+    setPayMode('Cash');
+    setExempted(false);
+    setSalesPerson('');
+    setShipping(0);
+    setShippingDraft('');
+    setLineDiscPct('');
+    setLineDiscAmt('');
+  }
+
+  /* Pull a parked bill back onto the screen. The hold is deleted as it is
+     resumed, so the same one cannot be opened at two counters and billed
+     twice. */
+  async function resumeHold(id) {
+    try {
+      const r = await fetch('/api/pos-hold/' + id, { cache: 'no-store' });
+      const d = await r.json();
+      if (!r.ok || !d.doc) { setMsg('That held bill is no longer available'); beep('err'); return; }
+
+      const h = d.doc;
+      setItems(Array.isArray(h.items) ? h.items : []);
+      setCustomer(h.customerId ? String(h.customerId) : 'walkin');
+      setSelectedCustomer(h.customerSnapshot || null);
+      setCounter(h.counterId ? String(h.counterId) : '');
+      setPayMode(h.billingType || 'Cash');
+      setExempted(h.exempted === 'YES');
+      setSalesPerson(h.salesPerson || '');
+      setShipping(Number(h.shipping || 0));
+      if (h.date) setSaleDate(String(h.date).slice(0, 10));
+
+      await fetch('/api/pos-hold/' + id, { method: 'DELETE' });
+      setShowHolds(false);
+      await loadHolds();
+      setMsg('');
+      beep('ok');
+    } catch {
+      setMsg('Could not resume that bill');
+      beep('err');
+    }
+  }
+
+  async function discardHold(id) {
+    if (!window.confirm('Discard this held bill?')) return;
+    await fetch('/api/pos-hold/' + id, { method: 'DELETE' }).catch(() => {});
+    await loadHolds();
   }
 
   async function saveCustomer(event) {
@@ -371,14 +590,23 @@ export default function PosTill() {
     } catch (error) { setMsg(error.message); } finally { setSavingCustomer(false); }
   }
 
+  /* Opens a blank Add Customer form. Reached two ways: the "add" row the
+     dropdown offers when a searched phone number matches nobody, and the +
+     button next to the picker - the deployed till has both. Any digits already
+     typed into the search box are carried into Mobile so they are not retyped. */
+  function openCustomerForm() {
+    setCustomer('walkin');
+    setCustomerForm((current) => ({
+      ...CUSTOMER_DEFAULTS,
+      typeId: current.typeId || customerTypes[0]?.value || '',
+      billingMobile: customerSearch.trim(),
+    }));
+    setShowCustomerForm(true);
+  }
+
   function selectCustomer(value) {
     const option = customerOptions.find((row) => row.value === value);
-    if (option?.addCustomer) {
-      setCustomer('walkin');
-      setCustomerForm((current) => ({ ...CUSTOMER_DEFAULTS, typeId: current.typeId || customerTypes[0]?.value || '', billingMobile: customerSearch.trim() }));
-      setShowCustomerForm(true);
-      return;
-    }
+    if (option?.addCustomer) { openCustomerForm(); return; }
     if (!value) {
       setCustomer('walkin');
       setSelectedCustomer(null);
@@ -390,18 +618,35 @@ export default function PosTill() {
     setCustomerSearch('');
   }
 
-  const rows = items.map((row) => ({ ...row, discountAmount: Number(row.rsp || 0) * Number(row.qty || 0) * Number(row.discountPct || 0) / 100, lineTotal: Number(row.rsp || 0) * Number(row.qty || 0) * (1 - Number(row.discountPct || 0) / 100) }));
-  const qty = rows.reduce((sum, row) => sum + Number(row.qty || 0), 0);
+  /* A line added in exchange mode is stock coming back, so its money and its
+     quantity both carry a minus. The row keeps a POSITIVE qty on screen - the
+     cashier counts pieces, not signed pieces - and the sign is applied here,
+     once, where every total is derived. */
+  const rows = items.map((row) => {
+    const sign = row.isReturn ? -1 : 1;
+    const gross = Number(row.rsp || 0) * Number(row.qty || 0);
+    return {
+      ...row,
+      discountAmount: sign * gross * Number(row.discountPct || 0) / 100,
+      lineTotal: sign * gross * (1 - Number(row.discountPct || 0) / 100),
+    };
+  });
+  const qty = rows.reduce((sum, row) => sum + (row.isReturn ? -1 : 1) * Number(row.qty || 0), 0);
   const billValue = rows.reduce((sum, row) => sum + row.lineTotal, 0);
   const tax = exempted ? 0 : rows.reduce((sum, row) => sum + row.lineTotal * Number(row.gst || 0) / 100, 0);
+  /* Net amount = goods + tax + shipping. Every place that used to add
+     `billValue + tax` now reads this, so the footer, the Total Payable bar,
+     the payment dialog and the figure POSTed to the server cannot drift
+     apart once a shipping charge is on the bill. */
+  const netAmount = billValue + tax + Number(shipping || 0);
   const timeStr = now ? now.toTimeString().slice(0, 5) : '';
 
   async function submitPayment(paymentData) {
-    if (!items.length || billValue + tax <= 0) { setMsg('Add an item before submitting payment.'); return; }
+    if (!items.length || netAmount <= 0) { setMsg('Add an item before submitting payment.'); return; }
     try {
       const paid = paymentData.payments.reduce((sum, payment) => sum + Number(payment.amount || 0), 0);
       const customerRecord = selectedCustomer || customerOptions.find((option) => option.value === customer)?.customer;
-      const response = await fetch('/api/sell-pos', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ business, location, finYear, data: { date: saleDate, finYear, customerId: customer === 'walkin' ? null : customer, customerContact: customerRecord?.billingMobile || '', customerSnapshot: customer === 'walkin' ? null : customerRecord || null, counterId: counter || null, billingType: payMode, exempted: exempted ? 'YES' : 'NO', items, payments: paymentData.payments, sellNote: paymentData.sellNote, staffNote: paymentData.staffNote, totalAmount: billValue + tax, paid } }) });
+      const response = await fetch('/api/sell-pos', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ business, location, finYear, data: { date: saleDate, finYear, customerId: customer === 'walkin' ? null : customer, customerContact: customerRecord?.billingMobile || '', customerSnapshot: customer === 'walkin' ? null : customerRecord || null, counterId: counter || null, billingType: payMode, exempted: exempted ? 'YES' : 'NO', items, payments: paymentData.payments, sellNote: paymentData.sellNote, staffNote: paymentData.staffNote, shipping: Number(shipping || 0), totalAmount: netAmount, paid } }) });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || 'Unable to save POS invoice');
       setShowMultiplePay(false);
@@ -412,8 +657,8 @@ export default function PosTill() {
   return (
     <div className="pos-till fixed inset-0 z-50 flex flex-col overflow-auto bg-white">
       <div className="flex flex-wrap items-center gap-3 px-4 py-2.5 text-[13.5px]"><span className="text-inkmuted">Business:</span><select className="f-input w-64" value={business} onChange={(e) => changeBusiness(e.target.value)}><option value="">Select business</option>{businesses.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select><span className="text-inkmuted">Location:</span><select className="f-input w-64" value={location} onChange={(e) => setLocation(e.target.value)} disabled={!business}><option value="">Select location</option>{locations.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select><span className="flex items-center gap-1.5 text-cell"><Icon name="refresh" size={15} /> {timeStr}</span><span className="flex-1" />{selectedProduct && <div className="flex items-center gap-3 border-l border-line pl-3"><span className="max-w-40 truncate text-[12px] font-semibold">{selectedProduct.barcode || selectedProduct.code}</span><ProductImage src={selectedProduct.image} alt={selectedProduct.name} size={72} onOpen={() => setPreviewImage({ src: selectedProduct.image, alt: selectedProduct.name })} /></div>}{['refresh', 'voucher', 'register', 'cart', 'ledger', 'chevL'].map((ic, i) => <button key={i} aria-label={ic} className={'flex h-8 w-9 items-center justify-center rounded ' + (i === 0 ? 'bg-[#dbe6f7] text-brand' : 'bg-brand text-white')}><Icon name={ic} size={15} /></button>)}</div>
-      <div className="grid grid-cols-1 gap-2 px-4 md:grid-cols-5"><input className="f-input" type="date" value={saleDate} onChange={(e) => setSaleDate(e.target.value)} /><select className="f-input" value={payMode} onChange={(e) => setPayMode(e.target.value)}>{PAYMENT_MODES.map((mode) => <option key={mode}>{mode}</option>)}</select><div className="md:col-span-2"><MultiSelect mode="single" options={customerOptions} value={customer} placeholder="Walk-in Customer / phone number" onSearch={setCustomerSearch} onChange={selectCustomer} /></div><input className="f-input" value={cashier} readOnly /></div>
-      <div className="mt-2 grid grid-cols-1 items-start gap-2 px-4 md:grid-cols-5"><MultiSelect mode="single" options={salesPeople} value={salesPerson} placeholder="Sales Person" onChange={setSalesPerson} /><div className="relative md:col-span-2"><input data-scan-target="" className="f-input" placeholder="Scan barcode, or type a product name / SKU" value={code} onChange={(e) => setCode(e.target.value)} onKeyDown={(e) => { if (['Enter', 'F9', 'Tab'].includes(e.key)) { e.preventDefault(); scan(); } }} />{scanBusy && <span className="absolute right-2 top-2 text-[11px] text-inkmuted">checking...</span>}{itemSuggestions.length > 0 && <div className="absolute left-0 right-0 top-full z-30 mt-1 max-h-64 overflow-auto rounded border border-line bg-white shadow-lg">{itemSuggestions.map((item) => <button type="button" key={item._id} className="flex w-full items-center gap-2 border-b border-line px-3 py-2 text-left text-[12px] hover:bg-[#f4f7fb]" onClick={() => addBarcodeItem(item)}><ProductImage src={item.productImageUrl} alt={item.itemId || item.itemCode} size={44} /><span className="min-w-0 flex-1"><b className="block truncate">{item.itemId || item.description || item.itemCode}</b><span className="text-inkmuted">{item.barcodeNo} · RSP {money(item.rsp)}</span></span></button>)}</div>}</div><select className="f-input" value={counter} onChange={(e) => setCounter(e.target.value)}><option value="">Select Cash Counter</option>{counters.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select><div className="flex items-center gap-5"><label><input type="checkbox" checked={exempted} onChange={(e) => setExempted(e.target.checked)} /> Exempted</label><button type="button" className="btn bg-danger px-2 py-1 text-white" title="Process a customer return against a previous bill" onClick={() => router.push(`/admin/transaction/sell/pos-return/add?business=${business}&location=${location}&finYear=${finYear}`)}><Icon name="undo" size={13} /> Return / Refund</button></div></div>
+      <div className="grid grid-cols-1 gap-2 px-4 md:grid-cols-5"><input className="f-input" type="date" value={saleDate} onChange={(e) => setSaleDate(e.target.value)} /><select className="f-input" value={payMode} onChange={(e) => setPayMode(e.target.value)}>{PAYMENT_MODES.map((mode) => <option key={mode}>{mode}</option>)}</select><div className="flex items-center gap-2 md:col-span-2"><div className="min-w-0 flex-1"><MultiSelect mode="single" options={customerOptions} value={customer} placeholder="Walk-in Customer / phone number" onSearch={setCustomerSearch} onChange={selectCustomer} /></div><button type="button" title="Add Customer" aria-label="Add Customer" className="flex h-[34px] w-[34px] shrink-0 items-center justify-center rounded bg-brand text-white hover:bg-brand-hover" onClick={openCustomerForm}><Icon name="plus" size={14} /></button></div><input className="f-input" value={cashier} readOnly /></div>
+      <div className="mt-2 grid grid-cols-1 items-center gap-2 px-4 md:grid-cols-6"><MultiSelect mode="single" options={salesPeople} value={salesPerson} placeholder="Sales Person" onChange={setSalesPerson} /><div className="relative md:col-span-2"><input data-scan-target="" className="f-input" placeholder="Scan barcode, or type a product name / SKU" value={code} onChange={(e) => setCode(e.target.value)} onKeyDown={(e) => { if (['Enter', 'F9', 'Tab'].includes(e.key)) { e.preventDefault(); scan(); } }} />{scanBusy && <span className="absolute right-2 top-2 text-[11px] text-inkmuted">checking...</span>}{itemSuggestions.length > 0 && <div className="absolute left-0 right-0 top-full z-30 mt-1 max-h-64 overflow-auto rounded border border-line bg-white shadow-lg">{itemSuggestions.map((item) => <button type="button" key={item._id} className="flex w-full items-center gap-2 border-b border-line px-3 py-2 text-left text-[12px] hover:bg-[#f4f7fb]" onClick={() => addBarcodeItem(item)}><ProductImage src={item.productImageUrl} alt={item.itemId || item.itemCode} size={44} /><span className="min-w-0 flex-1"><b className="block truncate">{item.itemId || item.description || item.itemCode}</b><span className="text-inkmuted">{item.barcodeNo} · RSP {money(item.rsp)}</span></span></button>)}</div>}</div><select className="f-input" value={counter} onChange={(e) => setCounter(e.target.value)}><option value="">Select Cash Counter</option>{counters.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select><div className="flex items-center gap-3 whitespace-nowrap md:col-span-2"><label className="flex items-center gap-1"><input type="checkbox" checked={exempted} onChange={(e) => setExempted(e.target.checked)} /> Exempted</label><button type="button" className="btn bg-danger px-2 py-1 text-white" title="Process a customer return against a previous bill" onClick={() => router.push(`/admin/transaction/sell/pos-return/add?business=${business}&location=${location}&finYear=${finYear}`)}><Icon name="undo" size={13} /> Return / Refund</button><label className="flex items-center gap-1" title="Take goods back against a previous bill"><input type="checkbox" checked={isExchange} onChange={(e) => { setIsExchange(e.target.checked); if (!e.target.checked) setExchangeInvoiceNo(''); }} /> Exchange</label>{isExchange && <input className="f-input w-40" placeholder="Invoice No *" value={exchangeInvoiceNo} onChange={(e) => setExchangeInvoiceNo(e.target.value)} />}</div></div>
       <CustomerProfilePanel
         customerId={customer}
         business={business}
@@ -421,11 +666,71 @@ export default function PosTill() {
       />
       {previewImage && <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/75 p-6" onClick={() => setPreviewImage(null)}><div className="relative max-h-full max-w-4xl rounded bg-white p-2 shadow-2xl" onClick={(e) => e.stopPropagation()}><button type="button" aria-label="Close image preview" className="absolute right-2 top-2 z-10 flex h-8 w-8 items-center justify-center rounded-full bg-black/70 text-white" onClick={() => setPreviewImage(null)}><Icon name="x" size={16} /></button><img src={previewImage.src} alt={previewImage.alt} className="max-h-[80vh] max-w-[80vw] object-contain" /></div></div>}
       {msg && <div className="mx-4 mt-2 flash flash-err">{msg}</div>}
-      <div className="mt-3 flex-1 overflow-x-auto px-4"><table className="dt"><thead><tr>{['#', 'Barcode No', 'Stock Issue', 'Item Code', 'Item / Description', 'HSN', 'GST%', 'Qty', 'RSP Price', 'Disc %', 'Disc Amt', 'Line Total', 'Sales Person', 'Image', ''].map((heading) => <th key={heading}>{heading}</th>)}</tr></thead><tbody>{rows.length === 0 ? <tr><td colSpan="15" className="dt-empty">No Items Added</td></tr> : rows.map((row, index) => <tr key={`${row.itemId}-${index}`} className="cursor-pointer !bg-[#FFF3CD]" onClick={() => setSelectedProduct(row)}><td>{index + 1}</td><td>{row.barcode || '-'}</td><td><input type="checkbox" checked={!!row.stockIssue} onClick={(e) => e.stopPropagation()} onChange={(e) => updateItem(index, 'stockIssue', e.target.checked)} /></td><td>{row.code}</td><td>{row.description || row.name}</td><td>{row.hsn}</td><td>{money(row.gst)}</td><td>{(() => { const closing = row.closing; const known = closing !== undefined && closing !== null; const over = known && Number(row.qty || 0) > Number(closing); return (<div className="flex flex-col items-center gap-0.5" onClick={(e) => e.stopPropagation()}><div className="flex items-center justify-center gap-1"><button type="button" aria-label="Decrease quantity" className="inline-flex h-[26px] w-[26px] shrink-0 items-center justify-center rounded border border-line bg-pillgrey text-[15px] font-bold leading-none text-ink hover:bg-linestrong disabled:opacity-40" disabled={Number(row.qty || 0) <= 1} onClick={() => updateItem(index, 'qty', Math.max(1, Number(row.qty || 1) - 1))}>-</button><input className={'f-input w-14 text-center' + (over ? ' border-danger text-danger' : '')} type="number" min="1" max={known ? closing : undefined} value={row.qty} onWheel={(e) => e.currentTarget.blur()} onChange={(e) => updateItem(index, 'qty', e.target.value)} /><button type="button" aria-label="Increase quantity" className="inline-flex h-[26px] w-[26px] shrink-0 items-center justify-center rounded border border-line bg-pillgrey text-[15px] font-bold leading-none text-ink hover:bg-linestrong disabled:opacity-40" disabled={known && Number(row.qty || 0) >= Number(closing)} onClick={() => updateItem(index, 'qty', Number(row.qty || 0) + 1)}>+</button></div>{known && <span className={'text-[11px] ' + (over ? 'font-semibold text-danger' : 'text-inkmuted')}>{over ? 'Only ' + closing + ' in stock' : 'Closing: ' + closing}</span>}</div>); })()}</td><td><input className="f-input w-24" type="number" min="0" value={row.rsp} onWheel={(e) => e.currentTarget.blur()} onChange={(e) => updateItem(index, 'rsp', e.target.value)} /></td><td><input className="f-input w-20" type="number" min="0" value={row.discountPct} onWheel={(e) => e.currentTarget.blur()} onChange={(e) => updateItem(index, 'discountPct', e.target.value)} /></td><td>{money(row.discountAmount)}</td><td>{money(row.lineTotal)}</td><td><select className="f-input min-w-28" value={row.salesPerson || ''} onChange={(e) => updateItem(index, 'salesPerson', e.target.value)}><option value="">Select...</option>{salesPeople.map((person) => <option key={person.value} value={person.value}>{person.label}</option>)}</select></td><td><ProductImage src={row.image} alt={row.name} size={56} onOpen={() => { setSelectedProduct(row); setPreviewImage({ src: row.image, alt: row.name }); }} /></td><td><button type="button" className="act-btn bg-danger" onClick={(e) => { e.stopPropagation(); setItems((current) => current.filter((_, itemIndex) => itemIndex !== index)); if (selectedProduct?.itemId === row.itemId) setSelectedProduct(null); }}><Icon name="x" size={12} /></button></td></tr>)}</tbody></table></div>
+      <div className="mt-3 flex-1 overflow-x-auto px-4"><table className="dt"><thead><tr>{['#', 'Barcode No', 'Stock Issue', 'Item Code', 'Item / Description', 'HSN', 'GST%', 'Qty', 'RSP Price', 'Disc %', 'Disc Amt', 'Line Total', 'Sales Person', 'Image', ''].map((heading) => <th key={heading}>{heading}</th>)}</tr></thead><tbody>{rows.length === 0 ? <tr><td colSpan="15" className="dt-empty">No Items Added</td></tr> : rows.map((row, index) => <tr key={`${row.itemId}-${index}`} className="cursor-pointer !bg-[#FFF3CD]" onClick={() => setSelectedProduct(row)}><td>{index + 1}</td><td className={row.isReturn ? '!text-danger font-semibold' : undefined}>{row.barcode || '-'}</td><td><input type="checkbox" checked={!!row.stockIssue} onClick={(e) => e.stopPropagation()} onChange={(e) => updateItem(index, 'stockIssue', e.target.checked)} /></td><td>{row.code}</td><td>{row.description || row.name}</td><td>{row.hsn}</td><td>{money(row.gst)}</td><td>{(() => { const closing = row.closing; const known = closing !== undefined && closing !== null; const over = known && Number(row.qty || 0) > Number(closing); return (<div className="flex flex-col items-center gap-0.5" onClick={(e) => e.stopPropagation()}><div className="flex items-center justify-center gap-1"><button type="button" aria-label="Decrease quantity" className="inline-flex h-[26px] w-[26px] shrink-0 items-center justify-center rounded border border-line bg-pillgrey text-[15px] font-bold leading-none text-ink hover:bg-linestrong disabled:opacity-40" disabled={Number(row.qty || 0) <= 1} onClick={() => updateItem(index, 'qty', Math.max(1, Number(row.qty || 1) - 1))}>-</button><input className={'f-input w-14 text-center' + (over ? ' border-danger text-danger' : '')} type="number" min="1" max={known ? closing : undefined} value={row.qty} onWheel={(e) => e.currentTarget.blur()} onChange={(e) => updateItem(index, 'qty', e.target.value)} /><button type="button" aria-label="Increase quantity" className="inline-flex h-[26px] w-[26px] shrink-0 items-center justify-center rounded border border-line bg-pillgrey text-[15px] font-bold leading-none text-ink hover:bg-linestrong disabled:opacity-40" disabled={known && Number(row.qty || 0) >= Number(closing)} onClick={() => updateItem(index, 'qty', Number(row.qty || 0) + 1)}>+</button></div>{known && <span className={'text-[11px] ' + (over ? 'font-semibold text-danger' : 'text-inkmuted')}>{over ? 'Only ' + closing + ' in stock' : 'Closing: ' + closing}</span>}</div>); })()}</td><td><input className="f-input w-24" type="number" min="0" value={row.rsp} onWheel={(e) => e.currentTarget.blur()} onChange={(e) => updateItem(index, 'rsp', e.target.value)} /></td><td><input className="f-input w-20" type="number" min="0" value={row.discountPct} onWheel={(e) => e.currentTarget.blur()} onChange={(e) => updateItem(index, 'discountPct', e.target.value)} /></td><td>{money(row.discountAmount)}</td><td className={row.isReturn ? '!text-danger font-semibold' : undefined}>{money(row.lineTotal)}</td><td><select className="f-input min-w-35" value={row.salesPerson || ''} onChange={(e) => updateItem(index, 'salesPerson', e.target.value)}><option value="">Select...</option>{salesPeople.map((person) => <option key={person.value} value={person.value}>{person.label}</option>)}</select></td><td><ProductImage src={row.image} alt={row.name} size={56} onOpen={() => { setSelectedProduct(row); setPreviewImage({ src: row.image, alt: row.name }); }} /></td><td><button type="button" className="act-btn bg-danger" onClick={(e) => { e.stopPropagation(); setItems((current) => current.filter((_, itemIndex) => itemIndex !== index)); if (selectedProduct?.itemId === row.itemId) setSelectedProduct(null); }}><Icon name="x" size={12} /></button></td></tr>)}</tbody></table></div>
       
-      <div className="border-t border-line px-4 pt-2"><div className="grid grid-cols-2 gap-2 text-[13px] md:grid-cols-6"><div><div className="text-cell">Qty</div><div>{qty}</div></div><div><div className="text-cell">Bill Value</div><div>{money(rows.reduce((sum, row) => sum + Number(row.rsp || 0) * Number(row.qty || 0), 0))}</div></div><div><div className="text-cell">Total Discount</div><div>{money(rows.reduce((sum, row) => sum + row.discountAmount, 0))}</div></div><div><div className="text-cell">Sub Total</div><div>{money(billValue)}</div></div><div><div className="text-cell">Tax</div><div>{money(tax)}</div></div><div><div className="text-cell">Net Amount</div><div className="font-bold text-danger">{money(billValue + tax)}</div></div></div></div>
-      <div className="mt-2 flex flex-wrap items-center gap-3 bg-[#eef1f7] px-4 py-3"><button type="button" className="btn bg-[#17a2b8] text-white"><Icon name="register" size={14} /> Hold</button><button type="button" className="btn bg-[#2563a9] text-white" onClick={() => setShowMultiplePay(true)}><Icon name="register" size={14} /> Multiple Pay</button><span className="text-[15px] font-bold">Total Payable: <span className="text-okgreen">{money(billValue + tax)}</span></span><button type="button" className="btn bg-[#f2a19b] text-white" onClick={() => setItems([])}><Icon name="x" size={14} /> Clear Screen</button><span className="flex-1" /><button type="button" className="btn btn-primary" onClick={() => router.push('/admin/transaction/sell/pos')}>Recent Transactions</button></div>
-      {showMultiplePay && <MultiplePay totalItems={qty} totalPayable={billValue + tax} onClose={() => setShowMultiplePay(false)} onSubmit={submitPayment} />}
+      <div className="border-t border-line px-4 pt-2"><div className="grid grid-cols-2 gap-2 text-[13px] md:grid-cols-6"><div><div className="text-cell">Qty</div><div>{qty}</div></div><div><div className="text-cell">Bill Value</div><div>{money(rows.reduce((sum, row) => sum + (row.isReturn ? -1 : 1) * Number(row.rsp || 0) * Number(row.qty || 0), 0))}</div></div><div><div className="text-cell">Total Discount</div><div>{money(rows.reduce((sum, row) => sum + row.discountAmount, 0))}</div></div><div><div className="text-cell">Sub Total</div><div>{money(billValue)}</div></div><div><div className="text-cell">Tax</div><div>{money(tax)}</div></div><div><div className="text-cell">Net Amount</div><div className="font-bold text-danger">{money(netAmount)}</div></div></div><div className="mt-2 grid grid-cols-2 gap-2 text-[13px] md:grid-cols-6"><div><div className="text-cell">Line Wise Discount %</div><input className="f-input" type="number" min="0" max="100" step="0.01" value={lineDiscPct} onWheel={(e) => e.currentTarget.blur()} onChange={(e) => applyLineDiscountPct(e.target.value)} /></div><div><div className="text-cell">Line Wise Discount Amt</div><input className="f-input" type="number" min="0" step="0.01" value={lineDiscAmt} onWheel={(e) => e.currentTarget.blur()} onChange={(e) => applyLineDiscountAmt(e.target.value)} /></div><div className="flex items-center gap-2"><span className="text-cell">Shipping</span><button type="button" className="font-semibold text-brand underline" onClick={() => { setShippingDraft(String(shipping || 0)); setShowShipping(true); }}>( + ) {money(shipping)}</button></div></div></div>
+      <div className="mt-2 flex flex-wrap items-center gap-3 bg-[#eef1f7] px-4 py-3"><button type="button" className="btn bg-[#17a2b8] text-white disabled:opacity-50" disabled={holding} onClick={holdBill}><Icon name="register" size={14} /> {holding ? 'Holding...' : 'Hold'}</button><button type="button" className="btn bg-[#6b7280] text-white disabled:opacity-50" disabled={!holds.length} onClick={() => setShowHolds(true)}><Icon name="register" size={14} /> Held ({holds.length})</button><button type="button" className="btn bg-[#2563a9] text-white" onClick={() => setShowMultiplePay(true)}><Icon name="register" size={14} /> Multiple Pay</button><span className="text-[15px] font-bold">Total Payable: <span className="text-okgreen">{money(netAmount)}</span></span><button type="button" className="btn bg-[#f2a19b] text-white" onClick={clearTill}><Icon name="x" size={14} /> Clear Screen</button><span className="flex-1" /><button type="button" className="btn btn-primary" onClick={() => router.push('/admin/transaction/sell/pos')}>Recent Transactions</button></div>
+      {showMultiplePay && <MultiplePay totalItems={qty} totalPayable={netAmount} onClose={() => setShowMultiplePay(false)} onSubmit={submitPayment} />}
+
+      {/* Add Shipping Charge. Save commits the draft onto the bill; closing or
+          clicking the backdrop leaves the previous charge untouched. */}
+      {showHolds && (
+        <div className="fixed inset-0 z-[80] flex items-start justify-center bg-black/40 p-4 pt-20" onClick={() => setShowHolds(false)}>
+          <div className="w-full max-w-3xl rounded-lg bg-white shadow-2xl" onClick={(event) => event.stopPropagation()}>
+            <div className="flex items-center justify-between border-b border-line px-4 py-3">
+              <h2 className="text-[15px] font-semibold">Held Bills</h2>
+              <button type="button" aria-label="Close" className="flex h-7 w-7 items-center justify-center rounded-full bg-danger text-white" onClick={() => setShowHolds(false)}><Icon name="x" size={14} /></button>
+            </div>
+            <div className="max-h-[60vh] overflow-y-auto p-4">
+              <table className="dt">
+                <thead><tr>{['Held At', 'Customer', 'Items', 'Amount', 'Held By', ''].map((h) => <th key={h}>{h}</th>)}</tr></thead>
+                <tbody>
+                  {holds.length === 0
+                    ? <tr><td colSpan="6" className="dt-empty">No held bills</td></tr>
+                    : holds.map((h) => (
+                      <tr key={h._id}>
+                        <td>{h.holdNo}</td>
+                        <td>{h.customerName || 'Walk-in Customer'}</td>
+                        <td>{h.totalQty}</td>
+                        <td>{money(h.totalAmount)}</td>
+                        <td>{h.createdBy}</td>
+                        <td>
+                          <button type="button" className="btn btn-primary px-2 py-1" onClick={() => resumeHold(h._id)}>Resume</button>
+                          <button type="button" className="act-btn ml-2 bg-danger" title="Discard" onClick={() => discardHold(h._id)}><Icon name="x" size={12} /></button>
+                        </td>
+                      </tr>
+                    ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showShipping && (
+        <div className="fixed inset-0 z-[80] flex items-start justify-center bg-black/40 p-4 pt-24" onClick={() => setShowShipping(false)}>
+          <div className="w-full max-w-2xl rounded-lg bg-white shadow-2xl" onClick={(event) => event.stopPropagation()}>
+            <div className="flex items-center justify-between border-b border-line px-4 py-3">
+              <h2 className="text-[15px] font-semibold">Add Shipping Charge</h2>
+              <button type="button" aria-label="Close" className="flex h-7 w-7 items-center justify-center rounded-full bg-danger text-white" onClick={() => setShowShipping(false)}><Icon name="x" size={14} /></button>
+            </div>
+            <div className="flex items-center gap-2 p-4">
+              <input
+                className="f-input flex-1"
+                type="number"
+                min="0"
+                step="0.01"
+                autoFocus
+                value={shippingDraft}
+                onWheel={(e) => e.currentTarget.blur()}
+                onChange={(e) => setShippingDraft(e.target.value)}
+                onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); setShipping(Math.max(0, Number(shippingDraft || 0) || 0)); setShowShipping(false); } }}
+              />
+              <button type="button" className="btn btn-primary" onClick={() => { setShipping(Math.max(0, Number(shippingDraft || 0) || 0)); setShowShipping(false); }}>Save</button>
+            </div>
+          </div>
+        </div>
+      )}
       {showCustomerForm && <CustomerForm values={customerForm} setValues={setCustomerForm} typeOptions={customerTypes} onClose={() => setShowCustomerForm(false)} onSave={saveCustomer} saving={savingCustomer} />}
     </div>
   );

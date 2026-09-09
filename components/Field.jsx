@@ -505,7 +505,12 @@ function PincodeField({ f, value, onChange, patch }) {
         /* digits only - the lookup keys off exactly six of them */
         onChange={(e) => onChange(e.target.value.replace(/\D/g, '').slice(0, 6))}
       />
-      {status && (
+      {/* `hideLookupText` drops the confirmatory line under the box - the
+          resolved "SURAT, GUJARAT" and the "Looking up…" that precedes it - on
+          forms where the City and State fields it filled already say the same
+          thing. A failed lookup still speaks up either way: quietly filling
+          nothing is the one outcome the operator has to be told about. */}
+      {status && (status.err || !f.hideLookupText) && (
         <div className={'mt-1 text-[11.5px] ' + (status.err ? 'text-danger' : 'text-inkmuted')}>
           {status.text}
         </div>

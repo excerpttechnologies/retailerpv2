@@ -1,12 +1,16 @@
 ﻿"use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { useRouter } from "next/navigation";
 import { useScope } from "./ScopeContext";
+import BarcodeLabelSheet, { parseSize } from "./BarcodeLabelSheet";
 import { useOptions } from "./useOptions";
 import { useBarcodeLookup } from "./useScanner";
 import Icon from "./Icon";
 import { computeSampleBarcode } from "@/lib/barcodeFormat";
+import { encodeRate } from "@/lib/purchaseRateCode";
+import { gstPercentForAmount, slabGstPercent } from "@/lib/hsnGst";
 import * as XLSX from "xlsx";
 
 const money = (value) => {
@@ -24,6 +28,46 @@ const decimal2 = (value) => {
   return raw.slice(0, dot + 1) + raw.slice(dot + 1).replace(/\./g, '').slice(0, 2);
 };
 const fixed2 = (value) => (Number.isFinite(Number(value)) ? Number(value).toFixed(2) : '');
+
+/* HSN Master stores a tax slab as a reference to a Tax record plus a price
+   band; the barcode screen needs the percentage. Tax records do not move
+   during a session and one HSN routinely points several slabs at the same
+   record, so each is fetched once and remembered for the life of the page. */
+const taxRateCache = new Map();
+
+async function fetchTaxRate(taxId) {
+  const key = String(taxId || "");
+  if (!key) return 0;
+  if (taxRateCache.has(key)) return taxRateCache.get(key);
+
+  try {
+    const response = await fetch(`/api/tax/${key}`);
+    const payload = await response.json();
+    const rate = slabGstPercent(payload?.doc || payload || {});
+    taxRateCache.set(key, rate);
+    return rate;
+  } catch {
+    return 0;
+  }
+}
+
+/* An HSN's raw taxSlabs -> the same bands with their rates filled in, which is
+   the shape /api/item/<id>/detail already returns, so both routes into the
+   form hand the slab picker identical rows. */
+async function resolveSlabRates(taxSlabs) {
+  const rows = Array.isArray(taxSlabs) ? taxSlabs.filter(Boolean) : [];
+  if (!rows.length) return [];
+
+  const ids = [...new Set(rows.map((s) => String(s.gstTaxNameId || "")).filter(Boolean))];
+  const pairs = await Promise.all(ids.map(async (id) => [id, await fetchTaxRate(id)]));
+  const rates = new Map(pairs);
+
+  return rows.map((s) => ({
+    amountFrom: s.amountFrom,
+    amountTo: s.amountTo,
+    igst: rates.get(String(s.gstTaxNameId || "")) || 0,
+  }));
+}
 
 const meterRegex = /(mtr|meter|metre|meters|metres)/i;
 const pcRegex = /(pc|pcs|piece|pieces)/i;
@@ -501,7 +545,7 @@ function SerialNoField({ value, onChange, editableClass, readOnlyClass, locked =
   );
 }
 
-function AddItemModal({ open, onClose, onSubmit, onSubmitAndPrint, rowCount = 0, barcodeFormat, reserveNumbers, business = "", markupDefaults = {} }) {
+function AddItemModal({ open, onClose, onSubmit, onSubmitAndPrint, rowCount = 0, barcodeFormat, reserveNumbers, business = "", markupDefaults = {}, rateCodeMapping = null }) {
   const createBlankForm = (overrides = {}) => ({
     oldBarcode: "",
     itemCode: "",
@@ -557,6 +601,17 @@ function AddItemModal({ open, onClose, onSubmit, onSubmitAndPrint, rowCount = 0,
   const [hsnOptions, setHsnOptions] = useState([]);
   const [hsnLoading, setHsnLoading] = useState(false);
   const [hsnLabel, setHsnLabel] = useState('');
+  /* The selected HSN's tax slabs, rates already resolved. GST% is derived from
+     these rather than stored once, because a price-banded HSN answers
+     differently as the row's value moves - see the effect below. */
+  const [hsnSlabs, setHsnSlabs] = useState([]);
+  /* What that effect last wrote into GST%. Anything else in the box is the
+     operator's own figure and is left alone; null means the HSN just changed,
+     so the next auto-fill overrides whatever is there. */
+  const autoGstRef = useRef(null);
+  /* picking a second HSN while the first is still loading must not let the
+     first one's slabs land on top - same guard the item detail read uses */
+  const hsnDetailRef = useRef(0);
   const itemTimerRef = useRef(null);
   const hsnTimerRef = useRef(null);
   const itemDetailRef = useRef(0);
@@ -677,6 +732,39 @@ function AddItemModal({ open, onClose, onSubmit, onSubmitAndPrint, rowCount = 0,
     });
   }, [form.purchaseRate, form.discount, form.discountType]);
 
+  /* The real Purchase Rate written through the active Purchase Rate Code
+     Master. Derived, never stored in form state and never written back into
+     form.purchaseRate - the typed number has to stay exactly as entered.
+     Empty string while the master is unconfigured or still loading, which is
+     what hides the read-only echo under the input. */
+  const encodedPurchaseRate = useMemo(
+    () => encodeRate(form.purchaseRate, rateCodeMapping),
+    [form.purchaseRate, rateCodeMapping]
+  );
+
+  /* GST% <- the HSN's Tax Slabs.
+
+     A single-slab HSN is one flat rate. A price-banded HSN answers by value,
+     so the rate is re-derived whenever the row's value moves rather than being
+     frozen at the moment the HSN was picked - edit the purchase rate or the
+     discount and a row can cross a slab boundary. Final Price is the value
+     matched against the bands, falling back to Purchase Rate before any
+     discount has been worked out.
+
+     The field stays editable throughout: once the operator types over the
+     auto-filled rate, form.gst no longer matches what this effect last wrote
+     and their figure is left standing until a different HSN is chosen. */
+  useEffect(() => {
+    if (!hsnSlabs.length) return;
+
+    const amount = Number(form.finalPrice) || Number(form.purchaseRate) || 0;
+    const next = String(gstPercentForAmount(hsnSlabs, amount) || 0);
+
+    if (autoGstRef.current !== null && form.gst !== autoGstRef.current) return;
+    autoGstRef.current = next;
+    if (form.gst !== next) setForm((current) => ({ ...current, gst: next }));
+  }, [hsnSlabs, form.finalPrice, form.purchaseRate, form.gst]);
+
   if (!open) return null;
 
   const updateField = (key, value) => setForm((current) => ({ ...current, [key]: value }));
@@ -739,43 +827,53 @@ function AddItemModal({ open, onClose, onSubmit, onSubmitAndPrint, rowCount = 0,
     }
   };
 
-  const resolveHsnGst = async (hsnDoc) => {
-    const code = hsnDoc?.code || hsnDoc?.label || "";
-    let taxId = hsnDoc?.taxSlabs?.[0]?.gstTaxNameId || "";
+  /* Hands the form a new slab table. A fresh HSN overrides whatever GST% holds
+     - including a hand-typed figure, which belonged to the HSN that was there
+     before - so the override guard is cleared with it. An HSN with no slabs at
+     all leaves GST% at 0 and editable rather than blocking the operator. */
+  const applyHsnSlabs = (slabs) => {
+    autoGstRef.current = null;
+    setHsnSlabs(slabs);
+    if (!slabs.length) setForm((current) => ({ ...current, gst: "0" }));
+  };
 
-    if (!taxId && code) {
+  /* HSN picked -> its Tax Slabs from HSN Master. The search dropdown already
+     carries them, so the extra read only runs for an HSN that arrived without
+     one (a code typed in, or a stale option). Which slab applies is settled by
+     the effect below, not here, because that answer depends on the price. */
+  const resolveHsnGst = async (hsnDoc) => {
+    const detailRequest = hsnDetailRef.current + 1;
+    hsnDetailRef.current = detailRequest;
+
+    const code = hsnDoc?.code || hsnDoc?.label || "";
+    let taxSlabs = Array.isArray(hsnDoc?.taxSlabs) ? hsnDoc.taxSlabs : [];
+
+    if (!taxSlabs.length && code) {
       try {
         const response = await fetch(`/api/hsn?perPage=20&search=${encodeURIComponent(code)}`);
         const payload = await response.json();
         const match = (payload.rows || []).find((row) => String(row.code || '').trim() === String(code).trim());
-        taxId = match?.taxSlabs?.[0]?.gstTaxNameId || '';
+        taxSlabs = Array.isArray(match?.taxSlabs) ? match.taxSlabs : [];
       } catch {
-        taxId = '';
+        taxSlabs = [];
       }
     }
 
+    if (hsnDetailRef.current !== detailRequest) return;
+
     setForm((current) => ({ ...current, hsn: code, hsnId: hsnDoc?.value || current.hsnId }));
 
-    if (!taxId) {
-      setForm((current) => ({ ...current, gst: "0" }));
-      return;
-    }
-
-    try {
-      const response = await fetch(`/api/tax/${taxId}`);
-      const payload = await response.json();
-      const taxRecord = payload?.doc || payload || {};
-      const gstValue = Number(taxRecord.igst ?? taxRecord.cgst ?? taxRecord.sgst ?? taxRecord.gst ?? 0);
-      setForm((current) => ({ ...current, gst: String(gstValue || 0) }));
-    } catch (error) {
-      setForm((current) => ({ ...current, gst: "0" }));
-    }
+    const slabs = await resolveSlabRates(taxSlabs);
+    if (hsnDetailRef.current !== detailRequest) return;
+    applyHsnSlabs(slabs);
   };
 
   /* Clears everything the previous Old Barcode put on the form, so barcode B
      can never inherit barcode A's item, HSN or GST. */
   const clearFetchedItem = () => {
     resolvedRef.current = "";
+    hsnDetailRef.current += 1;
+    applyHsnSlabs([]);
     setForm((current) => ({
       ...current,
       itemId: "", itemCode: "", itemName: "", itemLabel: "",
@@ -867,9 +965,11 @@ function AddItemModal({ open, onClose, onSubmit, onSubmitAndPrint, rowCount = 0,
   };
 
   const handleItemSelection = async (opt) => {
+    hsnDetailRef.current += 1;
     if (!opt) {
       itemDetailRef.current += 1;
       setItemLabel('');
+      applyHsnSlabs([]);
       setForm((current) => ({
         ...current,
         itemId: "", itemName: "", itemCode: "", subGroupName: "", groupName: "", printDescription: "",
@@ -883,6 +983,7 @@ function AddItemModal({ open, onClose, onSubmit, onSubmitAndPrint, rowCount = 0,
     const itemCode = opt.itemCode || opt.primaryLabel || "";
     const itemName = opt.name || opt.secondaryLabel || "";
     setItemLabel(itemCode);
+    applyHsnSlabs([]);
     setForm((current) => ({
       ...current,
       itemId: opt.value,
@@ -901,14 +1002,15 @@ function AddItemModal({ open, onClose, onSubmit, onSubmitAndPrint, rowCount = 0,
       const payload = await response.json();
       if (!response.ok || itemDetailRef.current !== detailRequest) return;
       const item = payload?.item || {};
-      const firstSlab = item.slabs?.[0] || {};
-      const gst = Number(firstSlab.igst ?? firstSlab.cgst ?? firstSlab.sgst ?? 0);
       setHsnLabel(item.hsnCode || '');
+      /* the detail route resolves the item's HSN slabs for us - bands and
+         rates both - so the rate is picked by value here exactly as it is
+         when the HSN is chosen by hand */
+      applyHsnSlabs(Array.isArray(item.slabs) ? item.slabs : []);
       setForm((current) => ({
         ...current,
         hsnId: item.hsnId || "",
         hsn: item.hsnCode || "",
-        gst: String(gst || 0),
         markupRSP: item.markupRSP == null ? (markupDefaults.rsp ?? "") : fixed2(item.markupRSP),
         markupWSP: item.markupWSP == null ? (markupDefaults.wsp ?? "") : fixed2(item.markupWSP),
         markupDP: item.markupDP == null ? (markupDefaults.dp ?? "") : fixed2(item.markupDP),
@@ -921,7 +1023,9 @@ function AddItemModal({ open, onClose, onSubmit, onSubmitAndPrint, rowCount = 0,
 
   const handleHsnSelection = async (opt) => {
     if (!opt) {
+      hsnDetailRef.current += 1;
       setHsnLabel('');
+      applyHsnSlabs([]);
       setForm((current) => ({ ...current, hsnId: "", hsn: "", gst: "0" }));
       return;
     }
@@ -1165,6 +1269,11 @@ function AddItemModal({ open, onClose, onSubmit, onSubmitAndPrint, rowCount = 0,
         noOfCuts: form.isMtr ? String(cutRows.length || Number(form.noOfCuts || 1)) : "",
         totalMtr: form.isMtr ? String(form.totalMtr || 0) : "",
         purchaseRate: String(purchaseRateValue),
+        /* Encoded from the SAME value on the line above, so the two can never
+           disagree. Kept as a separate key - purchaseRate stays the real
+           number, and the server copies both across (buildDocs is a
+           whitelist). '' when no Purchase Rate Code Master is configured. */
+        encodedPurchaseRate: encodeRate(String(purchaseRateValue), rateCodeMapping),
         discountType: form.discountType,
         discount: String(form.discount || 0),
         finalPrice: String(finalPriceValue),
@@ -1238,10 +1347,11 @@ function AddItemModal({ open, onClose, onSubmit, onSubmitAndPrint, rowCount = 0,
           {/* ROW 1: Old Barcode | Item Code | HSN | GST% | SM | P-M-F.
 
               Four tracks for five fields: HSN and GST% share the third cell.
-              GST% is not typed - resolveHsnGst() fills it from whichever HSN
-              is picked - so sitting them side by side is how the operator
-              checks the pick landed. They stay two separate controls; the
-              grouping is only the cell they share.
+              GST% is normally not typed - it is derived from whichever HSN is
+              picked and the row's value - so sitting them side by side is how
+              the operator checks the pick landed. It stays editable for the
+              transaction that needs a different rate. They are two separate
+              controls; the grouping is only the cell they share.
 
               Explicit widths rather than equal quarters: GST% holds two digits
               and the two add-on inputs share the final track. The two-column
@@ -1300,7 +1410,16 @@ function AddItemModal({ open, onClose, onSubmit, onSubmitAndPrint, rowCount = 0,
               {renderHsnField()}
               <div className="space-y-1">
                 <label className="block text-[11px] font-semibold text-gray-700">GST% *</label>
-                <input value={form.gst} readOnly className={`w-full rounded-md px-2 py-2 text-sm ${readOnlyClass}`} />
+                {/* decimal2 keeps this to a number the rate can actually be -
+                    a GST rate is a positive percentage, never a minus sign or
+                    a second decimal point */}
+                <input
+                  value={form.gst}
+                  inputMode="decimal"
+                  title="Filled from the HSN's tax slab - edit to override for this row"
+                  onChange={(event) => updateField("gst", decimal2(event.target.value))}
+                  className={`w-full rounded-md px-2 py-2 text-sm ${editableClass}`}
+                />
               </div>
             </div>
 
@@ -1445,6 +1564,16 @@ function AddItemModal({ open, onClose, onSubmit, onSubmitAndPrint, rowCount = 0,
               <div className="space-y-1">
                 <label className="block text-[11px] font-semibold text-gray-700">Purchase Rate *</label>
                 <input type="text" inputMode="decimal" value={form.purchaseRate} onWheel={(e) => e.currentTarget.blur()} onChange={(event) => updateField("purchaseRate", decimal2(event.target.value))} className={`w-full rounded-md px-2 py-2 text-sm ${editableClass}`} />
+                {/* Read-only echo of the SAME value through the Purchase Rate
+                    Code Master. The input above keeps the real number - this
+                    is only what a label would print. Hidden entirely when no
+                    mapping is configured, rather than showing a half-encoded
+                    string. */}
+                {encodedPurchaseRate && (
+                  <div className="mt-1 text-[10px] text-gray-500">
+                    Encoded: <span className="font-mono font-semibold text-gray-700">{encodedPurchaseRate}</span>
+                  </div>
+                )}
               </div>
 
               <div className="space-y-1">
@@ -1578,23 +1707,333 @@ function AddItemModal({ open, onClose, onSubmit, onSubmitAndPrint, rowCount = 0,
   );
 }
 
-function PrintLabelPicker({ rows, open, onClose }) {
+/* ==========================================================================
+   From a Barcode Generation row to a label.
+
+   BarcodeLabelSheet is the one label implementation in this system - it is
+   what the Inventory print screen puts on paper - and it reads a SAVED
+   barcode row (the shape lib/barcodeLabel.js stores). The rows on this
+   screen are the form's own shape, and the two disagree on four fields, so
+   handing them over unmapped printed a label with no quantity, no cost and,
+   on the Submit & Print path, nothing at all below the barcode:
+
+     purRate / finalNet   the form calls these purchaseRate / finalPrice
+     batchType            the form calls it mode, or uniqueBarcode "Yes"/"No"
+     qtyNum               the form keeps qty as a string
+     supplierName, grcNo  belong to the GRC header, never to a row
+
+   Mapping here rather than changing either side keeps the saved data format
+   and the label component exactly as they are.
+   ========================================================================== */
+function toLabelRow(row, copies, header) {
+  /* Four fields answer "is this one barcode for one piece, or for the lot?",
+     and they are consulted in order of how much they can be trusted:
+
+       batchType / batchUnique   written by the save route - authoritative
+       uniqueBarcode             the control the operator actually ticked
+       mode                      derived, and last because emptyRow() seeds it
+                                 "unique" while seeding uniqueBarcode "No" -
+                                 reading it first stamps every imported batch
+                                 row as unique
+
+     Getting this backwards is not cosmetic. A batch row read as unique loses
+     the quantity line - the one thing that distinguishes a 5-metre label from
+     a 1-metre one - and a unique row read as batch prints a quantity that
+     overstates what is on the hanger. */
+  const declared = String(row.batchType || row.batchUnique || '').toLowerCase();
+  const ticked = String(row.uniqueBarcode || '').toLowerCase();
+  const isBatch = declared
+    ? declared === 'batch'
+    : ticked
+      ? ticked !== 'yes'
+      : String(row.mode || '').toLowerCase() === 'batch';
+
+  return {
+    ...row,
+    copies,
+    /* every price the label may show, under the name the label looks for */
+    purRate: row.purRate || row.purchaseRate || '',
+    finalNet: row.finalNet || row.finalPrice || '',
+    retailPrice: row.retailPrice || row.rsp || '',
+    batchType: isBatch ? 'batch' : 'unique',
+    qtyNum: Number(row.qtyNum ?? row.qty ?? 0) || 0,
+    serialNo: row.serialNo || row.billSlNo || '',
+    supplierName: row.supplierName || header.supplierName || '',
+    grcNo: row.grcNo || row.grcNumber || header.grcNumber || '',
+  };
+}
+
+/* How many stickers a row starts out asking for.
+
+   A sticker count is a WHOLE number of pieces of paper, and it is not the
+   same thing as a quantity:
+
+     PC   the quantity is a count of pieces, so one sticker each is the
+          sensible opening offer - which is what this screen has always done
+     MTR  the quantity is a length. A 12.65-metre cut is one cut and wants
+          ONE label reading "12.65 MTR"; asking for 12.65 labels asks for
+          something nobody can print.
+
+   The fractional case was not merely untidy. The readiness check compares
+   the number of labels asked for against the number actually drawn, and the
+   sheet floors its copy count - so 12.65 could never equal 12, and Print
+   would have been refused outright on every metre-based GRC. */
+function defaultCopies(row) {
+  const metres = /mtr|met/i.test(String(row.uom || row.uomType || ''));
+  if (metres) return 1;
+  const qty = Math.floor(Number(row.qty) || 0);
+  return qty > 0 ? qty : 1;
+}
+
+/* The physical page for a run on sticker stock: the catalog's sheet size,
+   widened if the labels on it do not actually fit.
+
+   The seeded catalog is not self-consistent - 'RT 72 x 116 mm' declares a
+   72mm sheet, a label size of "0 x 0 mm" and 2 labels per row. parseSize
+   rejects the zero and substitutes 50x40, so two 50mm labels would be laid
+   across a 72mm page and the second one would fall off the edge of the
+   paper. Taking the wider of the two keeps every label on the sheet; a
+   little extra margin is recoverable, a clipped barcode is not.
+
+   Returns null when there is no usable sheet size at all, so the caller can
+   fall back to A4 rather than emit a zero-sized page that prints nothing. */
+function stockPageCss(format, labelW, labelH, perRow, gapMm) {
+  const sheet = String(format?.pageSize || '').match(/(\d+(?:\.\d+)?)\s*[x×]\s*(\d+(?:\.\d+)?)/i);
+  if (!sheet) return null;
+  const sheetW = Number(sheet[1]);
+  const sheetH = Number(sheet[2]);
+  if (!sheetW || !sheetH) return null;
+
+  const needW = labelW * perRow + gapMm * (perRow - 1);
+  return Math.max(sheetW, needW) + 'mm ' + Math.max(sheetH, labelH) + 'mm';
+}
+
+function PrintLabelPicker({ rows, open, onClose, header = {} }) {
+  const scope = useScope();
   const [selected, setSelected] = useState([]);
   const [copies, setCopies] = useState({});
 
+  /* label geometry - the sticker stock this tenant actually buys */
+  const [formats, setFormats] = useState([]);
+  const [formatName, setFormatName] = useState('');
+  const [paper, setPaper] = useState('a4');
+
+  /* the print run: mounted -> measured -> dialog. See runPrint below. */
+  const [printing, setPrinting] = useState(false);
+  const [printError, setPrintError] = useState('');
+  const printRootRef = useRef(null);
+  /* how many labels this particular run was asked for - frozen at the click */
+  const wantedRef = useRef(0);
+
+  /* Seeded when the picker OPENS, and not again while it is open.
+
+     `rows` is a fresh array on every parent render, and saving calls
+     router.refresh() - so keying this on rows meant a refresh landing behind
+     the open picker silently threw away whatever the operator had ticked and
+     typed, and put the defaults back. */
+  const wasOpen = useRef(false);
   useEffect(() => {
-    if (!open) return;
+    if (!open) { wasOpen.current = false; return; }
+    if (wasOpen.current) return;
+    wasOpen.current = true;
+
     const next = {};
     rows.forEach((row) => {
-      if (row.barcodeNo) next[row.barcodeNo] = Number(row.qty || 1) || 1;
+      if (row.barcodeNo) next[row.barcodeNo] = defaultCopies(row);
     });
     setCopies(next);
     setSelected(Object.keys(next));
   }, [open, rows]);
 
-  if (!open) return null;
+  /* Label formats, loaded the same way the Inventory print screen loads them
+     (components/BarcodePrintLabel.jsx): the whole seeded catalog is offered,
+     and the format ticked as Default in Settings -> Barcode Label Settings is
+     preselected. This screen previously loaded NO geometry at all, so a label
+     had no physical size to be printed at. */
+  useEffect(() => {
+    if (!open) return;
+    let cancelled = false;
 
-  const selectedRows = rows.filter((row) => selected.includes(row.barcodeNo));
+    (async () => {
+      const qs = new URLSearchParams({
+        business: scope.business || '',
+        location: scope.location || '',
+        finYear: scope.finYear || '',
+      });
+      const [chosen, catalog] = await Promise.all([
+        fetch('/api/barcode-label-setting?' + qs).then((r) => r.json()).catch(() => ({})),
+        fetch('/api/catalog?name=barcodeLabels').then((r) => r.json()).catch(() => ({})),
+      ]);
+      if (cancelled) return;
+
+      const list = catalog.rows || [];
+      setFormats(list);
+
+      const ticked = ((chosen.doc && chosen.doc.rows) || []).filter((r) => r.choice);
+      const preferred = ticked.find((t) => t.isDefault)?.name || ticked[0]?.name;
+      setFormatName(list.some((c) => c.name === preferred) ? preferred : (list[0]?.name || ''));
+    })();
+
+    return () => { cancelled = true; };
+  }, [open, scope.business, scope.location, scope.finYear]);
+
+  const format = useMemo(
+    () => formats.find((f) => f.name === formatName) || null,
+    [formats, formatName]
+  );
+
+  const selectedRows = useMemo(
+    () => rows
+      .filter((row) => row.barcodeNo && selected.includes(row.barcodeNo))
+      /* floored here as well as on input: the sheet expands by a whole
+         number of copies, and the readiness check counts what the sheet
+         produced. If these two ever disagreed, Print would refuse forever. */
+      .map((row) => toLabelRow(row, Math.max(1, Math.floor(Number(copies[row.barcodeNo]) || 1)), header)),
+    [rows, selected, copies, header]
+  );
+
+  /* what the printer is being asked for, counted from the same list the sheet
+     is built from - this is the number the readiness check has to find drawn */
+  const expectedLabels = useMemo(
+    () => selectedRows.reduce((total, row) => total + (row.copies || 0), 0),
+    [selectedRows]
+  );
+
+  /* Paper. A4 is the default because that is what a desktop printer and
+     "Microsoft Print to PDF" are loaded with; the sticker-stock option sets
+     the page to one physical sheet from the catalog, which is what a label
+     printer feeds.
+
+     On sticker stock the sheet IS the page, so a gutter between labels would
+     push the last column off the edge of the paper - hence gap 0 there, and
+     a 1mm cut line on a sheet of A4 that somebody has to guillotine. */
+  const geometry = parseSize(format?.labelSize);
+  const perRow = Math.max(1, Number(format?.stickerInRow) || 1);
+  const onStock = paper === 'stock';
+  const gapMm = onStock ? 0 : 1;
+  const stockSize = stockPageCss(format, geometry.w, geometry.h, perRow, gapMm);
+
+  const pageRule = onStock && stockSize
+    ? '@page { size: ' + stockSize + '; margin: 0; }'
+    : '@page { size: A4; margin: 5mm; }';
+  const gap = gapMm + 'mm';
+
+  /* ---------------------------------------------------------------- print --
+     window.print() photographs the DOM as it stands at the instant it is
+     called. It used to be called straight out of the click handler, before
+     React had committed anything and before JsBarcode had drawn a single bar,
+     so what went to the printer was whatever happened to be on screen.
+
+     The run is therefore staged. `printing` mounts the sheet; the effect
+     below waits for the browser to have actually finished with it, checks
+     that every barcode it was asked for is really there, and only then opens
+     the dialog. No timers: each await is a real signal from the browser. */
+  useEffect(() => {
+    if (!printing) return undefined;
+    let cancelled = false;
+
+    /* The class is what arms the print rules in globals.css. Gating them on it
+       rather than on the mere existence of the sheet means every other print
+       screen in the application - and this one at any other moment - keeps
+       printing exactly the way it does today. Removed in the cleanup below,
+       so there is no state to unwind by hand. */
+    document.body.classList.add('printing-labels');
+
+    const done = () => setPrinting(false);
+    window.addEventListener('afterprint', done);
+
+    (async () => {
+      try {
+        /* Fonts first. The code, the price and the description are text; print
+           before the face has loaded and they are measured with fallback
+           metrics and re-flow inside a fixed-size sticker. */
+        if (document.fonts && document.fonts.ready) {
+          try { await document.fonts.ready; } catch { /* unsupported - the frames below still gate on layout */ }
+        }
+        if (cancelled) return;
+
+        /* Two frames. The first lets React's commit reach the screen, the
+           second lets the browser lay out the SVG children JsBarcode appended
+           synchronously during that commit. */
+        await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+        if (cancelled) return;
+
+        const root = printRootRef.current;
+        const drawn = root ? Array.from(root.querySelectorAll('svg[data-barcode]')) : [];
+        const blank = drawn.filter((svg) => {
+          const box = svg.getBoundingClientRect();
+          return !svg.firstChild || box.width < 1 || box.height < 1;
+        });
+
+        const wanted = wantedRef.current;
+        if (!root || drawn.length !== wanted || blank.length) {
+          /* Refusing to open the dialog is the point. A run that is short a
+             label, or carries an empty box where a barcode should be, produces
+             stickers that cannot be scanned and goods that cannot be found -
+             and the operator would have no way of knowing until the till. */
+          setPrintError(
+            'Printing stopped: ' + drawn.length + ' of ' + wanted +
+            ' barcodes were drawn' + (blank.length ? ', ' + blank.length + ' of them empty' : '') +
+            '. Nothing was sent to the printer.'
+          );
+          setPrinting(false);
+          return;
+        }
+
+        setPrintError('');
+        window.print();
+
+        /* afterprint is the signal that the dialog is finished with, and in
+           every current browser print() has already blocked until then. The
+           frame below is the belt to that braces: it hands control back once
+           more so a browser whose print() returns EARLY still has its
+           afterprint delivered first, and the sheet is never pulled out from
+           under a dialog that is still reading it. */
+        await new Promise((resolve) => requestAnimationFrame(resolve));
+        if (!cancelled) setPrinting(false);
+      } catch (error) {
+        /* Without this the run could end with `printing` stuck true - which
+           leaves printing-labels welded to <body>, and every LATER print
+           anywhere in the application comes out blank. */
+        console.error('Barcode label print failed', error);
+        setPrintError('Printing stopped: the label sheet could not be prepared. Nothing was sent to the printer.');
+        setPrinting(false);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+      window.removeEventListener('afterprint', done);
+      document.body.classList.remove('printing-labels');
+    };
+    /* expectedLabels is deliberately NOT a dependency. It is read from a ref
+       taken when Print was pressed, because the picker stays interactive
+       behind the dialog: nudging a copy count mid-run would otherwise re-run
+       this effect and open a SECOND print dialog for the same click. */
+  }, [printing]);
+
+  /* Closing the picker abandons the run. The component is not unmounted when
+     it closes - it just renders null - so a run left in flight would keep the
+     body class on and re-run the check against a sheet that is no longer
+     there, reporting a failure nobody caused. */
+  useEffect(() => {
+    if (!open) {
+      setPrinting(false);
+      setPrintError('');
+    }
+  }, [open]);
+
+  function runPrint() {
+    setPrintError('');
+    if (!expectedLabels) {
+      setPrintError('Nothing is selected to print.');
+      return;
+    }
+    wantedRef.current = expectedLabels;
+    setPrinting(true);
+  }
+
+  if (!open) return null;
 
   /* The box is capped to the viewport and scrolls INTERNALLY.
 
@@ -1610,7 +2049,10 @@ function PrintLabelPicker({ rows, open, onClose }) {
      scrolls, the header and footer stay put, and nothing is ever pushed out
      of reach. */
   return (
-    <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/40 p-4">
+    /* no-print: the picker itself is never paper. An operator who reaches for
+       Ctrl+P instead of the Print button would otherwise send this dialog -
+       checkboxes, copy counts and all - to the printer. */
+    <div className="no-print fixed inset-0 z-[70] flex items-center justify-center bg-black/40 p-4">
       <div className="flex max-h-[calc(100vh-2rem)] w-full max-w-[960px] flex-col rounded-lg bg-white shadow-xl">
         <div className="flex shrink-0 items-center justify-between border-b border-gray-200 px-4 py-3">
           <h3 className="text-lg font-semibold">Print Label Picker</h3>
@@ -1627,40 +2069,97 @@ function PrintLabelPicker({ rows, open, onClose }) {
                   <div className="font-medium">{row.itemName || row.supplierDescription || "Item"}</div>
                   <div className="text-xs text-gray-600">{row.barcodeNo}</div>
                 </div>
-                <input type="number" min={1} value={copies[row.barcodeNo] || 1} onWheel={(e) => e.currentTarget.blur()} onChange={(e) => setCopies((prev) => ({ ...prev, [row.barcodeNo]: Number(e.target.value) || 1 }))} className="w-[90px] rounded border border-gray-300 px-2 py-1 text-sm" />
+                <input type="number" min={1} step={1} value={copies[row.barcodeNo] || 1} onWheel={(e) => e.currentTarget.blur()} onChange={(e) => setCopies((prev) => ({ ...prev, [row.barcodeNo]: Math.max(1, Math.floor(Number(e.target.value) || 1)) }))} className="w-[90px] rounded border border-gray-300 px-2 py-1 text-sm" />
               </div>
             ))}
           </div>
 
+          {/* The preview is the SAME component, with the SAME rows and the
+              SAME geometry that the print sheet below is built from, so what
+              is on screen and what comes out of the printer cannot drift
+              apart. It used to be a hand-drawn card whose "barcode" was a
+              striped CSS background - it encoded nothing, and being a
+              background image Chrome would have dropped it from the paper
+              even if the rest had worked. */}
           <div className="rounded border border-gray-200 bg-gray-50 p-4">
-            <div className="mb-3 text-sm font-semibold">Preview</div>
+            <div className="mb-3 flex items-baseline justify-between text-sm font-semibold">
+              <span>Preview</span>
+              <span className="text-[11px] font-normal text-gray-500">
+                {expectedLabels} label{expectedLabels === 1 ? '' : 's'}
+                {format?.labelSize ? ' · ' + format.labelSize : ''}
+              </span>
+            </div>
             {selectedRows.length === 0 ? (
               <div className="rounded border border-dashed border-gray-300 bg-white p-8 text-center text-sm text-gray-500">Select a barcode to preview.</div>
             ) : (
-              <div className="space-y-4">
-                {selectedRows.map((row) => (
-                  <div key={row.barcodeNo} className="rounded border border-gray-300 bg-white p-3">
-                    <div className="text-lg font-semibold">{row.itemName || row.supplierDescription}</div>
-                    <div className="text-sm text-gray-600">{row.barcodeNo}</div>
-                    <div className="mt-3 h-10 rounded border border-gray-700 bg-[repeating-linear-gradient(90deg,#000_0,#000_2px,transparent_2px,transparent_4px)]" />
-                    <div className="mt-3 flex items-center justify-between text-sm"><span>RSP</span><span>{money(row.rsp || row.retailPrice || 0)}</span></div>
-                  </div>
-                ))}
+              <div className="overflow-auto rounded border border-gray-300 bg-white p-2">
+                <BarcodeLabelSheet rows={selectedRows} format={format} gap={gap} />
               </div>
             )}
           </div>
         </div>
 
-        <div className="flex shrink-0 items-center justify-end gap-2 border-t border-gray-200 px-4 py-3">
-          <button type="button" onClick={() => window.print()} className="rounded-lg border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-700">Print</button>
+        <div className="flex shrink-0 flex-wrap items-center justify-end gap-2 border-t border-gray-200 px-4 py-3">
+          {printError && (
+            <span className="mr-auto text-sm font-medium text-red-700">{printError}</span>
+          )}
+
+          <label className="flex items-center gap-1 text-xs text-gray-600">
+            Label
+            <select
+              value={formatName}
+              onChange={(event) => setFormatName(event.target.value)}
+              className="rounded border border-gray-300 px-2 py-1 text-xs"
+            >
+              {formats.length === 0 && <option value="">Default 50 x 40 mm</option>}
+              {formats.map((f) => <option key={f.name} value={f.name}>{f.name}</option>)}
+            </select>
+          </label>
+
+          <label className="flex items-center gap-1 text-xs text-gray-600">
+            Paper
+            <select
+              value={paper}
+              onChange={(event) => setPaper(event.target.value)}
+              className="rounded border border-gray-300 px-2 py-1 text-xs"
+            >
+              <option value="a4">A4 sheet</option>
+              <option value="stock" disabled={!stockSize}>
+                {stockSize ? 'Label stock ' + format.pageSize : 'Label stock (no size set)'}
+              </option>
+            </select>
+          </label>
+
+          <button type="button" disabled={printing} onClick={runPrint} className="rounded-lg border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-700 disabled:opacity-60">{printing ? 'Preparing...' : 'Print'}</button>
           <button type="button" onClick={onClose} className="rounded-lg border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-700">Close</button>
         </div>
       </div>
+
+      {/* THE PRINT SURFACE.
+
+          Portaled to <body> so it is a sibling of the application rather than
+          a descendant of this modal. That matters: the modal is
+          `fixed inset-0` with a `max-h` scrolling body, and Chrome prints a
+          fixed box on the first page only and clips an overflow box instead
+          of paginating it - a sheet of labels left inside it would have come
+          out as one truncated page however the CSS was written.
+
+          At <body> level the sheet is ordinary in-flow content that fragments
+          across as many pages as it needs, and the @media print rules in
+          globals.css take the rest of the application out of the box tree so
+          not one sheet of paper is spent on it. */}
+      {printing && typeof document !== 'undefined' && createPortal(
+        <div id="barcode-print-root" ref={printRootRef}>
+          <style>{pageRule}</style>
+          <BarcodeLabelSheet rows={selectedRows} format={format} gap={gap} />
+        </div>,
+        document.body
+      )}
     </div>
   );
 }
 
-export default function GCRBarcodeGeneration({ grcId = null, initialRows = [], supplierMarkup = {} }) {
+export default function GCRBarcodeGeneration({ grcId = null, initialRows = [], supplierMarkup = {}, grcHeader = {} }) {
   const router = useRouter();
   const scope = useScope();
 
@@ -1700,6 +2199,9 @@ export default function GCRBarcodeGeneration({ grcId = null, initialRows = [], s
       qty: row.qty || '',
       noOfCuts: row.noOfCuts || '',
       purchaseRate: row.purchaseRate || row.purRate || '',
+      /* carried through on reload so re-saving an existing GRC does not blank
+         the encoded value that was generated with it */
+      encodedPurchaseRate: row.encodedPurchaseRate || row.encodedPurRate || '',
       finalPrice: row.finalPrice || row.finalNet || '',
       retailPrice: row.retailPrice || row.rsp || '',
       offerPrice: row.offerPrice || '',
@@ -1719,6 +2221,27 @@ export default function GCRBarcodeGeneration({ grcId = null, initialRows = [], s
     }));
     setRows(normalized);
   }, [initialRows]);
+
+  /* The active Purchase Rate Code Master for this scope. Loaded once here and
+     handed down, so the Add Item form never has to fetch it itself and every
+     row generated in one session encodes against the same table. An absent or
+     inactive record leaves the mapping empty, and encodeRate() then returns
+     '' rather than inventing an alphabet. */
+  const [rateCodeMapping, setRateCodeMapping] = useState(null);
+
+  useEffect(() => {
+    const params = new URLSearchParams({
+      business: scope.business || "",
+      location: scope.location || "",
+    });
+    fetch("/api/purchase-rate-code?" + params)
+      .then((response) => response.json())
+      .then((result) => {
+        const doc = result.doc;
+        setRateCodeMapping(doc && doc.isActive !== false ? doc.digitMappings || {} : {});
+      })
+      .catch(() => setRateCodeMapping({}));
+  }, [scope.business, scope.location]);
 
   useEffect(() => {
     const params = new URLSearchParams({
@@ -2009,6 +2532,7 @@ export default function GCRBarcodeGeneration({ grcId = null, initialRows = [], s
            belonging to another business reports that rather than "not found" */
         business={scope.business}
         markupDefaults={supplierMarkup}
+        rateCodeMapping={rateCodeMapping}
         onClose={() => setShowAddItem(true)}
         onSubmit={(items) => appendRows(items)}
         onSubmitAndPrint={(items) => {
@@ -2037,6 +2561,13 @@ export default function GCRBarcodeGeneration({ grcId = null, initialRows = [], s
             </button>
             <button type="button" onClick={exportRowsToExcel} disabled={validRows.length === 0} className="flex items-center gap-1 rounded border border-gray-300 bg-white px-2 py-1 text-xs text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50" title="Export all item fields to Excel">
               <Icon name="file" size={14} /> Export Excel
+            </button>
+            {/* The picker could only ever be reached by adding another item
+                and pressing Submit & Print Label. Re-opening a GRC to reprint
+                a damaged sticker - the ordinary reason to come back to this
+                screen - meant generating a barcode nobody wanted. */}
+            <button type="button" onClick={() => { setPrintRows([]); setShowPrint(true); }} disabled={validRows.filter((row) => row.barcodeNo).length === 0} className="flex items-center gap-1 rounded border border-gray-300 bg-white px-2 py-1 text-xs text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50" title="Print labels for the barcodes on this GRC">
+              <Icon name="printer" size={14} /> Print Labels
             </button>
             <span className="rounded border border-gray-300 bg-gray-50 px-2 py-1">Pc(s) {totals.pcs}</span>
           </div>
@@ -2196,7 +2727,11 @@ export default function GCRBarcodeGeneration({ grcId = null, initialRows = [], s
         <div className="flex items-center gap-2"><span className="text-gray-500">Grand Total</span><span className="font-mono font-bold text-indigo-700">₹ {money(totals.net)}</span></div>
       </div>
 
-      <PrintLabelPicker rows={printRows.length ? printRows : validRows} open={showPrint} onClose={() => { setShowPrint(false); setPrintRows([]); }} />
+      {/* The supplier and the GRC number live on the GRC header, never on a
+          barcode row, so they are handed down here. Without them the label's
+          provenance line prints blank - and the label is the only thing that
+          travels with the goods. */}
+      <PrintLabelPicker rows={printRows.length ? printRows : validRows} open={showPrint} header={grcHeader} onClose={() => { setShowPrint(false); setPrintRows([]); }} />
 
       {showSaveConfirm && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
