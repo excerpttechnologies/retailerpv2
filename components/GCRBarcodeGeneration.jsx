@@ -221,47 +221,57 @@ function readExcelFile(file) {
     reader.onload = () => {
       try {
         const workbook = XLSX.read(reader.result, { type: "array", cellDates: true });
-        
-        // Auto-detect sheet: prefer "Barcode Items", else use first sheet
-        let sheetName = workbook.SheetNames[0];
-        const barcodeSheet = workbook.SheetNames.find(name => 
+
+        // Auto-detect sheet: prefer "Barcode Items", else use the first sheet (never the snapshot)
+        const visible = workbook.SheetNames.filter((name) => name !== EXPORT_SNAPSHOT_SHEET);
+        let sheetName = visible[0] || workbook.SheetNames[0];
+        const barcodeSheet = visible.find((name) =>
           name.toLowerCase().includes('barcode') || name.toLowerCase().includes('items')
         );
         if (barcodeSheet) sheetName = barcodeSheet;
-        
+
         const sheet = workbook.Sheets[sheetName];
         const sheetRows = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: "", raw: false });
-        
+
         if (sheetRows.length === 0) {
           throw new Error("The Excel file is empty.");
         }
-        
+
         const rawHeaders = (sheetRows[0] || []).map((header) => String(header || "").trim());
         if (rawHeaders.length === 0) {
           throw new Error("The Excel file does not contain a header row.");
         }
-        
-        const rawDataRows = sheetRows.slice(1);
-        
+
         // Convert to ERP template format
-        const convertedRows = convertToERPTemplate(rawHeaders, rawDataRows);
-        
+        const convertedRows = convertToERPTemplate(rawHeaders, sheetRows.slice(1));
+
         // Validate critical columns
-        const hasCriticalColumn = convertedRows.some(row => 
-          row.itemCode || row.itemName || row.barcodeNo
-        );
-        
+        const hasCriticalColumn = convertedRows.some((row) => row.itemCode || row.itemName || row.barcodeNo);
         if (!hasCriticalColumn && convertedRows.length > 0) {
           throw new Error("Invalid template: Item Code, Item Name, or Barcode No column not found");
         }
-        
+
         // Filter out completely empty rows
-        const rows = convertedRows.filter((row) => 
-          Object.keys(row).some((key) => key !== "customFields" && row[key] !== "") || 
+        const rows = convertedRows.filter((row) =>
+          Object.keys(row).some((key) => key !== "customFields" && row[key] !== "") ||
           Object.values(row.customFields || {}).some((value) => value !== "")
         );
-        
-        resolve(rows);
+
+        /* The hidden snapshot Export Excel writes: every exported row as it
+           was, by Barcode No. Absent from older exports and other files. */
+        let snapshot = null;
+        const snapshotSheet = workbook.Sheets[EXPORT_SNAPSHOT_SHEET];
+        if (snapshotSheet) {
+          const snapRows = XLSX.utils.sheet_to_json(snapshotSheet, { header: 1, defval: "", raw: false });
+          const snapHeaders = (snapRows[0] || []).map((header) => String(header || "").trim());
+          snapshot = new Map(
+            convertToERPTemplate(snapHeaders, snapRows.slice(1))
+              .filter((row) => String(row.barcodeNo || "").trim())
+              .map((row) => [String(row.barcodeNo).trim(), row])
+          );
+        }
+
+        resolve({ rows, snapshot });
       } catch (error) {
         reject(error);
       }
@@ -309,73 +319,219 @@ function sameValue(a, b) {
   return x !== "" && y !== "" && Number.isFinite(Number(x)) && Number.isFinite(Number(y)) && Number(x) === Number(y);
 }
 
-/* What one imported sheet row does to the grid row it matched - or to a blank
-   row when it is new. The sheet's values win; then every value the grid holds
-   twice, or derives, is brought back in line, because the save reads the
-   OTHER copy:
+/* Export Excel writes this sheet, very hidden, beside "Barcode Items": every
+   row exactly as it was exported. Import compares each sheet row with its
+   snapshot row, so it knows which cells the operator actually changed.
 
+   That is the only reliable way to read this template, which carries several
+   prices twice - RSP and Retail Price are one stored value, WSP and WSP Offer
+   Price another - because an operator edits one of a pair and leaves the
+   other as exported. Judged from the sheet alone the untouched copy looks
+   like an edit (an edited Retail Price was thrown away in favour of the stale
+   RSP beside it); judged against the grid, the same sheet imported a second
+   time undoes the first import. With the snapshot any one column can be
+   edited, re-importing changes nothing more, and a cell nobody touched never
+   overwrites the saved value. */
+const EXPORT_SNAPSHOT_SHEET = "Export Snapshot";
+
+/* The cells of a sheet row that differ from that row as it was exported. */
+function changedCells(importedRow, original) {
+  const changes = { barcodeNo: importedRow.barcodeNo };
+  Object.keys(importedRow).forEach((key) => {
+    if (key !== "customFields" && key !== "barcodeNo" && !sameValue(importedRow[key], original[key])) {
+      changes[key] = importedRow[key];
+    }
+  });
+  const custom = Object.entries(importedRow.customFields || {})
+    .filter(([key, value]) => !sameValue(value, original.customFields?.[key]));
+  if (custom.length) changes.customFields = Object.fromEntries(custom);
+  return changes;
+}
+
+/* Prices the template carries twice. RSP and Retail Price are the same stored
+   price (retailPrice). WSP and E-COMM are stored only as their offer price
+   (wspPrice, dpPrice) - the base less its offer % - and rsp / wsp / dp
+   themselves are never saved, so the stored side is the one that must move. */
+const PRICE_PAIRS = [
+  { base: "rsp", stored: "retailPrice", pct: null, label: "RSP", storedLabel: "Retail Price" },
+  { base: "wsp", stored: "wspPrice", pct: "wspOfferPct", label: "WSP", storedLabel: "WSP Offer Price" },
+  { base: "dp", stored: "dpPrice", pct: "dpOfferPct", label: "E-COMM", storedLabel: "E-COMM Offer Price" },
+];
+
+/* Whether applying an import actually changed a grid row. */
+function rowDiffers(next, before) {
+  return Object.keys(next).some((key) => key !== "id" && (key === "customFields"
+    ? JSON.stringify(next.customFields || {}) !== JSON.stringify(before.customFields || {})
+    : !sameValue(next[key], before[key])));
+}
+
+function offerFrom(base, pct) {
+  const text = String(base ?? "").trim();
+  return pct > 0 && text !== "" && Number.isFinite(Number(text)) ? fixed2(Number(text) * (1 - pct / 100)) : base;
+}
+
+/* The purchase rate less its discount - the Final Price rule the Add Item
+   form applies through calculatePrices. */
+function finalRateOf(row) {
+  const purchaseRate = Number(row.purchaseRate || 0);
+  const discount = Number(row.discount || row.disc1 || 0);
+  const discountType = row.discountType || "Percentage";
+  return discountType === "Flat"
+    ? Math.max(0, purchaseRate - discount)
+    : Math.max(0, purchaseRate - (purchaseRate * discount) / 100);
+}
+
+/* A row whose two copies of one price disagree cannot be applied without
+   guessing which was meant, so it is refused. `tracked` = read against the
+   export snapshot, where only a pair changed on BOTH sides can disagree. */
+function priceConflicts(changes, existing, tracked) {
+  const given = (key) => key in changes && (tracked || String(changes[key] ?? "").trim() !== "");
+  return PRICE_PAIRS.filter(({ base, stored, pct }) => {
+    if (!given(base) || !given(stored)) return false;
+    const rate = pct ? Number(pct in changes ? changes[pct] : existing?.[pct]) || 0 : 0;
+    return !sameValue(changes[stored], offerFrom(changes[base], rate));
+  }).map(({ base, stored, label, storedLabel }) =>
+    `${label} (${changes[base]}) and ${storedLabel} (${changes[stored]}) ` +
+    (tracked
+      ? "were both changed, to different prices - change only one of them"
+      : "disagree, but they are the same price - make them equal, or Export Excel again and change just one"));
+}
+
+/* A sheet without an export snapshot - exported before snapshots existed, or
+   made elsewhere - still carries both copies of each price, and an operator
+   changes one of them. When the copies disagree, the one still equal to the
+   unit's saved price is the untouched copy and the other is the change, so
+   that is the one taken. The decision is remembered per unit (`memory`, kept
+   in localStorage): importing the same sheet again after saving - when it is
+   the CHANGED copy that now equals the saved price - repeats the decision
+   instead of flipping back. Only a pair where BOTH copies differ from the
+   saved price is refused, since nothing says which was meant. */
+const PRICE_MEMORY_KEY = "gcr-import-price-choices";
+
+function resolveUntrackedPairs(sheetRow, existing, memory, memoryKey) {
+  const changes = { ...sheetRow };
+  const picks = [];
+  const ambiguous = [];
+  const filled = (key) => key in sheetRow && String(sheetRow[key] ?? "").trim() !== "";
+  PRICE_PAIRS.forEach(({ base, stored, pct, label, storedLabel }) => {
+    if (!filled(base) || !filled(stored)) return;
+    const rate = pct ? Number(pct in sheetRow ? sheetRow[pct] : existing?.[pct]) || 0 : 0;
+    const fromBase = offerFrom(sheetRow[base], rate);
+    if (sameValue(sheetRow[stored], fromBase)) return;                 // the two copies agree
+    const key = memoryKey(label);
+    const remembered = memory[key];
+    let pick = remembered && sameValue(remembered.base, sheetRow[base]) && sameValue(remembered.stored, sheetRow[stored])
+      ? remembered.pick : null;
+    if (!pick && existing) {
+      const baseIsSaved = sameValue(fromBase, existing[stored]);
+      const storedIsSaved = sameValue(sheetRow[stored], existing[stored]);
+      if (storedIsSaved && !baseIsSaved) pick = "base";
+      else if (baseIsSaved && !storedIsSaved) pick = "stored";
+    }
+    if (!pick) {
+      ambiguous.push(existing
+        ? `${label} (${sheetRow[base]}) and ${storedLabel} (${sheetRow[stored]}) are one price and both differ from the saved ${existing[stored] || "value"} - make them equal`
+        : `${label} (${sheetRow[base]}) and ${storedLabel} (${sheetRow[stored]}) are one price - make them equal`);
+      return;
+    }
+    memory[key] = { base: sheetRow[base], stored: sheetRow[stored], pick };
+    if (pick === "base") {
+      delete changes[stored];
+      picks.push({ used: label, value: sheetRow[base], ignored: storedLabel, stale: sheetRow[stored] });
+    } else {
+      delete changes[base];
+      picks.push({ used: storedLabel, value: sheetRow[stored], ignored: label, stale: sheetRow[base] });
+    }
+  });
+  return { changes, picks, ambiguous };
+}
+
+/* What one imported sheet row does to the grid row it matched - or to a blank
+   row when it is new. `changes` is only what the operator changed when the
+   sheet carries its export snapshot (`original`), otherwise the whole sheet
+   row. Those values are written, then everything the grid holds twice or
+   derives is brought back in line, because the save reads the OTHER copy:
+
+     - a changed RSP / Retail Price, WSP / WSP Offer Price or E-COMM / E-COMM
+       Offer Price moves both of its pair (the offer % applied), so the stored
+       price - the one the save keeps - carries the change;
+     - Offer Price, which the label, the till and the GRC total sell at first,
+       follows a changed RSP when no offer was running; a running offer is
+       kept and reported, never re-priced by a formula of its own;
+     - a changed Purchase Rate re-derives Final Price by the Add Item rule
+       when the row's discount is known, and is re-encoded for the label;
      - purRate / finalNet / encodedPurRate are the stored names of
        purchaseRate / finalPrice / encodedPurchaseRate. A row loaded from the
-       database carries both and the save prefers the stored one, so an edited
-       Purchase Rate or Final Price was saved as its old value.
-     - RSP is stored as retailPrice, WSP and E-COMM as their offer prices
-       (wspPrice, dpPrice); rsp / wsp / dp themselves are never saved, so an
-       edit to the RSP, WSP or E-COMM column vanished on save. Each pair is
-       now one value: the RSP / WSP / E-COMM column wins when filled (the
-       offer % applied to WSP / E-COMM), and its duplicate column is used only
-       when it is empty. The rule reads the sheet alone, never the grid - an
-       operator edits one column of a pair and leaves the other as exported,
-       and comparing against the grid treated that stale copy as a fresh edit
-       on the next import of the same sheet, undoing the change.
-     - a changed Purchase Rate is re-encoded, so the label never prints the
-       old cost code beside the new cost.
+       database carries both and the save prefers the stored one, so they are
+       set from the grid names;
      - P-M-F falls back to the Attribute Add On, as it does for a saved row. */
-function mergeImportedRow(existing, importedRow, { id, barcodeNo, rateCodeMapping, onOverride = () => {} }) {
+function mergeImportedRow(existing, changes, { id, barcodeNo, rateCodeMapping, original = null, onNote = () => {} }) {
+  const tracked = Boolean(original);
   const next = {
     ...(existing || emptyRow(id)),
-    ...importedRow,
+    ...changes,
     id,
     barcodeNo,
-    customFields: { ...(existing?.customFields || {}), ...(importedRow.customFields || {}) },
+    customFields: { ...(existing?.customFields || {}), ...(changes.customFields || {}) },
   };
-  const provided = (key) => key in importedRow && String(importedRow[key] ?? "").trim() !== "";
-  const edited = (key) => key in importedRow && !sameValue(importedRow[key], existing?.[key]);
+  // tracked: every key in `changes` was edited; untracked: a filled cell counts
+  const given = (key) => key in changes && (tracked || String(changes[key] ?? "").trim() !== "");
+  const pctOf = (key) => Number(next[key]) || 0;
 
-  if (provided("rsp")) {
-    if (provided("retailPrice") && !sameValue(importedRow.rsp, importedRow.retailPrice)) onOverride("Retail Price");
-    next.retailPrice = next.rsp;
-  } else if (provided("retailPrice")) {
-    next.rsp = next.retailPrice;
-  }
-
-  [["wsp", "wspPrice", "wspOfferPct", "WSP Offer Price"], ["dp", "dpPrice", "dpOfferPct", "E-COMM Offer Price"]].forEach(([base, stored, pctKey, storedLabel]) => {
-    const pct = Number(next[pctKey]);
-    if (provided(base)) {
-      const baseValue = Number(next[base]);
-      const offer = pct > 0 && Number.isFinite(baseValue) ? fixed2(baseValue * (1 - pct / 100)) : next[base];
-      if (provided(stored) && !sameValue(importedRow[stored], offer)) onOverride(storedLabel);
-      next[stored] = offer;
-    } else if (provided(stored) && !(pct > 0)) {
-      next[base] = next[stored];
+  PRICE_PAIRS.forEach(({ base, stored, pct }) => {
+    const rate = pct ? pctOf(pct) : 0;
+    if (given(stored)) {
+      if (!given(base) && !(rate > 0)) next[base] = next[stored];
+    } else if (given(base) || (pct && given(pct))) {
+      next[stored] = offerFrom(next[base], rate);
     }
   });
 
+  if (given("rsp") || given("retailPrice")) {
+    const rate = pctOf("rspOfferPct");
+    const offerBefore = tracked ? original.offerPrice : existing?.offerPrice;
+    const retailBefore = tracked ? original.retailPrice : existing?.retailPrice;
+    if (given("offerPrice")) {
+      /* an Offer Price in the sheet is kept as typed - except, in a sheet
+         without a snapshot, one still equal to that sheet's own retail price,
+         which is the exported "no offer" copy */
+      const sheetRetail = ["retailPrice", "rsp"].filter(given).map((key) => changes[key]);
+      if (!tracked && sheetRetail.some((value) => sameValue(changes.offerPrice, value))) {
+        next.offerPrice = next.retailPrice;
+      } else if (existing && String(next.offerPrice ?? "").trim() && !sameValue(next.offerPrice, next.retailPrice)
+        && (!String(existing.offerPrice ?? "").trim() || sameValue(existing.offerPrice, existing.retailPrice))) {
+        onNote("offerStarted");
+      }
+    } else if (rate > 0) {
+      next.offerPrice = offerFrom(next.retailPrice, rate);
+    } else if (!tracked && "offerPrice" in changes) {
+      // a blank Offer Price cell: no offer
+    } else if (!String(offerBefore ?? "").trim()) {
+      // there was no offer, and there still is none
+    } else if (sameValue(offerBefore, retailBefore)) {
+      next.offerPrice = next.retailPrice;
+    } else if (!sameValue(next.retailPrice, retailBefore)) {
+      onNote("offerKept");
+    }
+  }
+
+  const rateEdited = given("purchaseRate") || given("discount") || given("discountType") || given("disc1");
+  if (rateEdited && !given("finalPrice")) {
+    const before = tracked ? original : existing;
+    const discountKnown = !before || sameValue(before.finalPrice, round2(finalRateOf(before)));
+    if (discountKnown) next.finalPrice = String(round2(finalRateOf(next)));
+    else onNote("finalKept");
+  }
+
   next.purRate = next.purchaseRate;
   next.finalNet = next.finalPrice;
-  if (!existing || edited("purchaseRate")) {
+  if (!existing || (given("purchaseRate") && !sameValue(next.purchaseRate, existing.purchaseRate))) {
     next.encodedPurchaseRate = encodeRate(String(next.purchaseRate ?? ""), rateCodeMapping);
   }
   next.encodedPurRate = next.encodedPurchaseRate;
 
   if (!String(next.p_m_f || "").trim() && next.goodsType === "P-M-F") next.p_m_f = "P-M-F";
   return next;
-}
-
-function pmfMissingMessage(rows) {
-  const names = rows.map((row) => row.barcodeNo || row.itemCode || row.itemName).filter(Boolean);
-  const shown = names.slice(0, 8).join(", ") + (names.length > 8 ? ` and ${names.length - 8} more` : "");
-  return `P-M-F is required on every row and is empty on ${rows.length} (${shown}). ` +
-    `Export Excel, fill the P-M-F column, then Import Excel and Submit again.`;
 }
 
 function customFieldNames(rows) {
@@ -586,12 +742,7 @@ function buildBarcodePlan({ uom, uniqueBarcode, qtyOrCuts, totalMtr, cutRows = [
 }
 
 function calculatePrices(row) {
-  const purchaseRate = Number(row.purchaseRate || 0);
-  const discount = Number(row.discount || row.disc1 || 0);
-  const discountType = row.discountType || "Percentage";
-  const finalValue = discountType === "Flat"
-    ? Math.max(0, purchaseRate - discount)
-    : Math.max(0, purchaseRate - (purchaseRate * discount) / 100);
+  const finalValue = finalRateOf(row);
 
   const rsp = finalValue * (1 + Number(row.markupRSP ?? 100) / 100);
   const wsp = finalValue * (1 + Number(row.markupWSP ?? 15) / 100);
@@ -1422,10 +1573,6 @@ function AddItemModal({ open, onClose, onSubmit, onSubmitAndPrint, rowCount = 0,
       setReserveError("Please select an Item Code.");
       return;
     }
-    if (!form.p_m_f?.trim()) {
-      setReserveError("P-M-F is required.");
-      return;
-    }
     if (reserving) return;                       // guards the double-click
 
     const generatedRows = [];
@@ -1642,7 +1789,7 @@ function AddItemModal({ open, onClose, onSubmit, onSubmitAndPrint, rowCount = 0,
                 <input type="number" step="1" min={0} value={form.sm} onChange={(event) => updateField("sm", event.target.value)} className={`w-full rounded-md px-2 py-2 text-sm ${editableClass}`} />
               </div>
               <div className="space-y-1">
-                <label className="block text-[11px] font-semibold text-gray-700">P-M-F *</label>
+                <label className="block text-[11px] font-semibold text-gray-700">P-M-F</label>
                 <input value={form.p_m_f} onChange={(event) => updateField("p_m_f", event.target.value)} className={`w-full rounded-md px-2 py-2 text-sm ${editableClass}`} />
               </div>
             </div>
@@ -2372,7 +2519,7 @@ function PrintLabelPicker({ rows, open, onClose, header = {} }) {
   );
 }
 
-export default function GCRBarcodeGeneration({ grcId = null, initialRows = [], supplierMarkup = {}, grcHeader = {} }) {
+export default function GCRBarcodeGeneration({ grcId = null, initialRows = [], supplierMarkup = {}, grcHeader = {}, onSaved = null }) {
   const router = useRouter();
   const scope = useScope();
 
@@ -2571,13 +2718,16 @@ export default function GCRBarcodeGeneration({ grcId = null, initialRows = [], s
   function exportRowsToExcel() {
     const headers = [...Object.values(exportFieldLabels), ...additionalFields];
     const fields = Object.keys(exportFieldLabels);
-    const values = validRows.map((row) => [
-      ...fields.map((field) => field === "barcodeNo" ? row[field] ?? "" : row[field] ?? ""),
+    const sheetRows = [headers, ...validRows.map((row) => [
+      ...fields.map((field) => row[field] ?? ""),
       ...additionalFields.map((field) => row.customFields?.[field] ?? ""),
-    ]);
-    const worksheet = XLSX.utils.aoa_to_sheet([headers, ...values]);
+    ])];
     const workbook = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(workbook, worksheet, "Barcode Items");
+    XLSX.utils.book_append_sheet(workbook, XLSX.utils.aoa_to_sheet(sheetRows), "Barcode Items");
+    /* the same rows again, very hidden, so Import can tell which cells were
+       changed - see EXPORT_SNAPSHOT_SHEET */
+    XLSX.utils.book_append_sheet(workbook, XLSX.utils.aoa_to_sheet(sheetRows), EXPORT_SNAPSHOT_SHEET);
+    workbook.Workbook = { Sheets: [{ Hidden: 0 }, { Hidden: 2 }] };
     XLSX.writeFile(workbook, "barcode-items-template.xlsx");
   }
 
@@ -2589,16 +2739,17 @@ export default function GCRBarcodeGeneration({ grcId = null, initialRows = [], s
     if (!file) return;
 
     try {
-      const importedRows = await readExcelFile(file);
+      const { rows: importedRows, snapshot } = await readExcelFile(file);
       if (importedRows.length === 0) throw new Error("No item rows were found in the Excel file.");
 
       /* ---- match every sheet row to the grid row it edits --------------
          A row with a Barcode No matches the grid row carrying that barcode
          and nothing else; a row without one matches on Item Code + Serial No.
          A match is UPDATED in place and anything else is added, so importing
-         the same sheet again edits rows instead of duplicating them. Matching
-         comes before validation so each row is checked as it will end up - a
-         sheet carrying only Barcode No and the changed prices is a valid edit. */
+         the same sheet again edits rows instead of duplicating them. When the
+         sheet carries its export snapshot, only the cells that were changed
+         are taken from it. Matching comes before validation so each row is
+         checked as it will end up. */
       const currentByKey = new Map();
       rows.forEach((row) => {
         [rowMatchKey(row), rowItemKey(row)].filter(Boolean).forEach((key) => currentByKey.set(key, row));
@@ -2619,35 +2770,42 @@ export default function GCRBarcodeGeneration({ grcId = null, initialRows = [], s
           return;
         }
         lineByKey.set(matchKey, line);
-        planned.push({ importedRow, index, line, existing: currentByKey.get(matchKey) });
+        const existing = currentByKey.get(matchKey);
+        const original = existing && snapshot ? snapshot.get(String(importedRow.barcodeNo || "").trim()) || null : null;
+        const changes = original ? changedCells(importedRow, original) : importedRow;
+        planned.push({ importedRow, changes, original, index, line, existing });
       });
 
       /* ---- validate BEFORE anything is written -------------------------
          An import that is half applied leaves the grid in a state nobody can
          reason about, and if it is then saved it puts wrong stock into the
          system. Every row is checked first and the whole file is rejected
-         with the offending row numbers if any of them fail. */
-      const priceKeys = ["purchaseRate", "finalPrice", "retailPrice", "rsp", "offerPrice", "wsp", "wspPrice", "dp", "dpPrice"];
-      planned.forEach(({ importedRow, line, existing }) => {
-        const row = { ...(existing || {}), ...importedRow };
+         with the offending row numbers if any of them fail. A price that is
+         not a number is refused, never read as 0. */
+      const numericKeys = ["purchaseRate", "finalPrice", "retailPrice", "rsp", "offerPrice", "wsp", "wspPrice", "dp", "dpPrice",
+        "rspOfferPct", "wspOfferPct", "dpOfferPct", "discount", "gst"];
+      planned.forEach(({ changes, original, line, existing }) => {
+        const where = `Row ${line}${changes.barcodeNo ? ` (${changes.barcodeNo})` : ""}`;
+        const row = { ...(existing || {}), ...changes };
         const name = String(row.itemName || row.itemCode || "").trim();
-        if (!name) problems.push(`Row ${line}: item code or name is required`);
+        if (!name) problems.push(`${where}: item code or name is required`);
 
         const qty = Number(row.qty ?? row.totalMtr ?? 0);
-        if (!Number.isFinite(qty) || qty <= 0) problems.push(`Row ${line}: quantity must be a positive number`);
+        if (!Number.isFinite(qty) || qty <= 0) problems.push(`${where}: quantity must be a positive number`);
 
         const isMtr = meterRegex.test(String(row.uom || ""));
         const unique = String(row.uniqueBarcode || "").trim().toLowerCase() === "yes";
         if (!isMtr && unique && !Number.isInteger(qty)) {
-          problems.push(`Row ${line}: a unique piece quantity must be a whole number (got ${qty})`);
+          problems.push(`${where}: a unique piece quantity must be a whole number (got ${qty})`);
         }
 
-        priceKeys.forEach((key) => {
-          const value = importedRow[key];
-          if (value !== undefined && value !== "" && !Number.isFinite(Number(value))) {
-            problems.push(`Row ${line}: ${exportFieldLabels[key] || key} is not a number ("${value}")`);
+        numericKeys.forEach((key) => {
+          const value = changes[key];
+          if (value !== undefined && String(value).trim() !== "" && !Number.isFinite(Number(value))) {
+            problems.push(`${where}: invalid ${exportFieldLabels[key] || key} value "${value}"`);
           }
         });
+        priceConflicts(changes, existing, Boolean(original)).forEach((message) => problems.push(`${where}: ${message}`));
       });
 
       if (problems.length) {
@@ -2668,29 +2826,44 @@ export default function GCRBarcodeGeneration({ grcId = null, initialRows = [], s
 
       const updatedById = new Map();
       const addedRows = [];
-      const overridden = {};                      // duplicate price column -> rows where it lost
-      const onOverride = (label) => { overridden[label] = (overridden[label] || 0) + 1; };
-      planned.forEach(({ importedRow, index, existing }) => {
+      const notes = { offerKept: [], offerStarted: [], finalKept: [] };
+      planned.forEach(({ changes, original, index, existing }) => {
+        if (original && Object.keys(changes).length === 1) return;   // exported and left untouched
         const id = existing?.id || `import-${Date.now()}-${index}`;
-        const barcodeNo = existing?.barcodeNo || importedRow.barcodeNo || issued[nextNumber++];
-        const merged = mergeImportedRow(existing, importedRow, { id, barcodeNo, rateCodeMapping, onOverride });
+        const barcodeNo = existing?.barcodeNo || changes.barcodeNo || issued[nextNumber++];
+        const rowNotes = [];
+        const merged = mergeImportedRow(existing, changes, {
+          id, barcodeNo, rateCodeMapping, original, onNote: (kind) => rowNotes.push(kind),
+        });
+        /* a sheet imported again after its changes were applied changes
+           nothing more - not counted as an update, not reported twice */
+        if (existing && !rowDiffers(merged, existing)) return;
+        rowNotes.forEach((kind) => notes[kind].push(barcodeNo));
         if (existing) updatedById.set(existing.id, merged);
         else addedRows.push(merged);
       });
 
       /* an updated row is swapped in by id, so it keeps its place in the grid */
-      const applyImport = (list) => list.map((row) => updatedById.get(row.id) || row).concat(addedRows);
-      setRows(applyImport);
+      setRows((list) => list.map((row) => updatedById.get(row.id) || row).concat(addedRows));
 
-      const stillMissing = applyImport(rows).filter(
-        (row) => String(row.itemCode || row.itemName || "").trim() && !String(row.p_m_f || "").trim()
-      );
-      const overrideNote = Object.entries(overridden)
-        .map(([label, n]) => `${label} on ${n} row${n === 1 ? "" : "s"}`).join(", ");
+      const list = (codes) => codes.slice(0, 8).join(", ") + (codes.length > 8 ? ` and ${codes.length - 8} more` : "");
+      const unchanged = planned.length - updatedById.size - addedRows.length;
       setImportMessage(
-        `${planned.length} row${planned.length === 1 ? "" : "s"} imported: ${updatedById.size} updated, ${addedRows.length} added.` +
-        (overrideNote ? ` RSP / WSP / E-COMM take priority over their duplicate columns, so the differing ${overrideNote} was not used.` : "") +
-        (stillMissing.length ? ` Before you Submit: ${pmfMissingMessage(stillMissing)}` : "")
+        `${planned.length} row${planned.length === 1 ? "" : "s"} read: ${updatedById.size} updated, ${addedRows.length} added` +
+        (unchanged ? `, ${unchanged} unchanged` : "") +
+        `.${updatedById.size || addedRows.length ? " Click Submit to save them." : ""}` +
+        (!snapshot && updatedById.size
+          ? " This sheet has no export snapshot (it was exported before this update, or made elsewhere), so every filled cell was applied - use Export Excel for a sheet where only the cells you change are applied."
+          : "") +
+        (notes.offerKept.length
+          ? ` ${list(notes.offerKept)}: RSP changed but the running offer was kept, so the label and till still sell at the Offer Price - change Offer Price in the sheet if it should move.`
+          : "") +
+        (notes.offerStarted.length
+          ? ` Check Offer Price on ${list(notes.offerStarted)}: it now differs from the RSP, so the label and till will sell at the Offer Price. If no offer is intended, set it equal to the RSP or leave it empty, and import again.`
+          : "") +
+        (notes.finalKept.length
+          ? ` ${list(notes.finalKept)}: Final Price was not recalculated from the new Purchase Rate because the unit's discount is not known - set Final Price in the sheet if it should change.`
+          : "")
       );
     } catch (error) {
       setImportMessage(error.message || "Unable to import the Excel file.");
@@ -2698,16 +2871,6 @@ export default function GCRBarcodeGeneration({ grcId = null, initialRows = [], s
   }
 
   async function saveRows(rowsToSave = validRows, printAfterSave = false) {
-    /* The server refuses the whole save when any row has no P-M-F, and every
-       row of the GRC is re-sent - so one older unit without it blocked every
-       save. Checked here first, naming the rows, so the operator knows what
-       to fill instead of seeing a bare "required for all rows". */
-    const missingPmf = rowsToSave.filter((row) => !String(row.p_m_f || "").trim());
-    if (missingPmf.length) {
-      setShowSaveConfirm(false);
-      setSaveError(pmfMissingMessage(missingPmf));
-      return false;
-    }
     setSaving(true);
     setSaveError("");
     try {
@@ -2754,6 +2917,8 @@ export default function GCRBarcodeGeneration({ grcId = null, initialRows = [], s
       setShowSaveConfirm(false);
       if (printAfterSave) setShowPrint(true);
       router.refresh?.();
+      /* re-read from the database, so the grid shows what was saved */
+      onSaved?.();
       return true;
     } catch (error) {
       console.error(error);

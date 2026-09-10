@@ -1,5 +1,5 @@
 'use client';
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import GCRBarcodeGeneration from '@/components/GCRBarcodeGeneration';
 
@@ -9,9 +9,13 @@ export default function GrcBarcodeGenerationPage() {
   const [data, setData] = useState(null);
   const [error, setError] = useState('');
 
-  useEffect(() => {
+  /* Also run after every successful Submit (onSaved below), so the grid is
+     re-read from the database and shows what was actually saved rather than
+     what the browser last held. The data is replaced, never cleared first, so
+     the screen - and a print dialog opened by Submit & Print - stays mounted. */
+  const load = useCallback(() => {
     if (!id) return;
-    fetch(`/api/grc/${id}`)
+    fetch(`/api/grc/${id}`, { cache: 'no-store' })
       .then((response) => response.json())
       .then((result) => {
         if (result.error) throw new Error(result.error);
@@ -19,6 +23,8 @@ export default function GrcBarcodeGenerationPage() {
       })
       .catch((loadError) => setError(loadError.message || 'Failed to load GRC'));
   }, [id]);
+
+  useEffect(() => { load(); }, [load]);
 
   if (error) return <div className="p-6 text-sm text-red-600">{error}</div>;
   if (!data) return <div className="p-6 text-sm text-slate-500">Loading...</div>;
@@ -40,6 +46,7 @@ export default function GrcBarcodeGenerationPage() {
           initialRows={data.rows}
           supplierMarkup={data.grc.supplierMarkup}
           grcHeader={{ grcNumber: data.grc.grcNumber || '', supplierName: data.grc.supplierName || '' }}
+          onSaved={load}
           editMode
         />
     </div>

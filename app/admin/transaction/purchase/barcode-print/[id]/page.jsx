@@ -115,9 +115,10 @@ import JsBarcode from 'jsbarcode';
        used to sit there, repeating the one already printed as "1 PC".
 
    Inferred, NOT confirmed: the reference's "609" and "MTIAO" match no field
-   this app stores, so the HSN and the P-M-F code (required on every
-   generated unit) take those two slots. If they should hold something else,
-   change the names below - nothing else in this file needs to change.
+   this app stores, so the HSN and the P-M-F code (entered on the Barcode
+   Generation form) take those two slots; a unit without a P-M-F leaves its
+   slot blank. If they should hold something else, change the names below -
+   nothing else in this file needs to change.
 ===================================================================================== */
 const LABEL_FIELDS = {
   detailRow1: ['hsn', 'itemCode', 'p_m_f'],
