@@ -101,6 +101,95 @@ const BILLING_ROWS = [
   ['billingWebsiteUrl', 'Website URL'],
 ];
 
+/* Till calculator - the keypad popover the deployed POS has in its top bar.
+
+   Deliberately NOT eval(). The display is operator-typed text, and eval would
+   execute whatever ends up in it; this walks the tokens instead, so the worst a
+   malformed entry can do is show "Error". Two passes give * and / precedence
+   over + and -, which a plain left-to-right fold would get wrong (2+3*4=14,
+   not 20). */
+function calcEvaluate(expr) {
+  const tokens = String(expr).match(/(\d+\.?\d*|[+\-*/])/g);
+  if (!tokens || !tokens.length) return '';
+
+  const pass1 = [];
+  for (let i = 0; i < tokens.length; i += 1) {
+    const t = tokens[i];
+    if (t === '*' || t === '/') {
+      const left = Number(pass1.pop());
+      const right = Number(tokens[i + 1]);
+      i += 1;
+      pass1.push(t === '*' ? left * right : right === 0 ? NaN : left / right);
+    } else {
+      pass1.push(t);
+    }
+  }
+
+  let acc = Number(pass1[0]);
+  for (let i = 1; i < pass1.length; i += 2) {
+    const n = Number(pass1[i + 1]);
+    acc = pass1[i] === '+' ? acc + n : acc - n;
+  }
+  if (!Number.isFinite(acc)) return 'Error';
+  return String(Math.round(acc * 1e6) / 1e6);
+}
+
+const CALC_KEYS = [
+  ['C', '%', 'back', '/'],
+  ['7', '8', '9', '*'],
+  ['4', '5', '6', '-'],
+  ['1', '2', '3', '+'],
+  ['0', '.', '='],
+];
+
+function Calculator({ onClose }) {
+  const [expr, setExpr] = useState('');
+
+  function press(key) {
+    if (key === 'C') { setExpr(''); return; }
+    if (key === 'back') { setExpr((e) => e.slice(0, -1)); return; }
+    if (key === '=') { setExpr((e) => calcEvaluate(e)); return; }
+    /* % reads as "of a hundred" on a till - 12% becomes 0.12 - rather than as
+       a remainder operator, which is what a cashier reaching for it means. */
+    if (key === '%') { setExpr((e) => (e ? String(Number(calcEvaluate(e)) / 100) : e)); return; }
+    setExpr((e) => e + key);
+  }
+
+  const keyClass = (key) => {
+    if (key === 'C') return 'bg-danger text-white';
+    if (key === '=') return 'col-span-2 bg-okgreen text-white';
+    if (['/', '*', '-', '+', '%', 'back'].includes(key)) return 'bg-[#6b7280] text-white';
+    return 'bg-pillgrey text-ink';
+  };
+
+  return (
+    <div className="absolute right-0 top-full z-[70] mt-1 w-64 rounded-lg border border-line bg-white p-3 shadow-pop" onClick={(e) => e.stopPropagation()}>
+      <div className="mb-2 flex items-center justify-between">
+        <span className="text-[13px] font-semibold">Calculator</span>
+        <button type="button" aria-label="Close" onClick={onClose}><Icon name="x" size={14} /></button>
+      </div>
+      <input
+        className="f-input mb-2 text-right text-[15px]"
+        value={expr}
+        onChange={(e) => setExpr(e.target.value.replace(/[^0-9.+\-*/]/g, ''))}
+        onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); press('='); } }}
+      />
+      <div className="grid grid-cols-4 gap-1.5">
+        {CALC_KEYS.flat().map((key) => (
+          <button
+            key={key}
+            type="button"
+            className={'h-9 rounded text-[14px] font-semibold ' + keyClass(key)}
+            onClick={() => press(key)}
+          >
+            {key === 'back' ? '⌫' : key}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function CustomerForm({ values, setValues, typeOptions, onClose, onSave, saving }) {
   const set = (key, value) => setValues((current) => ({ ...current, [key]: value }));
   const text = (key, label, required) => (
@@ -247,6 +336,7 @@ export default function PosTill() {
      replacement and behaves like a normal sale, so the net is
      "new goods minus returned goods" - the difference the customer actually
      pays. */
+  const [showCalc, setShowCalc] = useState(false);
   const [isExchange, setIsExchange] = useState(false);
   const [exchangeInvoiceNo, setExchangeInvoiceNo] = useState('');
   const [holds, setHolds] = useState([]);
@@ -632,13 +722,51 @@ export default function PosTill() {
     };
   });
   const qty = rows.reduce((sum, row) => sum + (row.isReturn ? -1 : 1) * Number(row.qty || 0), 0);
+  
+  // sagar
+
+
+  // const billValue = rows.reduce((sum, row) => sum + row.lineTotal, 0);
+  // const tax = exempted ? 0 : rows.reduce((sum, row) => sum + row.lineTotal * Number(row.gst || 0) / 100, 0);
+  // /* Net amount = goods + tax + shipping. Every place that used to add
+  //    `billValue + tax` now reads this, so the footer, the Total Payable bar,
+  //    the payment dialog and the figure POSTed to the server cannot drift
+  //    apart once a shipping charge is on the bill. */
+  // const netAmount = billValue + tax + Number(shipping || 0);
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+///////new code without tax add on top of bill value
   const billValue = rows.reduce((sum, row) => sum + row.lineTotal, 0);
-  const tax = exempted ? 0 : rows.reduce((sum, row) => sum + row.lineTotal * Number(row.gst || 0) / 100, 0);
-  /* Net amount = goods + tax + shipping. Every place that used to add
-     `billValue + tax` now reads this, so the footer, the Total Payable bar,
-     the payment dialog and the figure POSTed to the server cannot drift
-     apart once a shipping charge is on the bill. */
-  const netAmount = billValue + tax + Number(shipping || 0);
+  /* RSP is GST-inclusive, as on the deployed till: the customer pays the
+     ticket price and the tax is backed OUT of it for the record, never added
+     on top. 295 at 5% bills 295, of which 14.05 is tax and 280.95 taxable. */
+  const tax = exempted ? 0 : rows.reduce((sum, row) => {
+    const rate = Number(row.gst || 0);
+    return sum + (row.lineTotal - row.lineTotal / (1 + rate / 100));
+  }, 0);
+  const taxableAmount = billValue - tax;
+  /* Net amount = goods + shipping. Tax is inside `billValue` already. */
+  const netAmount = billValue + Number(shipping || 0);
+
+
+
+
   const timeStr = now ? now.toTimeString().slice(0, 5) : '';
 
   async function submitPayment(paymentData) {
@@ -656,7 +784,7 @@ export default function PosTill() {
 
   return (
     <div className="pos-till fixed inset-0 z-50 flex flex-col overflow-auto bg-white">
-      <div className="flex flex-wrap items-center gap-3 px-4 py-2.5 text-[13.5px]"><span className="text-inkmuted">Business:</span><select className="f-input w-64" value={business} onChange={(e) => changeBusiness(e.target.value)}><option value="">Select business</option>{businesses.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select><span className="text-inkmuted">Location:</span><select className="f-input w-64" value={location} onChange={(e) => setLocation(e.target.value)} disabled={!business}><option value="">Select location</option>{locations.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select><span className="flex items-center gap-1.5 text-cell"><Icon name="refresh" size={15} /> {timeStr}</span><span className="flex-1" />{selectedProduct && <div className="flex items-center gap-3 border-l border-line pl-3"><span className="max-w-40 truncate text-[12px] font-semibold">{selectedProduct.barcode || selectedProduct.code}</span><ProductImage src={selectedProduct.image} alt={selectedProduct.name} size={72} onOpen={() => setPreviewImage({ src: selectedProduct.image, alt: selectedProduct.name })} /></div>}{['refresh', 'voucher', 'register', 'cart', 'ledger', 'chevL'].map((ic, i) => <button key={i} aria-label={ic} className={'flex h-8 w-9 items-center justify-center rounded ' + (i === 0 ? 'bg-[#dbe6f7] text-brand' : 'bg-brand text-white')}><Icon name={ic} size={15} /></button>)}</div>
+      <div className="flex flex-wrap items-center gap-3 px-4 py-2.5 text-[13.5px]"><span className="text-inkmuted">Business:</span><select className="f-input w-64" value={business} onChange={(e) => changeBusiness(e.target.value)}><option value="">Select business</option>{businesses.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select><span className="text-inkmuted">Location:</span><select className="f-input w-64" value={location} onChange={(e) => setLocation(e.target.value)} disabled={!business}><option value="">Select location</option>{locations.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select><span className="flex items-center gap-1.5 text-cell"><Icon name="refresh" size={15} /> {timeStr}</span><span className="flex-1" />{selectedProduct && <div className="flex items-center gap-3 border-l border-line pl-3"><span className="max-w-40 truncate text-[12px] font-semibold">{selectedProduct.barcode || selectedProduct.code}</span><ProductImage src={selectedProduct.image} alt={selectedProduct.name} size={72} onOpen={() => setPreviewImage({ src: selectedProduct.image, alt: selectedProduct.name })} /></div>}<div className="relative"><button type="button" aria-label="Calculator" title="Calculator" className={'flex h-8 w-9 items-center justify-center rounded ' + (showCalc ? 'bg-[#dbe6f7] text-brand' : 'bg-brand text-white')} onClick={() => setShowCalc((v) => !v)}><Icon name="calculator" size={15} /></button>{showCalc && <Calculator onClose={() => setShowCalc(false)} />}</div>{['refresh',  'register',  'ledger', 'chevL'].map((ic, i) => <button key={i} aria-label={ic} className={'flex h-8 w-9 items-center justify-center rounded ' + (i === 0 ? 'bg-[#dbe6f7] text-brand' : 'bg-brand text-white')}><Icon name={ic} size={15} /></button>)}</div>
       <div className="grid grid-cols-1 gap-2 px-4 md:grid-cols-5"><input className="f-input" type="date" value={saleDate} onChange={(e) => setSaleDate(e.target.value)} /><select className="f-input" value={payMode} onChange={(e) => setPayMode(e.target.value)}>{PAYMENT_MODES.map((mode) => <option key={mode}>{mode}</option>)}</select><div className="flex items-center gap-2 md:col-span-2"><div className="min-w-0 flex-1"><MultiSelect mode="single" options={customerOptions} value={customer} placeholder="Walk-in Customer / phone number" onSearch={setCustomerSearch} onChange={selectCustomer} /></div><button type="button" title="Add Customer" aria-label="Add Customer" className="flex h-[34px] w-[34px] shrink-0 items-center justify-center rounded bg-brand text-white hover:bg-brand-hover" onClick={openCustomerForm}><Icon name="plus" size={14} /></button></div><input className="f-input" value={cashier} readOnly /></div>
       <div className="mt-2 grid grid-cols-1 items-center gap-2 px-4 md:grid-cols-6"><MultiSelect mode="single" options={salesPeople} value={salesPerson} placeholder="Sales Person" onChange={setSalesPerson} /><div className="relative md:col-span-2"><input data-scan-target="" className="f-input" placeholder="Scan barcode, or type a product name / SKU" value={code} onChange={(e) => setCode(e.target.value)} onKeyDown={(e) => { if (['Enter', 'F9', 'Tab'].includes(e.key)) { e.preventDefault(); scan(); } }} />{scanBusy && <span className="absolute right-2 top-2 text-[11px] text-inkmuted">checking...</span>}{itemSuggestions.length > 0 && <div className="absolute left-0 right-0 top-full z-30 mt-1 max-h-64 overflow-auto rounded border border-line bg-white shadow-lg">{itemSuggestions.map((item) => <button type="button" key={item._id} className="flex w-full items-center gap-2 border-b border-line px-3 py-2 text-left text-[12px] hover:bg-[#f4f7fb]" onClick={() => addBarcodeItem(item)}><ProductImage src={item.productImageUrl} alt={item.itemId || item.itemCode} size={44} /><span className="min-w-0 flex-1"><b className="block truncate">{item.itemId || item.description || item.itemCode}</b><span className="text-inkmuted">{item.barcodeNo} · RSP {money(item.rsp)}</span></span></button>)}</div>}</div><select className="f-input" value={counter} onChange={(e) => setCounter(e.target.value)}><option value="">Select Cash Counter</option>{counters.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select><div className="flex items-center gap-3 whitespace-nowrap md:col-span-2"><label className="flex items-center gap-1"><input type="checkbox" checked={exempted} onChange={(e) => setExempted(e.target.checked)} /> Exempted</label><button type="button" className="btn bg-danger px-2 py-1 text-white" title="Process a customer return against a previous bill" onClick={() => router.push(`/admin/transaction/sell/pos-return/add?business=${business}&location=${location}&finYear=${finYear}`)}><Icon name="undo" size={13} /> Return / Refund</button><label className="flex items-center gap-1" title="Take goods back against a previous bill"><input type="checkbox" checked={isExchange} onChange={(e) => { setIsExchange(e.target.checked); if (!e.target.checked) setExchangeInvoiceNo(''); }} /> Exchange</label>{isExchange && <input className="f-input w-40" placeholder="Invoice No *" value={exchangeInvoiceNo} onChange={(e) => setExchangeInvoiceNo(e.target.value)} />}</div></div>
       <CustomerProfilePanel
@@ -668,7 +796,16 @@ export default function PosTill() {
       {msg && <div className="mx-4 mt-2 flash flash-err">{msg}</div>}
       <div className="mt-3 flex-1 overflow-x-auto px-4"><table className="dt"><thead><tr>{['#', 'Barcode No', 'Stock Issue', 'Item Code', 'Item / Description', 'HSN', 'GST%', 'Qty', 'RSP Price', 'Disc %', 'Disc Amt', 'Line Total', 'Sales Person', 'Image', ''].map((heading) => <th key={heading}>{heading}</th>)}</tr></thead><tbody>{rows.length === 0 ? <tr><td colSpan="15" className="dt-empty">No Items Added</td></tr> : rows.map((row, index) => <tr key={`${row.itemId}-${index}`} className="cursor-pointer !bg-[#FFF3CD]" onClick={() => setSelectedProduct(row)}><td>{index + 1}</td><td className={row.isReturn ? '!text-danger font-semibold' : undefined}>{row.barcode || '-'}</td><td><input type="checkbox" checked={!!row.stockIssue} onClick={(e) => e.stopPropagation()} onChange={(e) => updateItem(index, 'stockIssue', e.target.checked)} /></td><td>{row.code}</td><td>{row.description || row.name}</td><td>{row.hsn}</td><td>{money(row.gst)}</td><td>{(() => { const closing = row.closing; const known = closing !== undefined && closing !== null; const over = known && Number(row.qty || 0) > Number(closing); return (<div className="flex flex-col items-center gap-0.5" onClick={(e) => e.stopPropagation()}><div className="flex items-center justify-center gap-1"><button type="button" aria-label="Decrease quantity" className="inline-flex h-[26px] w-[26px] shrink-0 items-center justify-center rounded border border-line bg-pillgrey text-[15px] font-bold leading-none text-ink hover:bg-linestrong disabled:opacity-40" disabled={Number(row.qty || 0) <= 1} onClick={() => updateItem(index, 'qty', Math.max(1, Number(row.qty || 1) - 1))}>-</button><input className={'f-input w-14 text-center' + (over ? ' border-danger text-danger' : '')} type="number" min="1" max={known ? closing : undefined} value={row.qty} onWheel={(e) => e.currentTarget.blur()} onChange={(e) => updateItem(index, 'qty', e.target.value)} /><button type="button" aria-label="Increase quantity" className="inline-flex h-[26px] w-[26px] shrink-0 items-center justify-center rounded border border-line bg-pillgrey text-[15px] font-bold leading-none text-ink hover:bg-linestrong disabled:opacity-40" disabled={known && Number(row.qty || 0) >= Number(closing)} onClick={() => updateItem(index, 'qty', Number(row.qty || 0) + 1)}>+</button></div>{known && <span className={'text-[11px] ' + (over ? 'font-semibold text-danger' : 'text-inkmuted')}>{over ? 'Only ' + closing + ' in stock' : 'Closing: ' + closing}</span>}</div>); })()}</td><td><input className="f-input w-24" type="number" min="0" value={row.rsp} onWheel={(e) => e.currentTarget.blur()} onChange={(e) => updateItem(index, 'rsp', e.target.value)} /></td><td><input className="f-input w-20" type="number" min="0" value={row.discountPct} onWheel={(e) => e.currentTarget.blur()} onChange={(e) => updateItem(index, 'discountPct', e.target.value)} /></td><td>{money(row.discountAmount)}</td><td className={row.isReturn ? '!text-danger font-semibold' : undefined}>{money(row.lineTotal)}</td><td><select className="f-input min-w-35" value={row.salesPerson || ''} onChange={(e) => updateItem(index, 'salesPerson', e.target.value)}><option value="">Select...</option>{salesPeople.map((person) => <option key={person.value} value={person.value}>{person.label}</option>)}</select></td><td><ProductImage src={row.image} alt={row.name} size={56} onOpen={() => { setSelectedProduct(row); setPreviewImage({ src: row.image, alt: row.name }); }} /></td><td><button type="button" className="act-btn bg-danger" onClick={(e) => { e.stopPropagation(); setItems((current) => current.filter((_, itemIndex) => itemIndex !== index)); if (selectedProduct?.itemId === row.itemId) setSelectedProduct(null); }}><Icon name="x" size={12} /></button></td></tr>)}</tbody></table></div>
       
-      <div className="border-t border-line px-4 pt-2"><div className="grid grid-cols-2 gap-2 text-[13px] md:grid-cols-6"><div><div className="text-cell">Qty</div><div>{qty}</div></div><div><div className="text-cell">Bill Value</div><div>{money(rows.reduce((sum, row) => sum + (row.isReturn ? -1 : 1) * Number(row.rsp || 0) * Number(row.qty || 0), 0))}</div></div><div><div className="text-cell">Total Discount</div><div>{money(rows.reduce((sum, row) => sum + row.discountAmount, 0))}</div></div><div><div className="text-cell">Sub Total</div><div>{money(billValue)}</div></div><div><div className="text-cell">Tax</div><div>{money(tax)}</div></div><div><div className="text-cell">Net Amount</div><div className="font-bold text-danger">{money(netAmount)}</div></div></div><div className="mt-2 grid grid-cols-2 gap-2 text-[13px] md:grid-cols-6"><div><div className="text-cell">Line Wise Discount %</div><input className="f-input" type="number" min="0" max="100" step="0.01" value={lineDiscPct} onWheel={(e) => e.currentTarget.blur()} onChange={(e) => applyLineDiscountPct(e.target.value)} /></div><div><div className="text-cell">Line Wise Discount Amt</div><input className="f-input" type="number" min="0" step="0.01" value={lineDiscAmt} onWheel={(e) => e.currentTarget.blur()} onChange={(e) => applyLineDiscountAmt(e.target.value)} /></div><div className="flex items-center gap-2"><span className="text-cell">Shipping</span><button type="button" className="font-semibold text-brand underline" onClick={() => { setShippingDraft(String(shipping || 0)); setShowShipping(true); }}>( + ) {money(shipping)}</button></div></div></div>
+      <div className="border-t border-line px-4 pt-2"><div className="grid grid-cols-2 gap-2 text-[13px] md:grid-cols-6"><div><div className="text-cell">Qty</div><div>{qty}</div></div><div><div className="text-cell">Bill Value</div><div>{money(rows.reduce((sum, row) => sum + (row.isReturn ? -1 : 1) * Number(row.rsp || 0) * Number(row.qty || 0), 0))}</div></div><div><div className="text-cell">Total Discount</div><div>{money(rows.reduce((sum, row) => sum + row.discountAmount, 0))}</div></div><div><div className="text-cell">Sub Total</div><div>{money(billValue)}</div></div>
+      
+      
+      {/* sagar */}
+      {/* <div><div className="text-cell">Tax</div><div>{money(tax)}</div></div> */}
+      
+      {/* new code without tax add on top of bill value */}
+      <div><div className="text-cell">Taxable Amt</div><div>{money(taxableAmount)}</div><div className="text-[11px] text-danger">Tax: {money(tax)} (inclusive)</div></div>
+      
+      <div><div className="text-cell">Net Amount</div><div className="font-bold text-danger">{money(netAmount)}</div></div></div><div className="mt-2 grid grid-cols-2 gap-2 text-[13px] md:grid-cols-6"><div><div className="text-cell">Line Wise Discount %</div><input className="f-input" type="number" min="0" max="100" step="0.01" value={lineDiscPct} onWheel={(e) => e.currentTarget.blur()} onChange={(e) => applyLineDiscountPct(e.target.value)} /></div><div><div className="text-cell">Line Wise Discount Amt</div><input className="f-input" type="number" min="0" step="0.01" value={lineDiscAmt} onWheel={(e) => e.currentTarget.blur()} onChange={(e) => applyLineDiscountAmt(e.target.value)} /></div><div className="flex items-center gap-2"><span className="text-cell">Shipping</span><button type="button" className="font-semibold text-brand underline" onClick={() => { setShippingDraft(String(shipping || 0)); setShowShipping(true); }}>( + ) {money(shipping)}</button></div></div></div>
       <div className="mt-2 flex flex-wrap items-center gap-3 bg-[#eef1f7] px-4 py-3"><button type="button" className="btn bg-[#17a2b8] text-white disabled:opacity-50" disabled={holding} onClick={holdBill}><Icon name="register" size={14} /> {holding ? 'Holding...' : 'Hold'}</button><button type="button" className="btn bg-[#6b7280] text-white disabled:opacity-50" disabled={!holds.length} onClick={() => setShowHolds(true)}><Icon name="register" size={14} /> Held ({holds.length})</button><button type="button" className="btn bg-[#2563a9] text-white" onClick={() => setShowMultiplePay(true)}><Icon name="register" size={14} /> Multiple Pay</button><span className="text-[15px] font-bold">Total Payable: <span className="text-okgreen">{money(netAmount)}</span></span><button type="button" className="btn bg-[#f2a19b] text-white" onClick={clearTill}><Icon name="x" size={14} /> Clear Screen</button><span className="flex-1" /><button type="button" className="btn btn-primary" onClick={() => router.push('/admin/transaction/sell/pos')}>Recent Transactions</button></div>
       {showMultiplePay && <MultiplePay totalItems={qty} totalPayable={netAmount} onClose={() => setShowMultiplePay(false)} onSubmit={submitPayment} />}
 

@@ -4,6 +4,7 @@ import { useRouter } from 'next/navigation';
 import Icon from './Icon';
 import Field from './Field';
 import ModalForm from './ModalForm';
+import MultiSelect from './MultiSelect';
 import { useScope } from './ScopeContext';
 import { refreshOptions, useOptions } from './useOptions';
 
@@ -34,7 +35,7 @@ function defaults(cfg) {
 /* Repeatable row table - HSN tax slabs */
 function RowsTable({ spec, rows, onChange, locked }) {
   const refCol = spec.cols.find((c) => c.type === 'ref');
-  const { options } = useOptions(refCol ? refCol.ref : null);
+  const { options, loading, error } = useOptions(refCol ? refCol.ref : null);
 
   const add = () => onChange([...rows, Object.fromEntries(spec.cols.map((c) => [c.k, '']))]);
   const setCell = (i, k, v) => onChange(rows.map((r, ri) => (ri === i ? { ...r, [k]: v } : r)));
@@ -67,10 +68,16 @@ function RowsTable({ spec, rows, onChange, locked }) {
               {spec.cols.map((c) => (
                 <td key={c.k}>
                   {c.type === 'ref' ? (
-                    <select className="f-input" value={r[c.k] || ''} onChange={(e) => setCell(i, c.k, e.target.value)}>
-                      <option value="">Select...</option>
-                      {options.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
-                    </select>
+                    <MultiSelect
+                      mode="single"
+                      options={options}
+                      loading={loading}
+                      error={error ? 'Unable to load options' : ''}
+                      value={r[c.k] || ''}
+                      placeholder="Select..."
+                      emptyText="No options available"
+                      onChange={(v) => setCell(i, c.k, v)}
+                    />
                   ) : (
                     <input
                       type={c.type === 'number' ? 'number' : 'text'}

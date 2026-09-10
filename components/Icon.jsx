@@ -27,6 +27,8 @@ const P = {
   file: 'M6 3h8l4 4v14H6zM14 3v4h4M9 13h6M9 17h6',
   plus: 'M12 5v14M5 12h14',
   cols: 'M4 5h16v14H4zM10 5v14M16 5v14',
+  /* keypad: body, display strip, then two rows of keys */
+  calculator: 'M5 3h14v18H5zM8 6h8v3H8zM8 13h1M12 13h1M16 13h1M8 17h1M12 17h1M16 17h1',
   save: 'M5 4h11l3 3v13H5zM8 4v5h7V4M8 14h8',
   eye: 'M12 5c5 0 8 7 8 7s-3 7-8 7-8-7-8-7 3-7 8-7zM12 15a3 3 0 100-6 3 3 0 000 6z',
   pencil: 'M4 20h4L20 8l-4-4L4 16z',

@@ -7,7 +7,7 @@ import mongoose from 'mongoose';
    models/BarcodeLabelSetting.js: a second row would leave two answers to
    "which code is in force", and every save would silently create another.
 
-   digitMappings is Mixed because its keys are the digits themselves ('1'
+   digitMappings is Mixed because its keys are the digits themselves ('0'
    through '9'), which a typed sub-schema cannot express. The shape is
    enforced by validateMapping() in lib/purchaseRateCode.js, on the API route,
    before anything is written.
@@ -20,7 +20,7 @@ const PurchaseRateCodeSchema = new mongoose.Schema(
     businessId: { type: mongoose.Schema.Types.ObjectId, ref: 'business', default: null, index: true },
     locationId: { type: mongoose.Schema.Types.ObjectId, ref: 'companyLocation', default: null, index: true },
 
-    /* { '1': 'A', '2': 'B', ... '9': 'I' } - stored upper-cased and trimmed */
+    /* { '1': 'A', '2': 'B', ... '9': 'I', '0': 'J' } - stored upper-cased and trimmed */
     digitMappings: { type: mongoose.Schema.Types.Mixed, default: {} },
 
     /* Lets an admin park a configuration without deleting it. Encoding treats

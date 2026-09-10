@@ -132,12 +132,17 @@ export const POST = handler(async (req) => {
     return json({ error: 'No rows to save', code: 'EMPTY' }, 400);
   }
 
-  /* P-M-F is required; SM remains optional. */
-  for (const row of rows) {
-    const p_m_f = String(row.p_m_f || '').trim();
-    if (!p_m_f) {
-      return json({ error: 'P-M-F is required for all rows', code: 'INVALID_INPUT' }, 400);
-    }
+  /* P-M-F is required; SM remains optional. The refusal names the rows - a
+     bare "required for all rows" left the operator nothing to act on. */
+  const missingPmf = rows.filter((row) => !String(row.p_m_f || '').trim());
+  if (missingPmf.length) {
+    const names = missingPmf.map((r) => r.barcodeNo || r.barcodeGenerated || r.itemCode).filter(Boolean);
+    return json({
+      error: `P-M-F is required for all rows - empty on ${missingPmf.length}: ` +
+        names.slice(0, 8).join(', ') + (names.length > 8 ? ` and ${names.length - 8} more` : ''),
+      code: 'INVALID_INPUT',
+      missing: names,
+    }, 400);
   }
 
   /* An Old Barcode that is supplied must actually EXIST.

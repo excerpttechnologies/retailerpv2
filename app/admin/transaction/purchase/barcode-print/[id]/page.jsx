@@ -94,25 +94,35 @@ import JsBarcode from 'jsbarcode';
 
 /* =====================================================================================
    LABEL FIELD MAP
-   Which row field fills which slot on the printed label. Confirmed:
-     - barcode graphic + the number printed under it -> barcodeGenerated
-     - description line                              -> printDescription
-     - big "RATE : ₹.../-" line                       -> offerPrice, falling back to retailPrice
+   Which stored field fills which slot, matched against the reference sticker
+   row by row as LEFT | CENTRE | RIGHT:
 
-   The "G1260*4953*1" value in the reference image is now accounted for: it is
-   the composite barcode built by buildBarcode() below, not a stored field.
+     identifier row   barcodeGenerated | (blank)                  | Supplier*GRC*Sl*Qty code
+     detail row 1     hsn              | itemCode                 | p_m_f
+     detail row 2     encodedPurRate   | qty + uom                | wspPrice
+     RATE line        offerPrice, falling back to retailPrice
+     description      printDescription, falling back to supplierDescription
 
-   NOT yet confirmed against your data (image showed "608", "4-F-W BDR",
-   "MNRG", "MMIO", "12.65 Mtr" with no obvious matching field name) - these
-   are best guesses so the page renders something sensible today. Swap the
-   field names on the right below once you confirm them; nothing else in this
-   file needs to change.
+   Matched on evidence:
+     - the "G1260*4953*1" / "S4*0019*1" value is the composite barcode built
+       by buildBarcode() below, not a stored field;
+     - the centre of detail row 1 ("15-S-TSR", "4-F-W BDR") is an item code of
+       the same kind as itemCode here (9-PAV-P, 15-SRT, 10-PF-CHN). It is not
+       the HSN - that is what used to sit there, and it left a lone number in
+       the middle of every sticker;
+     - the letter code at the left of detail row 2 ("IUGT", "MMIO") is the
+       purchase rate written through the Purchase Rate Code Master. The unit
+       used to sit there, repeating the one already printed as "1 PC".
+
+   Inferred, NOT confirmed: the reference's "609" and "MTIAO" match no field
+   this app stores, so the HSN and the P-M-F code (required on every
+   generated unit) take those two slots. If they should hold something else,
+   change the names below - nothing else in this file needs to change.
 ===================================================================================== */
 const LABEL_FIELDS = {
-  topRightCode: 'itemCode',
-  detailRow1: ['dummy', 'hsn', 'fma'], // TODO confirm: label showed "608" / "4-F-W BDR" / "MNRG"
-  detailRow2Left: 'uom', // TODO confirm: label showed "MMIO"
-  detailRow2Price: 'wspPrice', // TODO confirm: label showed "1,980" (smaller, above the big RATE line)
+  detailRow1: ['hsn', 'itemCode', 'p_m_f'],
+  detailRow2Left: 'encodedPurRate',
+  detailRow2Price: 'wspPrice',
 };
 
 /* =====================================================================================
@@ -178,14 +188,39 @@ function BarcodeSvg({ value }) {
   return <svg ref={svgRef} className="mx-auto block w-full max-w-[190px]" />;
 }
 
-/* One printable label, laid out top to bottom exactly like the reference:
-   barcode graphic -> (barcode number | top-right code) -> description ->
-   detail row 1 (3 values) -> detail row 2 (left value | qty+uom | price) ->
-   big RATE line -> footer notes. */
+/* Every information row on the label sits on this one grid, so where a value
+   prints is fixed by the label, not by the length of its neighbours - the
+   flex/justify-between rows it replaces moved the middle value on every
+   sticker. minmax(0, ...) stops a long value widening its own track (a bare
+   1fr would let it, and shove the other two); the side tracks are equal, so
+   the middle one stays centred on the label. The middle track is the widest
+   because it carries the longest values. */
+const LABEL_ROW = 'grid grid-cols-[minmax(0,1fr)_minmax(0,1.5fr)_minmax(0,1fr)] items-center gap-x-1';
+const CELL = ['truncate text-left', 'truncate text-center', 'truncate text-right'];
+
+/* One printable label, laid out like the reference - three fixed anchors
+   (left edge, label centre, right edge) shared by every row:
+
+              [ barcode ]
+     unit no              Supplier*GRC*Sl*Qty
+     description, left, up to two lines
+     HSN            item code         P-M-F
+     encoded PR     qty + unit        price
+              RATE : ₹.../-
+     (Inclusive all taxes)      DRY WASH ONLY
+      No exchange, no guarantee, No Return
+
+   Every block has a fixed height, so all the labels on a sheet share one
+   geometry whatever their data: a missing field leaves its column blank, a
+   long value is cut with an ellipsis, and a long description wraps inside a
+   two-line box rather than pushing the rows below it down. */
 function Label({ row, grc, slNo }) {
   const rate = row.offerPrice || row.retailPrice || '';
-  const detailRow1 = LABEL_FIELDS.detailRow1.map((k) => row[k]).filter((v) => v !== undefined);
+  /* Positional, not filtered: an empty field keeps its column instead of
+     sliding the next value into its place. */
+  const detailRow1 = LABEL_FIELDS.detailRow1.map((k) => row[k] ?? '');
   const qtyWithUom = [row.qty, row.uom].filter(Boolean).join(' ');
+  const detailRow2 = [row[LABEL_FIELDS.detailRow2Left], qtyWithUom, row[LABEL_FIELDS.detailRow2Price]];
 
   /* A row missing any of the four parts prints the reason instead of a
      barcode. Failing the one label rather than throwing keeps the rest of the
@@ -200,66 +235,60 @@ function Label({ row, grc, slNo }) {
   }
 
   return (
-    <div className="px-3 py-2 text-center break-inside-avoid">
+    <div className="overflow-hidden px-3 py-2 text-center break-inside-avoid">
       {barcode ? (
         <BarcodeSvg value={barcode.value} />
       ) : (
-        <div className="py-3 text-[9px] font-semibold text-red-600">
+        /* the same 42px as the bars, so an error label keeps the sheet's geometry */
+        <div className="flex h-[42px] items-center justify-center text-[9px] font-semibold text-red-600">
           No barcode - {barcodeError}
         </div>
       )}
 
-      {/* the encoded value in human-readable form, directly under the bars */}
-      {barcode && (
-        <div className="truncate font-mono text-[11px] font-semibold mt-0.5">
-          {barcode.display}
-        </div>
-      )}
-
-      {/* The generated unit number stays on the label. It is what every scan
+      {/* Identifier row, directly under the bars, on two anchors as on the
+          reference: generated unit number on the left, the encoded value in
+          human-readable form on the right.
+          The generated unit number stays on the label. It is what every scan
           lookup still matches on (app/api/barcode/[code]/route.js:28 queries
           barcodeNo / barcodeGenerated), so dropping it would leave a sticker
-          that cannot be traced back to its unit at all. */}
-      <div className="flex items-center justify-between font-mono text-[9px] text-slate-600 mt-0.5">
-        <span>{row.barcodeGenerated}</span>
-        <span>{row[LABEL_FIELDS.topRightCode]}</span>
+          that cannot be traced back to its unit at all.
+          The right track is sized to the code, so the human-readable value is
+          never cut short; it still ends on the same right edge as every other
+          row, and the unit number starts on the same left edge. */}
+      <div className="mt-1 grid h-4 grid-cols-[minmax(0,1fr)_auto] items-center gap-x-2 font-mono leading-4">
+        <span className={`${CELL[0]} text-[9px] text-slate-600`}>{row.barcodeGenerated}</span>
+        <span className={`${CELL[2]} text-[11px] font-semibold`}>{barcode?.display}</span>
       </div>
 
-      <div className="text-[9px] text-slate-600 leading-tight mt-0.5 truncate">
+      <div className="mt-1 h-[2.5em] text-left text-[9px] leading-tight text-slate-600 line-clamp-2 break-words">
         {row.printDescription || row.supplierDescription}
       </div>
 
-      <div className="flex items-center justify-between text-[10px] font-semibold mt-1">
+      <div className={`${LABEL_ROW} mt-1.5 h-[15px] text-[10px] font-semibold leading-[15px]`}>
         {detailRow1.map((v, i) => (
-          <span key={i}>{v}</span>
+          <span key={i} className={CELL[i]}>{v}</span>
         ))}
       </div>
 
-      <div className="flex items-center justify-between text-[10px] font-semibold mt-0.5">
-        <span>{row[LABEL_FIELDS.detailRow2Left]}</span>
-        <span>{qtyWithUom}</span>
-        <span>{row[LABEL_FIELDS.detailRow2Price]}</span>
+      <div className={`${LABEL_ROW} mt-1 h-[15px] text-[10px] font-semibold leading-[15px]`}>
+        {detailRow2.map((v, i) => (
+          <span key={i} className={CELL[i]}>{v}</span>
+        ))}
       </div>
 
-      <div className="text-[13px] font-extrabold mt-1">
+      <div className="text-[13px] font-extrabold mt-1.5">
         RATE : ₹{rate}/-
       </div>
 
-      {/* The purchase (cost) rate written through the Purchase Rate Code
-          Master, printed only when one is configured. Deliberately its own
-          line: the RATE line above is the RETAIL/offer price and is left
-          exactly as it was. */}
-      {row.encodedPurRate && (
-        <div className="font-mono text-[9px] font-semibold text-slate-700">
-          {row.encodedPurRate}
-        </div>
-      )}
-
-      <div className="flex items-center justify-between text-[7.5px] text-slate-500 mt-0.5">
-        <span>(Inclusive all taxes)</span>
-        <span>DRY WASH ONLY</span>
+      {/* One line, as on the reference: the tax note on the left anchor, DRY
+          WASH ONLY on the right anchor. Cells of the same grid as the rows
+          above, so both line up with them on every label. */}
+      <div className={`${LABEL_ROW} mt-0.5 h-3 text-[7.5px] leading-3 text-slate-500`}>
+        <span className={CELL[0]}>(Inclusive all taxes)</span>
+        <span className={CELL[1]} />
+        <span className={CELL[2]}>DRY WASH ONLY</span>
       </div>
-      <div className="text-[7.5px] text-slate-500">
+      <div className="mt-0.5 h-3 text-[7.5px] leading-3 text-slate-500">
         No exchange, no guarantee, No Return
       </div>
     </div>
