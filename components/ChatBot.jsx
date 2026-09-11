@@ -207,12 +207,12 @@ export default function ChatBot() {
     <div className="no-print">
       {/* ------------------------------------------------------- launcher */}
       {!open && (
-        <button
-          type="button"
-          onClick={() => setOpen(true)}
-          aria-label="Open help"
-          className="fixed bottom-5 right-5 z-[60] flex h-14 w-14 items-center justify-center rounded-full bg-brand text-white shadow-pop transition hover:bg-brand-hover focus:outline-none focus:ring-4 focus:ring-brand/30"
-        >
+<button
+            type="button"
+            onClick={() => setOpen(true)}
+            aria-label="Open help"
+            className="fixed bottom-32 right-5 z-[60] flex h-14 w-14 items-center justify-center rounded-full bg-brand text-white shadow-pop transition hover:bg-brand-hover focus:outline-none focus:ring-4 focus:ring-brand/30"
+          >
           <ChatIcon />
         </button>
       )}
@@ -222,7 +222,7 @@ export default function ChatBot() {
         <div
           role="dialog"
           aria-label="GROO ERP help"
-          className="fixed bottom-0 right-0 z-[60] flex h-[560px] max-h-[85vh] w-full flex-col overflow-hidden rounded-t-xl border border-line bg-white shadow-pop sm:bottom-5 sm:right-5 sm:w-[400px] sm:rounded-xl"
+          className="fixed bottom-0 right-0 z-[60] flex h-[560px] max-h-[85vh] w-full flex-col overflow-hidden rounded-t-xl border border-line bg-white shadow-pop sm:bottom-32 sm:right-24 sm:w-[400px] sm:rounded-xl"
         >
           {/* header */}
           <div className="flex shrink-0 items-center gap-2.5 bg-sidebar px-4 py-3 text-white">

@@ -12,8 +12,8 @@ export default function EditPoscounterPage({ params }) {
     <FormView
       id={id}
       cfg={{
-        title: "Pos Counters",
-        addTitle: "Edit Pos Counters",
+        title: "Cash Counters",
+        addTitle: "Edit Cash Counter",
         basePath: '/admin/setting/',
         slugPath: "poscounter",
         endpoint: '/api/pos-counter',

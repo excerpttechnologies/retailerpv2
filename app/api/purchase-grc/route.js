@@ -7,6 +7,7 @@ import { requireSession } from '@/lib/session';
 import { resolveRefLabels } from '@/lib/refLabels';
 import { validate, escapeRegex } from '@/lib/validate';
 import { nextDocNumber } from '@/lib/docnumber';
+import { itemPriceErrors } from '@/lib/purchasePrice';
 import { FORM } from '@/app/admin/transaction/purchase/grc/form';
 
 /* header fields AND the totals rows - the totals card holds real stored
@@ -153,6 +154,18 @@ export async function POST(req) {
 
   if (Array.isArray(body.data?.items)) doc.items = body.data.items;
   if (Array.isArray(body.data?.voucherRows)) doc.voucherRows = body.data.voucherRows;
+
+  /* A priced GRC line must carry a real price - the rule Barcode Generation
+     applies (lib/purchasePrice.js), refused here before anything is written
+     so it cannot be sent round the screens. */
+  const priceProblems = itemPriceErrors(doc.items);
+  if (priceProblems.length) {
+    return json({
+      errors: { items: priceProblems[0].problem },
+      error: priceProblems[0].problem,
+      details: priceProblems.slice(0, 5).map((p) => `${p.ref}: ${p.problem}`),
+    }, 422);
+  }
 
   /* ---- the vendor and the LR are re-established from the DATABASE --------
 

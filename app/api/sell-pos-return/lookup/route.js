@@ -88,6 +88,10 @@ export const GET = handler(async (req) => {
       hsn: l.hsn || '',
       gst: Number(l.gst || 0),
       uom: l.uom || '',
+      /* who sold it. An exchange line should come back attributed to the
+         person who made the original sale, not to whoever is at the till
+         now - otherwise the credit lands against the wrong name. */
+      salesPerson: l.salesPerson ? String(l.salesPerson) : '',
       qty,
       rate,
       rsp: Number(l.rsp ?? rate) || 0,

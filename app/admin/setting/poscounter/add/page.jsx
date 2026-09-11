@@ -8,8 +8,8 @@ export default function AddPoscounterPage() {
   return (
     <FormView
       cfg={{
-        title: "Pos Counters",
-        addTitle: "Add Pos Counter",
+        title: "Cash Counters",
+        addTitle: "Add Cash Counter",
         basePath: '/admin/setting/',
         slugPath: "poscounter",
         endpoint: '/api/pos-counter',

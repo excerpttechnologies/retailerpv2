@@ -1882,7 +1882,26 @@ export default function ListView({ cfg, slug }) {
             onSearch={setSearch}
             onAdd={() => {
               if (cfg.formMode === "modal") return setModal(true);
-              if (cfg.addHref) return router.push(cfg.addHref);
+              /* Carry the top bar's scope onto the add screen.
+
+                 A full-screen screen like the POS till is outside this layout
+                 and has its own Business / Location pickers, which it seeds
+                 from the query string. Without this it opened on its OWN
+                 defaults, so ADD from a list showing one branch could land the
+                 operator on another - and the first scan would be billed
+                 against the wrong one.
+
+                 Only what the list itself declares is passed on, so a screen
+                 that is not scoped is left alone. */
+              if (cfg.addHref) {
+                const needs = cfg.scope || [];
+                const carry = new URLSearchParams();
+                if (needs.includes("business") && business) carry.set("business", business);
+                if (needs.includes("location") && location) carry.set("location", location);
+                if (needs.includes("finYear") && finYear) carry.set("finYear", finYear);
+                const qs = carry.toString();
+                return router.push(cfg.addHref + (qs ? (cfg.addHref.includes("?") ? "&" : "?") + qs : ""));
+              }
               return router.push(base + "/add");
             }}
             showAdd={cfg.showAdd !== false}

@@ -4,7 +4,7 @@ import ListView from '@/components/ListView';
 /* Pos Counters - list. Columns are declared here, not fetched from a registry. */
 
 const CONFIG = {
-  title: "Pos Counters",
+  title: "Cash Counters",
   basePath: '/admin/setting/',
   slugPath: "poscounter",
   endpoint: '/api/pos-counter',

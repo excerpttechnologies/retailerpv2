@@ -38,18 +38,40 @@
      npm run seed:grc:apply    write
      npm run seed:grc:apply -- --no-stock    write, but create no stock
 
-   Paths come from GRC_EXCEL_PATH / GRC_BARCODE_IMAGE_DIR, defaulting to the
-   repository-relative locations - no absolute personal paths in the code.
-   The workbook and the images are only ever READ.
+   FOLDER MODE (--dir): the item detail for GRCs that were imported as
+   headers only, from a folder of one-workbook-per-GRC exports ("purchase
+   excels"). See "folder mode" near the end of this file.
+
+     npm run seed:grc:folder                         dry run
+     npm run seed:grc:folder:apply -- --file 05074   write one file
+
+   Paths come from GRC_EXCEL_PATH / GRC_EXCEL_DIR / GRC_BARCODE_IMAGE_DIR,
+   defaulting to the repository-relative locations - no absolute personal
+   paths in the code. The workbooks and the images are only ever READ.
 */
 
 import path from 'path';
 import { readdirSync, existsSync, writeFileSync } from 'fs';
 import mongoose from 'mongoose';
 import XLSX from 'xlsx';
+/* the ERP's own purchase-price rule, not a copy of it */
+import { purchasePriceError } from '../lib/purchasePrice.js';
 
 const APPLY = process.argv.includes('--apply');
 const NO_STOCK = process.argv.includes('--no-stock');
+/* "--flag value" -> value; "--flag" alone -> ''; absent -> null */
+function argValue(flag) {
+  const i = process.argv.indexOf(flag);
+  if (i === -1) return null;
+  const next = process.argv[i + 1];
+  return next && !next.startsWith('--') ? next : '';
+}
+/* --dir [folder]: folder mode. --file <text>: only the file(s) whose name
+   contains it. --force: fill a GRC even when its totals or supplier do not
+   agree with the file - for a human who has checked, never a default. */
+const DIR_ARG = argValue('--dir');
+const FILE_FILTER = argValue('--file');
+const FORCE = process.argv.includes('--force');
 /* --repair: fix the CHILDREN of GRCs that already exist, and create no
    headers. For when a later export finally carries the item detail that an
    earlier one was missing - the headers are already right, only the barcode
@@ -57,6 +79,9 @@ const NO_STOCK = process.argv.includes('--no-stock');
    inserts, updates or deletes a GRC header. */
 const REPAIR = process.argv.includes('--repair');
 const ROOT = process.cwd();
+/* folder mode's folder: --dir <path>, else GRC_EXCEL_DIR, else "purchase
+   excels" beside the project; null when --dir was not given at all */
+const DIR = DIR_ARG === null ? null : (DIR_ARG || process.env.GRC_EXCEL_DIR || path.join(ROOT, 'purchase excels'));
 
 const EXCEL_PATH = process.env.GRC_EXCEL_PATH || path.join(ROOT, 'grc_full_scrape (1).xlsx');
 const IMAGE_DIR = process.env.GRC_BARCODE_IMAGE_DIR || path.join(ROOT, 'public', 'august_8A_images');
@@ -107,7 +132,8 @@ const text = (v) => (v === null || v === undefined ? '' : String(v).trim());
    0.00 discount are different statements, though both store as 0 here
    because the schema has no null. */
 function num(v) {
-  const s = text(v).replace(/,/g, '');
+  /* the "purchase excels" exports write some amounts as "₹7,250.00" text */
+  const s = text(v).replace(/[,₹\s]/g, '');
   if (s === '') return 0;
   const n = Number(s);
   return Number.isFinite(n) ? n : NaN;
@@ -171,6 +197,9 @@ const r2 = (v) => Math.round((Number(v) || 0) * 100) / 100;
 /* ================================================================= main == */
 
 async function main() {
+  /* folder mode is its own flow - see "folder mode" below */
+  if (DIR !== null) return runFolder();
+
   console.log(APPLY
     ? (REPAIR ? '=== APPLYING (REPAIR: children only, no headers created or changed) ==='
       : '=== APPLYING ===')
@@ -775,6 +804,642 @@ function writeReport() {
   report.finishedAt = new Date().toISOString();
   const file = path.join(ROOT, 'grc-import-report.json');
   writeFileSync(file, JSON.stringify(report, null, 2));
+  console.log(`\nreport written: ${file}`);
+}
+
+/* ========================================================= folder mode ==
+
+   THE "purchase excels" EXPORTS - one workbook per GRC.
+
+   Each file carries ONE GRC's item detail, and nothing inside it names the
+   GRC: "Sri KRUPA Silks(05074)9(5).xlsx" is GRC 05074 from Sri KRUPA Silks,
+   and that file name is the only place the number appears. The sheet NAME
+   varies from file to file - Inventory Report, Purchase Invoice Details,
+   Itemized Report, GRC Report, Item Details ... - so a sheet is recognised
+   by its HEADER, never by its name. Inside it:
+
+     rows 1-2        a two-row header ("Item" over "Code", "Discount" over
+                     "%", ...). Two exports label a few columns differently
+                     ("Quantity"/"QTY/MTR", "Rate"/"Purchase Rate"), so each
+                     field below lists every spelling seen.
+     item rows       Sl No, Code (the BARCODE), Name (the item code), HSN,
+                     GST Slab, UOM, QTY/MTR, No. of Cuts, Purchase Rate,
+                     Discount (an AMOUNT, despite its "%" sub-header - 725 on
+                     a 7,250 rate), R.Off, Final Rate, Before Tax, IGST,
+                     CGST, SGST, Net Amount, RSP, WSP, DP
+     "Total"         the item table's own total
+     "Item Summary"  a second small table - Bill Sl No, Item Name, QTY,
+                     Before GST, GST, Net - with its own Total. One export
+                     also carries it as a separate sheet.
+
+   WHAT IT WRITES. These GRCs' HEADERS were imported on 2 Sept from
+   grc_full_scrape with no item rows ("headers only"), so this mode does what
+   --repair does: it fills in the CHILDREN of GRCs that already exist -
+   barcodeLabel rows, and their GRC_IN ledger entries as the workbook flow
+   writes them - and never creates, changes or invents a header. A file whose
+   GRC has no header is reported, not imported: the file carries no date,
+   vendor or totals to build one from.
+
+   Item Summary is NOT written, for the reason given at the top of this file:
+   the GRC screen derives it from the barcode rows. The file's own Item
+   Summary table is parsed only to cross-check that derivation.
+
+   THE HEADER IS THE CHECK. A file's item totals must reconcile with the GRC
+   header its name points at, and the header's supplier must be the one the
+   file name says - that is what a mislabelled export looks like, and one is
+   in the folder today (05092's file is a copy of 05097's). A file that fails
+   either check, or has any invalid row, is refused WHOLE rather than
+   imported in part, and each GRC's rows are written in one transaction, so a
+   GRC is never left half-filled.
+
+     npm run seed:grc:folder                          dry run, every file
+     npm run seed:grc:folder -- --file 05074          dry run, one file
+     npm run seed:grc:folder:apply -- --file 05074    write one file
+     npm run seed:grc:folder:apply                    write every file
+       --no-stock   write the rows without creating stock
+       --force      import a GRC even when its totals or supplier disagree */
+
+const colNorm = (h) => text(h).toLowerCase().replace(/[^a-z0-9%]/g, '');
+
+/* field -> every header spelling seen for it (matched on either header row).
+   Order matters only in that a column, once claimed, is not reused. */
+const FOLDER_COLUMNS = [
+  ['slNo', ['slno']],
+  ['code', ['code']],
+  ['name', ['name']],
+  ['hsn', ['hsn']],
+  ['gstSlab', ['gstslab']],
+  ['uom', ['uom']],
+  ['qty', ['qtymtr', 'quantity']],
+  ['cuts', ['noofcuts']],
+  ['purchaseRate', ['purchaserate']],
+  ['discountAmount', ['%', 'discount%']],
+  ['roundOff', ['roff', 'discountroff']],
+  ['finalRate', ['finalrate']],
+  ['beforeTax', ['beforetax']],
+  ['igst', ['igst']],
+  ['cgst', ['cgst']],
+  ['sgst', ['sgst']],
+  ['netAmount', ['netamount']],
+  ['rsp', ['rsp']],
+  ['wsp', ['wsp']],
+  ['dp', ['dp']],
+];
+/* a sheet is an item-detail sheet only if every one of these is found */
+const REQUIRED_COLUMNS = ['code', 'name', 'uom', 'qty', 'purchaseRate', 'finalRate', 'beforeTax', 'netAmount'];
+
+function folderColumnMap(r1 = [], r2 = []) {
+  const width = Math.max(r1.length, r2.length);
+  const tokens = Array.from({ length: width }, (_, i) => [colNorm(r1[i]), colNorm(r2[i])].filter(Boolean));
+  const map = {};
+  const used = new Set();
+  for (const [field, aliases] of FOLDER_COLUMNS) {
+    const i = tokens.findIndex((t, idx) => !used.has(idx) && t.some((tok) => aliases.includes(tok)));
+    if (i !== -1) { map[field] = i; used.add(i); }
+  }
+  return { map, missing: REQUIRED_COLUMNS.filter((f) => map[f] === undefined) };
+}
+
+const hasContent = (row) => (row || []).some((c) => text(c) !== '');
+const isTotalRow = (row) => /^total$/i.test(text((row || []).find((c) => text(c) !== '')));
+const isSummaryHeader = (row) => {
+  const t = (row || []).map(colNorm);
+  return t.includes('itemname') && t.includes('beforegstamount');
+};
+
+/* the Item Summary block: header row at hIdx, rows until its Total */
+function parseSummaryBlock(grid, hIdx) {
+  const t = grid[hIdx].map(colNorm);
+  const col = {
+    billSlNo: t.indexOf('billslno'), itemName: t.indexOf('itemname'), qty: t.indexOf('qty'),
+    before: t.indexOf('beforegstamount'), gst: t.indexOf('gstamount'), net: t.indexOf('netamount'),
+  };
+  const rows = [];
+  for (let i = hIdx + 1; i < grid.length; i++) {
+    const row = grid[i] || [];
+    if (isTotalRow(row)) break;
+    if (!hasContent(row)) continue;
+    rows.push({
+      excelRow: i + 1, billSlNo: text(row[col.billSlNo]), itemName: text(row[col.itemName]),
+      qty: num(row[col.qty]), before: num(row[col.before]), gst: num(row[col.gst]), net: num(row[col.net]),
+    });
+  }
+  return rows;
+}
+
+/* One workbook -> { grcNumber, supplierName, sheet, items, summary, ... }.
+   Reads only; judges nothing - validation is a separate step. */
+function parseFolderWorkbook(dir, file) {
+  const out = {
+    file,
+    grcNumber: (file.match(/\((\d{4,6})\)/) || [])[1] || '',
+    supplierName: text(file.replace(/\(.*$/, '')),
+    sheet: '', recognised: false, items: [], summary: [], summarySheet: '',
+    otherSheets: [], unrecognisedRows: [],
+  };
+  const wb = XLSX.readFile(path.join(dir, file), { raw: true });
+  let itemSheet = null;
+  for (const name of wb.SheetNames) {
+    /* blankrows: true keeps grid index i on Excel row i + 1, so every
+       reported row number is the one the operator will find in the file */
+    const grid = XLSX.utils.sheet_to_json(wb.Sheets[name], { header: 1, raw: true, defval: null, blankrows: true });
+    const { map, missing } = folderColumnMap(grid[0], grid[1]);
+    if (!itemSheet && !missing.length) { itemSheet = { name, grid, map }; continue; }
+    const hIdx = grid.findIndex(isSummaryHeader);
+    if (hIdx !== -1 && !out.summary.length) {
+      out.summary = parseSummaryBlock(grid, hIdx);
+      out.summarySheet = name;
+    } else {
+      out.otherSheets.push({ name, missingColumns: missing });
+    }
+  }
+  if (!itemSheet) return out;
+
+  out.recognised = true;
+  out.sheet = itemSheet.name;
+  const { grid, map } = itemSheet;
+  const cell = (row, f) => (map[f] === undefined ? null : row[map[f]]);
+
+  let r = 2;
+  for (; r < grid.length; r++) {
+    const row = grid[r] || [];
+    if (isTotalRow(row)) { r += 1; break; }
+    if (!hasContent(row)) continue;
+    const code = text(cell(row, 'code'));
+    if (!code) { out.unrecognisedRows.push({ excelRow: r + 1, row: row.filter((c) => text(c) !== '') }); continue; }
+    out.items.push({
+      excelRow: r + 1,
+      slNo: text(cell(row, 'slNo')),
+      code,
+      name: text(cell(row, 'name')),
+      hsn: text(cell(row, 'hsn')),
+      gstPct: gstPercent(cell(row, 'gstSlab')),
+      uom: text(cell(row, 'uom')),
+      qty: num(cell(row, 'qty')),
+      cuts: text(cell(row, 'cuts')),
+      rawPurchaseRate: cell(row, 'purchaseRate'),
+      purchaseRate: num(cell(row, 'purchaseRate')),
+      discountAmount: num(cell(row, 'discountAmount')),
+      roundOff: num(cell(row, 'roundOff')),
+      finalRate: num(cell(row, 'finalRate')),
+      beforeTax: num(cell(row, 'beforeTax')),
+      igst: num(cell(row, 'igst')), cgst: num(cell(row, 'cgst')), sgst: num(cell(row, 'sgst')),
+      netAmount: num(cell(row, 'netAmount')),
+      rsp: num(cell(row, 'rsp')), wsp: num(cell(row, 'wsp')), dp: num(cell(row, 'dp')),
+    });
+  }
+
+  /* the embedded Item Summary follows the item table's Total; it wins over
+     a separate Item Summary sheet, which only one export carries */
+  const hIdx = grid.findIndex((row, i) => i >= r && isSummaryHeader(row));
+  if (hIdx !== -1) { out.summary = parseSummaryBlock(grid, hIdx); out.summarySheet = itemSheet.name; }
+  return out;
+}
+
+const round4 = (v) => Math.round((Number(v) || 0) * 10000) / 10000;
+const words = (s) => text(s).toLowerCase().replace(/[^a-z0-9]+/g, ' ').split(' ').filter(Boolean);
+
+/* Every row checked; each problem reported with file / sheet / row / GRC /
+   item / field / value / reason. Returns true when the whole file is clean. */
+function validateFolderWorkbook(w, F) {
+  const fail = (it, field, value, reason) => {
+    F.errors.push({ file: w.file, sheet: w.sheet, row: it?.excelRow ?? '', grc: w.grcNumber,
+      item: it ? `${it.code} ${it.name}`.trim() : '', field, value: value === undefined ? '' : String(value ?? ''), reason });
+  };
+  let ok = true;
+  const seen = new Map();
+  let arithChecked = 0; let arithAgreed = 0; let discChecked = 0; let discAgreed = 0;
+
+  if (!w.grcNumber) { fail(null, 'File name', w.file, 'no GRC number in brackets, e.g. "Supplier(05074).xlsx"'); ok = false; }
+  if (!w.items.length) { fail(null, 'Item rows', 0, 'the item table has no rows'); ok = false; }
+  w.unrecognisedRows.forEach((u) => { fail({ excelRow: u.excelRow, code: '', name: '' }, 'Code', JSON.stringify(u.row), 'row without a barcode in the item table'); ok = false; });
+
+  for (const it of w.items) {
+    if (seen.has(normBarcode(it.code))) {
+      fail(it, 'Code', it.code, `duplicate barcode - also on row ${seen.get(normBarcode(it.code))}`);
+      it.invalid = true;
+    } else seen.set(normBarcode(it.code), it.excelRow);
+
+    if (!(it.qty > 0)) { fail(it, 'QTY/MTR', it.qty, 'quantity must be greater than 0'); it.invalid = true; }
+    const priceProblem = purchasePriceError(it.rawPurchaseRate);
+    if (priceProblem) { fail(it, 'Purchase Rate', it.rawPurchaseRate, priceProblem); it.invalid = true; }
+    if (!Number.isFinite(it.finalRate) || it.finalRate < 0) { fail(it, 'Final Rate', it.finalRate, 'not a valid amount'); it.invalid = true; }
+    if (!Number.isFinite(it.gstPct)) { fail(it, 'GST Slab', it.gstPct, 'not a valid percentage'); it.invalid = true; }
+
+    /* layout guards, as in the workbook flow: if the columns were ever read
+       from the wrong places these stop agreeing */
+    if (it.beforeTax > 0 && it.qty > 0) {
+      arithChecked += 1;
+      if (Math.abs(it.finalRate * it.qty - it.beforeTax) <= Math.max(0.5, it.beforeTax * 0.001)) arithAgreed += 1;
+    }
+    if (it.purchaseRate > 0) {
+      discChecked += 1;
+      const base = it.purchaseRate - it.discountAmount;
+      if (Math.min(Math.abs(base + it.roundOff - it.finalRate), Math.abs(base - it.roundOff - it.finalRate)) <= 0.5) discAgreed += 1;
+    }
+    /* the Discount column holds an AMOUNT; the barcode row's `disc` is a
+       PERCENTAGE everywhere else in the app (rate x disc / 100) */
+    it.discPct = it.purchaseRate > 0 ? round4((it.discountAmount / it.purchaseRate) * 100) : 0;
+    if (it.invalid) ok = false;
+  }
+
+  if (arithChecked && arithAgreed / arithChecked < 0.9) {
+    fail(null, 'Layout', `${arithAgreed}/${arithChecked}`, 'Final Rate x QTY does not give Before Tax - the columns are not where this importer expects');
+    ok = false;
+  }
+  if (discChecked && discAgreed / discChecked < 0.9) {
+    fail(null, 'Layout', `${discAgreed}/${discChecked}`, 'Purchase Rate - Discount does not give Final Rate - the Discount column is not an amount here');
+    ok = false;
+  }
+  return ok;
+}
+
+/* exactly the arithmetic the GRC screen uses for its Item Summary */
+function derivedTotals(items) {
+  return items.reduce((a, it) => {
+    const before = (it.finalRate || it.purchaseRate) * it.qty;
+    const gst = before * (it.gstPct / 100);
+    return { qty: a.qty + it.qty, before: a.before + before, gst: a.gst + gst, net: a.net + before + gst };
+  }, { qty: 0, before: 0, gst: 0, net: 0 });
+}
+
+async function runFolder() {
+  const F = {
+    startedAt: new Date().toISOString(), mode: APPLY ? 'apply' : 'dry-run', dir: DIR,
+    fileFilter: FILE_FILTER || '', noStock: NO_STOCK, force: FORCE,
+    files: { scanned: 0, recognised: 0, notGrcItemFiles: [], filtered: 0 },
+    grc: { ready: 0, imported: 0, unchanged: 0, noHeader: [], ambiguousHeader: [], mismatched: [],
+      supplierMismatch: [], invalid: [], conflicts: [], failed: [] },
+    items: { detected: 0, created: 0, updated: 0, unchanged: 0, failed: 0 },
+    summary: { compared: 0, agreed: 0, mismatched: [] },
+    suppliers: { matched: 0, unmatched: 0 },
+    itemMaster: { matchedNames: [], unmatchedNames: [] },
+    duplicates: { withinFiles: 0, acrossFiles: [], alreadyOnAnotherGrc: [] },
+    invalidPrices: 0,
+    images: { matched: 0, missing: 0 },
+    perGrc: [],
+    errors: [], warnings: [],
+  };
+
+  console.log(APPLY ? '=== FOLDER IMPORT - APPLYING ===' : '=== FOLDER IMPORT - DRY RUN (pass --apply to write) ===');
+  if (!existsSync(DIR)) { console.error('Folder not found: ' + DIR); process.exit(1); }
+  console.log('folder   :', DIR);
+
+  /* ---- 1. discover and parse -------------------------------------------- */
+  const all = readdirSync(DIR).filter((f) => /\.xlsx?$/i.test(f) && !f.startsWith('~$')).sort();
+  F.files.scanned = all.length;
+  const files = FILE_FILTER ? all.filter((f) => f.toLowerCase().includes(FILE_FILTER.toLowerCase())) : all;
+  F.files.filtered = files.length;
+  if (FILE_FILTER) console.log(`filter   : "${FILE_FILTER}" -> ${files.length} of ${all.length} file(s)`);
+
+  const books = [];
+  for (const file of files) {
+    let w;
+    try { w = parseFolderWorkbook(DIR, file); } catch (e) {
+      F.errors.push({ file, sheet: '', row: '', grc: '', item: '', field: 'Workbook', value: '', reason: 'cannot be read: ' + e.message });
+      continue;
+    }
+    if (!w.recognised) {
+      F.files.notGrcItemFiles.push({ file, sheets: w.otherSheets });
+      continue;
+    }
+    F.files.recognised += 1;
+    F.items.detected += w.items.length;
+    books.push(w);
+  }
+
+  /* ---- 2. validate ------------------------------------------------------ */
+  for (const w of books) {
+    w.valid = validateFolderWorkbook(w, F);
+    F.invalidPrices += w.items.filter((it) => purchasePriceError(it.rawPurchaseRate)).length;
+    F.duplicates.withinFiles += w.items.length - new Set(w.items.map((it) => normBarcode(it.code))).size;
+  }
+
+  /* ---- 3. the database: headers, suppliers, existing barcodes, items ---- */
+  await mongoose.connect(URI);
+  const db = mongoose.connection.db;
+  const grcColl = db.collection('grc');
+  const bcColl = db.collection('barcodeLabel');
+
+  const numbers = [...new Set(books.map((w) => w.grcNumber).filter(Boolean))];
+  const headers = await grcColl.find({ grcNumber: { $in: numbers } }).toArray();
+  const supplierIds = [...new Set(headers.map((h) => h.supplierId).filter(Boolean).map(String))];
+  const suppliers = await db.collection('contact')
+    .find({ _id: { $in: supplierIds.map((id) => new mongoose.Types.ObjectId(id)) } })
+    .project({ contactId: 1, businessName: 1, firstName: 1, lastName: 1 }).toArray();
+  const supplierById = new Map(suppliers.map((s) => [String(s._id), s]));
+
+  const allCodes = books.flatMap((w) => w.items.map((it) => it.code));
+  const existingRows = allCodes.length
+    ? await bcColl.find({ $or: [{ barcodeNo: { $in: allCodes } }, { barcodeGenerated: { $in: allCodes } }] })
+      .project({ barcodeNo: 1, barcodeGenerated: 1, grcId: 1, grcNo: 1, businessId: 1 }).toArray()
+    : [];
+
+  /* Item master: the workbook's Name is an item CODE (15-SA-PURE, SRB) -
+     matched exactly, never loosely, and left unlinked when nothing matches */
+  const itemMaster = await db.collection('item').find({ itemCode: { $nin: ['', null] } })
+    .project({ itemCode: 1, name: 1, businessId: 1 }).toArray();
+  const itemByCode = new Map(itemMaster.map((i) => [text(i.itemCode).toUpperCase(), i]));
+  const names = [...new Set(books.flatMap((w) => w.items.map((it) => it.name)).filter(Boolean))];
+  F.itemMaster.matchedNames = names.filter((n) => itemByCode.has(n.toUpperCase()));
+  F.itemMaster.unmatchedNames = names.filter((n) => !itemByCode.has(n.toUpperCase()));
+
+  const imageIndex = buildImageIndex();
+
+  /* ---- 4. decide, per GRC ------------------------------------------------ */
+  const plans = [];
+  for (const w of books) {
+    const plan = { w, status: 'ready', reasons: [] };
+    const hs = headers.filter((h) => h.grcNumber === w.grcNumber);
+    if (!w.valid) { plan.status = 'invalid'; plan.reasons.push('the file has invalid rows (see errors)'); }
+    if (!hs.length) { plan.status = 'no-header'; plan.reasons.push(`GRC ${w.grcNumber} has no header in the database`); }
+    else if (hs.length > 1) { plan.status = 'ambiguous'; plan.reasons.push(`GRC ${w.grcNumber} has ${hs.length} headers (different years or businesses)`); }
+    plan.header = hs.length === 1 ? hs[0] : null;
+
+    if (plan.header) {
+      const h = plan.header;
+      /* supplier: the header's own, checked against the file name */
+      const s = h.supplierId ? supplierById.get(String(h.supplierId)) : null;
+      const sName = s ? (text(s.businessName) || [s.firstName, s.lastName].filter(Boolean).join(' ')) : '';
+      plan.supplier = s ? `${s.contactId} ${sName}` : '';
+      const fileWords = words(w.supplierName);
+      const supplierWords = new Set(words(sName));
+      const agrees = s && fileWords.length && fileWords.every((x) => supplierWords.has(x));
+      if (agrees) F.suppliers.matched += 1;
+      else {
+        F.suppliers.unmatched += 1;
+        plan.reasons.push(`file supplier "${w.supplierName}" is not the GRC's supplier "${sName || '(none)'}"`);
+        if (!FORCE && plan.status === 'ready') plan.status = 'supplier-mismatch';
+      }
+
+      /* totals: the file must be THIS GRC's item detail */
+      const valid = w.items.filter((it) => !it.invalid);
+      const got = derivedTotals(valid);
+      const hq = Number(h.totalQuantity) || 0;
+      const ht = Number(h.taxable) || 0;
+      plan.totals = { header: { qty: hq, taxable: ht }, file: { qty: r2(got.qty), before: r2(got.before), gst: r2(got.gst), net: r2(got.net) } };
+      const qtyOk = Math.abs(got.qty - hq) <= Math.max(0.01, hq * 0.005);
+      const taxOk = Math.abs(got.before - ht) <= Math.max(1, ht * 0.01);
+      if (!(qtyOk && taxOk)) {
+        plan.reasons.push(`file totals qty ${r2(got.qty)} / before-GST ${r2(got.before)} do not reconcile with GRC header qty ${hq} / taxable ${ht}`);
+        if (!FORCE && plan.status === 'ready') plan.status = 'mismatch';
+      } else if (Math.abs(got.before - ht) > 1) {
+        F.warnings.push(`GRC ${w.grcNumber}: before-GST ${r2(got.before)} vs header taxable ${ht} (within tolerance)`);
+      }
+
+      /* barcodes already on ANOTHER GRC - never moved or duplicated */
+      const mine = new Set(w.items.map((it) => normBarcode(it.code)));
+      const elsewhere = existingRows.filter((e) => (mine.has(normBarcode(e.barcodeNo)) || mine.has(normBarcode(e.barcodeGenerated)))
+        && String(e.grcId || '') !== String(h._id));
+      if (elsewhere.length) {
+        F.duplicates.alreadyOnAnotherGrc.push({ grc: w.grcNumber, barcodes: elsewhere.map((e) => `${e.barcodeNo} (GRC ${e.grcNo || e.grcId || 'none'})`) });
+        plan.reasons.push(`${elsewhere.length} barcode(s) already belong to another GRC or to no GRC`);
+        if (plan.status === 'ready') plan.status = 'conflict';
+      }
+    }
+
+    /* the file's own Item Summary vs what the screen will derive */
+    if (w.summary.length) {
+      F.summary.compared += 1;
+      const want = w.summary.reduce((a, s) => ({ qty: a.qty + s.qty, before: a.before + s.before, net: a.net + s.net }), { qty: 0, before: 0, net: 0 });
+      const got = derivedTotals(w.items.filter((it) => !it.invalid));
+      const off = (a, b) => Math.abs(a - b) > Math.max(1, Math.abs(b) * 0.001);
+      if (off(got.qty, want.qty) || off(got.before, want.before) || off(got.net, want.net)) {
+        F.summary.mismatched.push({ grc: w.grcNumber, file: w.file,
+          summary: { qty: r2(want.qty), before: r2(want.before), net: r2(want.net) },
+          items: { qty: r2(got.qty), before: r2(got.before), net: r2(got.net) } });
+      } else F.summary.agreed += 1;
+    }
+    plans.push(plan);
+  }
+
+  /* the same barcode in two files that are both about to be imported */
+  const owner = new Map();
+  plans.filter((p) => p.status === 'ready').forEach((p) => p.w.items.forEach((it) => {
+    const k = normBarcode(it.code);
+    if (!owner.has(k)) owner.set(k, new Set());
+    owner.get(k).add(p);
+  }));
+  owner.forEach((set, code) => {
+    if (set.size < 2) return;
+    F.duplicates.acrossFiles.push({ barcode: code, files: [...set].map((p) => p.w.file) });
+    set.forEach((p) => { p.status = 'conflict'; p.reasons.push(`barcode ${code} is also in another file`); });
+  });
+
+  plans.forEach((p) => {
+    const bucket = { 'no-header': 'noHeader', ambiguous: 'ambiguousHeader', mismatch: 'mismatched',
+      'supplier-mismatch': 'supplierMismatch', invalid: 'invalid', conflict: 'conflicts' }[p.status];
+    if (p.status === 'ready') F.grc.ready += 1;
+    else F.grc[bucket].push({ grc: p.w.grcNumber, file: p.w.file, reasons: p.reasons });
+    F.perGrc.push({
+      grc: p.w.grcNumber, file: p.w.file, sheet: p.w.sheet, status: p.status, items: p.w.items.length,
+      supplier: p.supplier || '', totals: p.totals || null, reasons: p.reasons,
+    });
+  });
+
+  printFolderReport(F, plans);
+
+  if (!APPLY) {
+    writeFolderReport(F);
+    console.log('\nDry run complete - nothing was written.');
+    await mongoose.disconnect();
+    return;
+  }
+
+  /* ---- 5. write, one transaction per GRC --------------------------------- */
+  const client = mongoose.connection.getClient();
+  for (const p of plans.filter((x) => x.status === 'ready')) {
+    try {
+      const counts = await importFolderGrc(db, client, p, { itemByCode, imageIndex });
+      F.items.created += counts.created;
+      F.items.updated += counts.updated;
+      F.items.unchanged += counts.unchanged;
+      F.images.matched += counts.images;
+      F.images.missing += counts.created + counts.updated + counts.unchanged - counts.images;
+      if (counts.created || counts.updated) F.grc.imported += 1; else F.grc.unchanged += 1;
+      console.log(`  GRC ${p.w.grcNumber}: ${counts.created} created, ${counts.updated} updated, ${counts.unchanged} unchanged`);
+    } catch (e) {
+      F.items.failed += p.w.items.length;
+      F.grc.failed.push({ grc: p.w.grcNumber, file: p.w.file, reason: e.message });
+      console.error(`  GRC ${p.w.grcNumber}: FAILED - nothing written for it (${e.message})`);
+    }
+  }
+
+  console.log('\n=================== FOLDER IMPORT COMPLETED ===================');
+  console.log(`GRCs      : ${F.grc.imported} filled, ${F.grc.unchanged} already up to date, ${F.grc.failed.length} failed`);
+  console.log(`Items     : ${F.items.created} created, ${F.items.updated} updated, ${F.items.unchanged} unchanged, ${F.items.failed} failed`);
+  console.log(`Images    : ${F.images.matched} linked`);
+  console.log(`Stock     : ${NO_STOCK ? 'NO (--no-stock)' : F.items.created + ' new units, with GRC_IN ledger entries'}`);
+  writeFolderReport(F);
+  await mongoose.disconnect();
+}
+
+/* Writes one GRC's barcode rows - and a GRC_IN ledger entry for each NEW
+   one, exactly as the workbook flow does - inside ONE transaction, so a
+   failure leaves the GRC as it was rather than half filled. The callback may
+   be retried by the driver, so the counts are rebuilt on every attempt. */
+async function importFolderGrc(db, client, plan, { itemByCode, imageIndex }) {
+  const { w, header: h } = plan;
+  const bcColl = db.collection('barcodeLabel');
+  const mvColl = db.collection('stockmovement');
+  const grcId = String(h._id);
+  const session = client.startSession();
+  let counts;
+  try {
+    await session.withTransaction(async () => {
+      counts = { created: 0, updated: 0, unchanged: 0, images: 0 };
+      for (const [index, it] of w.items.entries()) {
+        const barcodeNo = it.code;
+        const item = itemByCode.get(it.name.toUpperCase()) || null;
+        const image = imageIndex.get(normBarcode(barcodeNo));
+        if (image) counts.images += 1;
+
+        /* the same field names the workbook flow writes, so both kinds of
+           import - and rows the app generates - read alike on every screen.
+           itemCode is the workbook's Name, which is the item code, as on a
+           row the Barcode Generation screen writes. */
+        const row = {
+          grcId,
+          grcNo: h.grcNumber,
+          supplierId: h.supplierId ? String(h.supplierId) : '',
+          barcodeNo,
+          barcodeGenerated: barcodeNo,
+          itemId: item ? item._id : null,
+          itemCode: it.name,
+          itemName: item ? text(item.name) || it.name : it.name,
+          printDescription: it.name,
+          supplierDescription: it.name,
+          billSlNo: it.slNo,
+          serialNo: it.slNo,
+          hsn: it.hsn,
+          gst: String(it.gstPct),
+          uom: it.uom,
+          uomType: uomTypeOf(it.uom),
+          /* one workbook row is one barcode, so it is a unique unit */
+          batchType: 'unique',
+          batchUnique: 'unique',
+          qty: String(it.qty),
+          qtyNum: it.qty,
+          purRate: String(it.purchaseRate),
+          disc: String(it.discPct),
+          finalNet: String(it.finalRate),
+          retailPrice: String(it.rsp),
+          offerPrice: String(it.rsp),
+          wspPrice: String(it.wsp),
+          dpPrice: String(it.dp),
+          imageUrl: image ? `${IMAGE_URL_BASE}/${image}` : '',
+          customFields: {
+            noOfCuts: it.cuts, discountAmount: it.discountAmount, roundOff: it.roundOff,
+            beforeTax: it.beforeTax, igst: it.igst, cgst: it.cgst, sgst: it.sgst,
+            netAmount: it.netAmount, dp: it.dp,
+          },
+          businessId: h.businessId ? String(h.businessId) : '',
+          locationId: h.locationId ? String(h.locationId) : '',
+          currentBusinessId: h.businessId || null,
+          currentLocationId: h.locationId || null,
+          finYear: h.finYear || '',
+          importedFrom: 'purchase_excels',
+          /* provenance: where this row came from, to the cell */
+          importSource: { file: w.file, sheet: w.sheet, row: it.excelRow },
+        };
+
+        const found = await bcColl.findOne({ grcId, barcodeNo }, { session });
+        if (found) {
+          /* compare everything but the timestamps - a re-run that changes
+             nothing writes nothing */
+          const same = Object.entries(row).every(([k, v]) => JSON.stringify(found[k] ?? null) === JSON.stringify(v ?? null));
+          if (same) { counts.unchanged += 1; continue; }
+          /* stock state is the inventory engine's once a unit exists - a
+             re-import corrects the commercial fields, never the status */
+          await bcColl.updateOne({ _id: found._id }, { $set: { ...row, updatedAt: new Date() } }, { session });
+          counts.updated += 1;
+          continue;
+        }
+
+        /* createdAt is the GRC date plus the row's position: GET
+           /api/grc/[id] lists rows by createdAt, so this keeps the file's
+           order on the Item With Barcode and Item Summary tabs */
+        const at = new Date((h.grcDate ? new Date(h.grcDate).getTime() : Date.now()) + index);
+        const res = await bcColl.insertOne({
+          ...row,
+          status: NO_STOCK ? 'VOID' : 'IN_STOCK',
+          createdAt: at,
+          updatedAt: new Date(),
+        }, { session });
+        counts.created += 1;
+
+        if (!NO_STOCK) {
+          await mvColl.insertOne({
+            businessId: h.businessId || null, finYear: h.finYear || '',
+            type: 'GRC_IN', barcodeId: res.insertedId, barcodeNo,
+            itemId: item ? item._id : null, itemCode: it.name, itemName: row.itemName,
+            uom: it.uom, batchType: 'unique', qty: it.qty,
+            fromLocationId: null, toLocationId: h.locationId || null,
+            statusBefore: '', statusAfter: 'IN_STOCK',
+            refModel: 'grc', refId: h._id, refNo: h.grcNumber,
+            reason: '', notes: '', userId: null, userName: '', userEmail: '',
+            at: h.grcDate || new Date(),
+            derived: true, derivedFrom: 'purchase_excels',
+            createdAt: new Date(), updatedAt: new Date(),
+          }, { session });
+        }
+      }
+    });
+  } finally {
+    await session.endSession();
+  }
+  return counts;
+}
+
+function printFolderReport(F, plans) {
+  console.log('\n------------------------------------------');
+  console.log('GRC EXCEL SEED REPORT');
+  console.log('------------------------------------------');
+  console.log(`Files scanned            : ${F.files.scanned}${F.fileFilter ? ` (${F.files.filtered} after --file filter)` : ''}`);
+  console.log(`GRC item files identified: ${F.files.recognised}`);
+  if (F.files.notGrcItemFiles.length) console.log(`Not GRC item files       : ${F.files.notGrcItemFiles.map((n) => n.file).join(', ')}`);
+  console.log(`Items detected           : ${F.items.detected}`);
+  console.log('\nPER GRC');
+  plans.forEach((p) => {
+    const t = p.totals;
+    console.log(`  ${p.w.grcNumber}  ${p.status.toUpperCase().padEnd(17)} ${String(p.w.items.length).padStart(4)} items  ${p.w.sheet.padEnd(26)} ${p.w.file}`);
+    if (t) console.log(`         header qty ${t.header.qty} taxable ${t.header.taxable}  |  file qty ${t.file.qty} before-GST ${t.file.before}  |  supplier ${p.supplier || '(none)'}`);
+    p.reasons.forEach((r) => console.log(`         - ${r}`));
+  });
+  console.log('\nGRC records');
+  console.log(`  ready to fill          : ${F.grc.ready}`);
+  console.log(`  no header in database  : ${F.grc.noHeader.length}`);
+  console.log(`  ambiguous header       : ${F.grc.ambiguousHeader.length}`);
+  console.log(`  totals do not reconcile: ${F.grc.mismatched.length}`);
+  console.log(`  supplier mismatch      : ${F.grc.supplierMismatch.length}`);
+  console.log(`  invalid rows           : ${F.grc.invalid.length}`);
+  console.log(`  barcode conflicts      : ${F.grc.conflicts.length}`);
+  console.log('Supplier matches');
+  console.log(`  matched                : ${F.suppliers.matched}`);
+  console.log(`  unmatched              : ${F.suppliers.unmatched}`);
+  console.log('Item master matches (workbook Name = item code)');
+  console.log(`  matched                : ${F.itemMaster.matchedNames.length}`);
+  console.log(`  unmatched              : ${F.itemMaster.unmatchedNames.length}${F.itemMaster.unmatchedNames.length ? '  (' + F.itemMaster.unmatchedNames.join(', ') + ')' : ''}`);
+  console.log('Item Summary (derived by the GRC screen - compared, not imported)');
+  console.log(`  compared / agreed      : ${F.summary.compared} / ${F.summary.agreed}`);
+  F.summary.mismatched.forEach((m) => console.log(`  MISMATCH ${m.grc}: file summary qty ${m.summary.qty} before ${m.summary.before} | items qty ${m.items.qty} before ${m.items.before}`));
+  console.log(`Invalid prices           : ${F.invalidPrices}`);
+  console.log('Duplicate records prevented');
+  console.log(`  within a file          : ${F.duplicates.withinFiles}`);
+  console.log(`  across files           : ${F.duplicates.acrossFiles.length}`);
+  console.log(`  already on another GRC : ${F.duplicates.alreadyOnAnotherGrc.length}`);
+  console.log(`\nERRORS   : ${F.errors.length}`);
+  F.errors.slice(0, 40).forEach((e) => console.log(`  File: ${e.file} | Sheet: ${e.sheet} | Row: ${e.row} | GRC: ${e.grc} | Item: ${e.item} | Field: ${e.field} | Value: ${e.value} | Reason: ${e.reason}`));
+  if (F.errors.length > 40) console.log(`  ...and ${F.errors.length - 40} more (see the report file)`);
+  console.log(`WARNINGS : ${F.warnings.length}`);
+  F.warnings.slice(0, 10).forEach((w) => console.log(`  ${w}`));
+}
+
+function writeFolderReport(F) {
+  F.finishedAt = new Date().toISOString();
+  /* its own file - grc-import-report.json is the workbook flow's record */
+  const file = path.join(ROOT, 'grc-excel-folder-report.json');
+  writeFileSync(file, JSON.stringify(F, null, 2));
   console.log(`\nreport written: ${file}`);
 }
 

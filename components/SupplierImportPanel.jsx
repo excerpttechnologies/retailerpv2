@@ -69,8 +69,28 @@ function mapParsedToFields(parsed, cityMatch) {
 
   put('gstNo', parsed.gstin);
   put('pan', parsed.pan);
-  put('businessName', parsed.legalName);
-  put('shortName', parsed.tradeName);
+
+  /* GST TRADE NAME → both ERP name fields.
+     The GST portal stores two separate names:
+       legalName  = the proprietor/director's registered legal name
+                    (e.g. "MITTA ASWARTHA VENKATA KARTHIK")
+       tradeName  = the name the business actually operates under
+                    (e.g. "MAHATHI TECHNOLOGIES")
+
+     Every dropdown, GRC, purchase document and printed label in this ERP
+     reads `businessName` (= "Legal Name of Business"). That field must
+     carry the trading name, not the proprietor's personal name.
+
+     Rule:
+       • tradeName present  → use it for both businessName and shortName
+       • tradeName absent   → fall back to legalName for both
+       • both absent        → put() silently skips (value is empty)
+
+     This keeps both fields identical and ensures the name shown throughout
+     the system matches what the supplier trades under. */
+  const primaryName = String(parsed.tradeName ?? '').trim() || String(parsed.legalName ?? '').trim();
+  put('businessName', primaryName);   // Legal Name of Business
+  put('shortName',    primaryName);   // Trade Name
   put('additionalTradeName', parsed.additionalTradeName);
   put('gstRegDate', parsed.registrationDate?.iso);
   put('businessType', businessTypeFromConstitution(parsed.constitution));

@@ -38,6 +38,10 @@ const GrcSchema = new mongoose.Schema(
     totalQuantity: { type: Number, default: 0 },
     gst: { type: Number, default: 0 },
     netAmount: { type: Number, default: 0 },
+    /* The highest SEQ this GRC has given a barcode (SUPPLIER_CODE * GRC_NUMBER
+       * SEQ * QTY). Only ever raised, so a deleted barcode's SEQ - and the
+       value on a label that may still exist - is never given out again. */
+    lastBarcodeSeq: { type: Number, default: 0 },
     /* set when this document is converted downstream; null = still available */
     purchaseInvoiceId: { type: mongoose.Schema.Types.ObjectId, default: null, index: true },
 

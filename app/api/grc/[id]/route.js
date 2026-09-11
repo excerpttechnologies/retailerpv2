@@ -48,6 +48,7 @@ import { BarcodeLabel } from '@/lib/barcodeLabel';
 import { requireSession } from '@/lib/session';
 import { validate } from '@/lib/validate';
 import { FORM } from '@/app/admin/transaction/purchase/grc/form';
+import { LABEL_MODE, resolveBarcodeType, resolveBarcodeLabelCount } from '@/lib/barcodeLabelPrint';
 
 const json = (data, status = 200) => Response.json(data, { status });
 
@@ -79,8 +80,9 @@ export async function GET(_req, { params }) {
       _id: String(grc._id),
       supplierName: supplier?.businessName || [supplier?.firstName, supplier?.lastName].filter(Boolean).join(' '),
       /* The stored code, verbatim - not derived from the name and never
-         defaulted to a placeholder. A supplier with no code must surface as
-         missing on the label rather than print something invented. */
+         defaulted to a placeholder. It is ERP data for the screens and
+         reports that show this GRC. It is NOW also label data: every barcode
+         label carries the GRC number and supplier code at the top-right. */
       supplierCode: supplier?.contactId || '',
         supplierMarkup: {
           rsp: supplier?.markUpOnCostRsp ?? null,
@@ -88,7 +90,27 @@ export async function GET(_req, { params }) {
           dp: supplier?.markUpOnCostDp ?? null,
         },
     },
-    rows: rows.map((r) => ({ ...r, _id: String(r._id) })),
+    /* Every barcode row carries the type and sticker count the label rule
+       resolves for it, here on the server, from the uomType / batchType the
+       save route stored: UNIQUE 1, MTR 2, BATCH null - a batch's count is
+       the operator's, asked for when it is printed. The print screens run the
+       very same function (lib/barcodeLabelPrint.js), so they agree with this
+       by construction.
+       
+       Each row is also enriched with grcNumber and supplierCode from the parent
+       GRC so labels can display "GRC {grcNumber} · Supplier {supplierCode}" at
+       the top-right without requiring every caller to manually merge these fields. */
+    rows: rows.map((r) => {
+      const barcodeType = resolveBarcodeType(r);
+      return {
+        ...r,
+        _id: String(r._id),
+        grcNumber: grc.grcNumber || '',
+        supplierCode: supplier?.contactId || '',
+        barcodeType,
+        labelCount: barcodeType === LABEL_MODE.BATCH ? null : resolveBarcodeLabelCount(r),
+      };
+    }),
   });
 }
 

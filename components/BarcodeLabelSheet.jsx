@@ -1,5 +1,6 @@
 'use client';
 import BarcodeSvg from './BarcodeSvg';
+import { toLabelData } from '@/lib/barcodeLabelPrint';
 
 /* ==========================================================================
    A printable sheet of barcode labels.
@@ -35,40 +36,43 @@ export { BarcodeSvg };
 /* One label.
 
    Rows may come from a barcode row (which carries a generated barcode and
-   GRC pricing) or from the item master (which does not), so every field
-   falls back rather than assuming a shape.
+   GRC pricing) or from the item master (which does not). Every value on the
+   sticker is read through toLabelData (lib/barcodeLabelPrint.js), the label
+   data contract, which WHITELISTS what a label may carry - so whatever else
+   a row happens to hold never reaches the paper.
 
    WHAT IS ON IT, and why. The label is the only thing that travels with the
-   goods, so it has to carry enough to identify the piece without a computer:
+   goods, so it carries what identifies the piece at the counter:
 
      barcode + number   the scannable reference, and the same number in
                         human-readable form for when a label is damaged
      description        what it is
-     supplier           who it came from
-     GRC number         which receipt it arrived on
-     serial             its position within that receipt
      quantity           essential on a BATCH label, where one barcode stands
                         for several pieces or several metres - without it,
                         nobody can tell a 5-metre label from a 1-metre one
-     rate / RSP         cost and retail price
+     RSP / CP           the selling price, and the cost the existing design
+                        prints beside it
+
+   What is deliberately NOT on it: the supplier, the supplier's code, the GRC
+   it arrived on and the bill serial. They are purchase records - kept on the
+   barcode row, the GRC and the reports - and are left out of the label DATA,
+   not merely hidden, so they cannot resurface in a preview, a print or a PDF.
 
    A label is small. Everything below the barcode is rendered only when the
    row actually carries it, and the tiny print scales with the label height,
    so a 25mm sticker drops to essentials while a 50mm one shows the lot -
    rather than a fixed layout that overflows on the small stock. */
 export function Label({ row, w, h }) {
-  const code = row.barcodeNo || row.barcodeGenerated || row.itemCode || '';
-  const rate = row.offerPrice || row.retailPrice || row.rsp || '';
-  const cost = row.finalNet || row.purRate || '';
-  const desc = row.printDescription || row.supplierDescription || row.itemName || '';
-  const supplier = row.supplierName || '';
-  const grcNo = row.grcNo || row.grcNumber || '';
-  const serial = row.serialNo || row.billSlNo || '';
-  const qty = Number(row.qtyNum ?? row.qty ?? 0);
-  const uom = row.uom || row.uomType || '';
-  const isBatch = String(row.batchType || row.batchUnique || '').toLowerCase() === 'batch';
+  const label = toLabelData(row);
+  const code = label.barcode;
+  const rate = label.sellingPrice;
+  const cost = label.costPrice;
+  const desc = label.description;
+  const qty = label.quantity;
+  const uom = label.unit;
+  const isBatch = label.isBatch;
 
-  /* Room for the extra lines only exists on a taller sticker. */
+  /* Room for the CP only exists on a taller sticker. */
   const roomy = h >= 30;
   const barcodeHeight = Math.max(14, Math.round(h * (roomy ? 0.5 : 0.62)));
 
@@ -117,7 +121,7 @@ export function Label({ row, w, h }) {
           And ANY length-measured label, batch or not: a unique piece label
           carries quantity 1 and can safely leave it off, but a unique CUT of
           cloth is one barcode for 12.65 metres, and a roll with no length on
-          it is worth nothing at the counter. That case used to print nothing.
+          it is worth nothing at the counter.
 
           "(batch)" still marks only the batch case - it is what warns the
           storekeeper that this one label covers more than one item. */}
@@ -125,12 +129,6 @@ export function Label({ row, w, h }) {
         <div className="w-full truncate text-[7pt] font-bold">
           {trimQty(qty)} {uom}
           {isBatch && <span className="ml-[0.6mm] font-normal text-[#46556f]">(batch)</span>}
-        </div>
-      )}
-
-      {roomy && (supplier || grcNo || serial) && (
-        <div className="w-full truncate text-[5.5pt] text-[#5a6c88]">
-          {[supplier, grcNo, serial ? 'Sl ' + serial : ''].filter(Boolean).join(' · ')}
         </div>
       )}
 
@@ -165,8 +163,10 @@ function trimQty(v) {
   return Number.isInteger(n) ? String(n) : n.toFixed(3).replace(/0+$/, '').replace(/\.$/, '');
 }
 
-/* Expands each row by its Barcode Copies and lays the result out in a grid
-   `stickerInRow` wide. */
+/* Expands each row by its `copies` - on the Barcode Generation screen that
+   count comes from getLabelPrintCount (lib/barcodeLabelPrint.js) - and lays
+   the result out in a grid `stickerInRow` wide. Every copy of a row is the
+   same row, so the same barcode number. */
 export default function BarcodeLabelSheet({ rows, format, gap = '1mm' }) {
   const { w, h } = parseSize(format?.labelSize);
   const perRow = Math.max(1, Number(format?.stickerInRow) || 1);

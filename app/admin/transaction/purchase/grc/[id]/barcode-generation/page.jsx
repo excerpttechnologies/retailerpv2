@@ -37,15 +37,34 @@ export default function GrcBarcodeGenerationPage() {
         </button>
         <div className="text-sm font-semibold">Barcode Generation - {data.grc.grcNumber}</div>
       </div>
-        {/* grcHeader carries what the printed label needs but a barcode row
-            does not hold: which supplier the goods came from and which
-            receipt they arrived on. /api/grc/[id] already resolves the
-            supplier's name onto the header, so nothing new is fetched. */}
+
+      {/* GRC NO + SUPPLIER CODE info bar — gives the operator a constant
+          reference while working through the items list. */}
+      <div className="flex items-center gap-6 border-b border-slate-200 bg-slate-50 px-4 py-2 text-xs">
+        <div className="flex items-center gap-2">
+          <span className="font-semibold uppercase tracking-wide text-slate-500">GRC NO</span>
+          <span className="font-mono font-bold text-slate-800">{data.grc.grcNumber || '—'}</span>
+        </div>
+        <div className="h-4 w-px bg-slate-300" />
+        <div className="flex items-center gap-2">
+          <span className="font-semibold uppercase tracking-wide text-slate-500">Supplier</span>
+          <span className="font-mono font-bold text-slate-800">{data.grc.supplierCode || '—'}</span>
+        </div>
+      </div>
+        {/* The GRC header is passed as grcHeader for the barcode value every
+            barcode of this GRC carries - SUPPLIER_CODE * GRC_NUMBER * SEQ *
+            QTY (lib/barcodeValue.js) - which the grid shows before a row is
+            saved. lastBarcodeSeq is the highest SEQ the GRC has given, so the
+            grid counts on from where the save route will. */}
         <GCRBarcodeGeneration
           grcId={id}
           initialRows={data.rows}
           supplierMarkup={data.grc.supplierMarkup}
-          grcHeader={{ grcNumber: data.grc.grcNumber || '', supplierName: data.grc.supplierName || '' }}
+          grcHeader={{
+            grcNumber: data.grc.grcNumber || '',
+            supplierCode: data.grc.supplierCode || '',
+            lastBarcodeSeq: Number(data.grc.lastBarcodeSeq) || 0,
+          }}
           onSaved={load}
           editMode
         />

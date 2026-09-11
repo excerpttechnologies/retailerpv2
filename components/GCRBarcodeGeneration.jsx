@@ -1,24 +1,35 @@
 ﻿"use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useRouter } from "next/navigation";
 import { useScope } from "./ScopeContext";
 import BarcodeLabelSheet, { parseSize } from "./BarcodeLabelSheet";
+import GrcBarcodeLabelSheet from "./GrcBarcodeLabel";
 import { useOptions } from "./useOptions";
 import { useBarcodeLookup } from "./useScanner";
 import Icon from "./Icon";
 import { computeSampleBarcode } from "@/lib/barcodeFormat";
 import { encodeRate } from "@/lib/purchaseRateCode";
 import { gstPercentForAmount, slabGstPercent } from "@/lib/hsnGst";
+import { purchasePriceError } from "@/lib/purchasePrice";
+import { toGridRow } from "@/lib/barcodeRowSync";
+import {
+  money, finalRateOf, sameValue, sheetColumns, sheetProblems, isLockedRow, lockReason, isBlankRow,
+  SHEET_INHERITED_FIELDS,
+} from "@/lib/itemsSheet";
+import ItemsSheet from "./ItemsSheet";
+import { composeBarcodeValue, nextSeqStart, hasComposedBarcode } from "@/lib/barcodeValue";
+import {
+  LABEL_MODE, resolveLabelMode, batchAvailableQty, withLabelCounts, pendingBatchRows, labelKey,
+  isUnprintableBatch,
+} from "@/lib/barcodeLabelPrint";
+import BatchLabelCountDialog from "./BatchLabelCountDialog";
 import * as XLSX from "xlsx";
 
-const money = (value) => {
-  const n = Number(value || 0);
-  return Number.isFinite(n)
-    ? n.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })
-    : "0.00";
-};
+/* money(), sameValue() and finalRateOf() live in lib/itemsSheet.js, shared
+   with the ITEMS sheet so the grid formats and re-derives prices exactly as
+   the rest of this screen does. */
 
 const round2 = (value) => Math.round((Number(value || 0) + Number.EPSILON) * 100) / 100;
 const decimal2 = (value) => {
@@ -310,14 +321,6 @@ function importNumber(value) {
   return cleaned !== "" && Number.isFinite(Number(cleaned)) ? cleaned : text;
 }
 
-/* "1980" and "1980.00" are the same price - comparing them as text would
-   count a reformatted cell as an edit. */
-function sameValue(a, b) {
-  const x = String(a ?? "").trim();
-  const y = String(b ?? "").trim();
-  if (x === y) return true;
-  return x !== "" && y !== "" && Number.isFinite(Number(x)) && Number.isFinite(Number(y)) && Number(x) === Number(y);
-}
 
 /* Export Excel writes this sheet, very hidden, beside "Barcode Items": every
    row exactly as it was exported. Import compares each sheet row with its
@@ -370,16 +373,6 @@ function offerFrom(base, pct) {
   return pct > 0 && text !== "" && Number.isFinite(Number(text)) ? fixed2(Number(text) * (1 - pct / 100)) : base;
 }
 
-/* The purchase rate less its discount - the Final Price rule the Add Item
-   form applies through calculatePrices. */
-function finalRateOf(row) {
-  const purchaseRate = Number(row.purchaseRate || 0);
-  const discount = Number(row.discount || row.disc1 || 0);
-  const discountType = row.discountType || "Percentage";
-  return discountType === "Flat"
-    ? Math.max(0, purchaseRate - discount)
-    : Math.max(0, purchaseRate - (purchaseRate * discount) / 100);
-}
 
 /* A row whose two copies of one price disagree cannot be applied without
    guessing which was meant, so it is refused. `tracked` = read against the
@@ -909,7 +902,7 @@ function SerialNoField({ value, onChange, editableClass, readOnlyClass, locked =
   );
 }
 
-function AddItemModal({ open, onClose, onSubmit, onSubmitAndPrint, rowCount = 0, barcodeFormat, reserveNumbers, business = "", markupDefaults = {}, rateCodeMapping = null }) {
+function AddItemModal({ open, onClose, onSubmit, onSubmitAndPrint, rowCount = 0, barcodeFormat, business = "", markupDefaults = {}, rateCodeMapping = null }) {
   const createBlankForm = (overrides = {}) => ({
     oldBarcode: "",
     itemCode: "",
@@ -918,6 +911,8 @@ function AddItemModal({ open, onClose, onSubmit, onSubmitAndPrint, rowCount = 0,
     itemLabel: "",
     hsnId: "",
     hsn: "",
+    hsn2Id: "",
+    hsn2: "",
     gst: "0",
     goodsType: "",
     sm: "",
@@ -979,6 +974,15 @@ function AddItemModal({ open, onClose, onSubmit, onSubmitAndPrint, rowCount = 0,
   const itemTimerRef = useRef(null);
   const hsnTimerRef = useRef(null);
   const itemDetailRef = useRef(0);
+
+  /* ── Second HSN field (Row 3) — independent state so it can be changed
+     without touching the first HSN field (Row 1) and vice-versa. */
+  const [hsn2Options, setHsn2Options] = useState([]);
+  const [hsn2Loading, setHsn2Loading] = useState(false);
+  const [hsn2Label, setHsn2Label] = useState('');
+  const [hsn2Slabs, setHsn2Slabs] = useState([]);
+  const hsn2DetailRef = useRef(0);
+  const hsn2TimerRef = useRef(null);
   const [cutRows, setCutRows] = useState([{ id: 1, value: "" }]);
   const [focusedCutIndex, setFocusedCutIndex] = useState(0);
   const cutTargetRef = useRef(0);
@@ -1031,6 +1035,31 @@ function AddItemModal({ open, onClose, onSubmit, onSubmitAndPrint, rowCount = 0,
     }, 300);
   };
 
+  /* Debounced server-side HSN search — second HSN field (Row 3).
+     Identical query to searchHsn but writes into hsn2Options/hsn2Loading so
+     the two dropdowns are completely independent. */
+  const searchHsn2 = (q) => {
+    clearTimeout(hsn2TimerRef.current);
+    setHsn2Loading(true);
+    hsn2TimerRef.current = setTimeout(() => {
+      const qs = new URLSearchParams({ perPage: '20', search: q || '' });
+      fetch('/api/hsn?' + qs)
+        .then((r) => r.json())
+        .then((d) => {
+          setHsn2Options((d.rows || []).map((row) => ({
+            value: String(row._id),
+            primaryLabel: row.code || '',
+            secondaryLabel: row.description || '',
+            code: row.code || '',
+            description: row.description || '',
+            taxSlabs: Array.isArray(row.taxSlabs) ? row.taxSlabs : [],
+          })));
+        })
+        .catch(() => setHsn2Options([]))
+        .finally(() => setHsn2Loading(false));
+    }, 300);
+  };
+
   /* OLD BARCODE LOOKUP.
 
      status: idle | loading | found | error. `resolvedRef` holds the code that
@@ -1066,6 +1095,7 @@ function AddItemModal({ open, onClose, onSubmit, onSubmitAndPrint, rowCount = 0,
     /* pre-populate dropdowns with initial results so they are not blank on open */
     searchItems('');
     searchHsn('');
+    searchHsn2('');
   }, [open]);
 
   useEffect(() => {
@@ -1158,6 +1188,27 @@ function AddItemModal({ open, onClose, onSubmit, onSubmitAndPrint, rowCount = 0,
     </div>
   );
 
+  /* Second HSN field (Row 3) — bound to its own independent state so the
+     operator can set a different HSN here without affecting the first one,
+     and vice-versa.  Initialised from the item master alongside the first
+     field, but fully editable after that. */
+  const renderHsn2Field = () => (
+    <div className="space-y-1">
+      <label className="block text-[11px] font-semibold text-gray-700">HSN *</label>
+      <SearchSelect
+        placeholder="Search HSN…"
+        value={form.hsn2Id}
+        label={hsn2Label}
+        onSearch={searchHsn2}
+        options={hsn2Options}
+        loading={hsn2Loading}
+        onSelect={(opt) => handleHsn2Selection(opt)}
+        onClear={() => handleHsn2Selection(null)}
+        editableClass={editableClass}
+      />
+    </div>
+  );
+
   const resolveProductGroup = async (subGroupId) => {
     if (!subGroupId) {
       setForm((current) => ({ ...current, subGroupName: "", groupName: "" }));
@@ -1237,11 +1288,14 @@ function AddItemModal({ open, onClose, onSubmit, onSubmitAndPrint, rowCount = 0,
   const clearFetchedItem = () => {
     resolvedRef.current = "";
     hsnDetailRef.current += 1;
+    hsn2DetailRef.current += 1;
     applyHsnSlabs([]);
+    applyHsn2Slabs([]);
+    setHsn2Label('');
     setForm((current) => ({
       ...current,
       itemId: "", itemCode: "", itemName: "", itemLabel: "",
-      hsnId: "", hsn: "", gst: "0",
+      hsnId: "", hsn: "", hsn2Id: "", hsn2: "", gst: "0",
       printDescription: "", supplierDescription: "", subGroupName: "", groupName: "",
     }));
   };
@@ -1296,6 +1350,7 @@ function AddItemModal({ open, onClose, onSubmit, onSubmitAndPrint, rowCount = 0,
          closed state shows the item code and HSN code correctly. */
       if (unit.itemCode) setItemLabel(unit.itemCode);
       if (unit.hsn) setHsnLabel(unit.hsn);
+      if (unit.hsn) setHsn2Label(unit.hsn);
 
       setForm((current) => ({
         ...current,
@@ -1305,6 +1360,8 @@ function AddItemModal({ open, onClose, onSubmit, onSubmitAndPrint, rowCount = 0,
         itemName: unit.itemName || "",
         hsnId: "",
         hsn: unit.hsn || "",
+        hsn2Id: "",
+        hsn2: unit.hsn || "",
         gst: unit.gst ? String(unit.gst) : current.gst,
         printDescription: unit.printDescription || unit.description || unit.itemName || "",
         /* the vendor's wording as recorded on the matched label - falls back
@@ -1330,14 +1387,17 @@ function AddItemModal({ open, onClose, onSubmit, onSubmitAndPrint, rowCount = 0,
 
   const handleItemSelection = async (opt) => {
     hsnDetailRef.current += 1;
+    hsn2DetailRef.current += 1;
     if (!opt) {
       itemDetailRef.current += 1;
       setItemLabel('');
       applyHsnSlabs([]);
+      applyHsn2Slabs([]);
+      setHsn2Label('');
       setForm((current) => ({
         ...current,
         itemId: "", itemName: "", itemCode: "", subGroupName: "", groupName: "", printDescription: "",
-        hsnId: "", hsn: "", gst: "0",
+        hsnId: "", hsn: "", hsn2Id: "", hsn2: "", gst: "0",
         markupRSP: markupDefaults.rsp ?? "", markupWSP: markupDefaults.wsp ?? "", markupDP: markupDefaults.dp ?? "",
       }));
       return;
@@ -1348,6 +1408,7 @@ function AddItemModal({ open, onClose, onSubmit, onSubmitAndPrint, rowCount = 0,
     const itemName = opt.name || opt.secondaryLabel || "";
     setItemLabel(itemCode);
     applyHsnSlabs([]);
+    applyHsn2Slabs([]);
     setForm((current) => ({
       ...current,
       itemId: opt.value,
@@ -1356,6 +1417,8 @@ function AddItemModal({ open, onClose, onSubmit, onSubmitAndPrint, rowCount = 0,
       printDescription: opt.description || "",
       hsnId: "",
       hsn: "",
+      hsn2Id: "",
+      hsn2: "",
       gst: "0",
       markupRSP: markupDefaults.rsp ?? "",
       markupWSP: markupDefaults.wsp ?? "",
@@ -1367,20 +1430,27 @@ function AddItemModal({ open, onClose, onSubmit, onSubmitAndPrint, rowCount = 0,
       if (!response.ok || itemDetailRef.current !== detailRequest) return;
       const item = payload?.item || {};
       setHsnLabel(item.hsnCode || '');
+      setHsn2Label(item.hsnCode || '');
       /* the detail route resolves the item's HSN slabs for us - bands and
          rates both - so the rate is picked by value here exactly as it is
          when the HSN is chosen by hand */
       applyHsnSlabs(Array.isArray(item.slabs) ? item.slabs : []);
+      applyHsn2Slabs(Array.isArray(item.slabs) ? item.slabs : []);
       setForm((current) => ({
         ...current,
         hsnId: item.hsnId || "",
         hsn: item.hsnCode || "",
+        hsn2Id: item.hsnId || "",
+        hsn2: item.hsnCode || "",
         markupRSP: item.markupRSP == null ? (markupDefaults.rsp ?? "") : fixed2(item.markupRSP),
         markupWSP: item.markupWSP == null ? (markupDefaults.wsp ?? "") : fixed2(item.markupWSP),
         markupDP: item.markupDP == null ? (markupDefaults.dp ?? "") : fixed2(item.markupDP),
       }));
     } catch {
-      if (itemDetailRef.current === detailRequest) setHsnLabel('');
+      if (itemDetailRef.current === detailRequest) {
+        setHsnLabel('');
+        setHsn2Label('');
+      }
     }
     await resolveProductGroup(opt.subGroupId || "");
   };
@@ -1395,6 +1465,59 @@ function AddItemModal({ open, onClose, onSubmit, onSubmitAndPrint, rowCount = 0,
     }
     setHsnLabel(opt.code || opt.primaryLabel || "");
     await resolveHsnGst({
+      value: opt.value,
+      code: opt.code || opt.primaryLabel || "",
+      label: opt.primaryLabel || "",
+      taxSlabs: opt.taxSlabs || [],
+    });
+  };
+
+  /* ── Second HSN field handlers (Row 3) ─────────────────────────────────────
+     Mirror of applyHsnSlabs / resolveHsnGst / handleHsnSelection but operating
+     on hsn2 form fields and hsn2* state only.  Changing the second HSN never
+     touches form.hsnId / form.hsn / hsnSlabs / autoGstRef, and vice-versa. */
+
+  const applyHsn2Slabs = (slabs) => {
+    setHsn2Slabs(slabs);
+  };
+
+  const resolveHsn2Gst = async (hsnDoc) => {
+    const detailRequest = hsn2DetailRef.current + 1;
+    hsn2DetailRef.current = detailRequest;
+
+    const code = hsnDoc?.code || hsnDoc?.label || "";
+    let taxSlabs = Array.isArray(hsnDoc?.taxSlabs) ? hsnDoc.taxSlabs : [];
+
+    if (!taxSlabs.length && code) {
+      try {
+        const response = await fetch(`/api/hsn?perPage=20&search=${encodeURIComponent(code)}`);
+        const payload = await response.json();
+        const match = (payload.rows || []).find((row) => String(row.code || '').trim() === String(code).trim());
+        taxSlabs = Array.isArray(match?.taxSlabs) ? match.taxSlabs : [];
+      } catch {
+        taxSlabs = [];
+      }
+    }
+
+    if (hsn2DetailRef.current !== detailRequest) return;
+
+    setForm((current) => ({ ...current, hsn2: code, hsn2Id: hsnDoc?.value || current.hsn2Id }));
+
+    const slabs = await resolveSlabRates(taxSlabs);
+    if (hsn2DetailRef.current !== detailRequest) return;
+    applyHsn2Slabs(slabs);
+  };
+
+  const handleHsn2Selection = async (opt) => {
+    if (!opt) {
+      hsn2DetailRef.current += 1;
+      setHsn2Label('');
+      applyHsn2Slabs([]);
+      setForm((current) => ({ ...current, hsn2Id: "", hsn2: "" }));
+      return;
+    }
+    setHsn2Label(opt.code || opt.primaryLabel || "");
+    await resolveHsn2Gst({
       value: opt.value,
       code: opt.code || opt.primaryLabel || "",
       label: opt.primaryLabel || "",
@@ -1573,6 +1696,16 @@ function AddItemModal({ open, onClose, onSubmit, onSubmitAndPrint, rowCount = 0,
       setReserveError("Please select an Item Code.");
       return;
     }
+    /* Checked HERE, before any barcode number is reserved: a zero-price line
+       used to be generated, reserved and appended to the grid, and was only
+       refused when the whole GRC was submitted - by which time it had spent
+       real numbers from the sequence. Same rule as the grid and the API
+       (lib/purchasePrice.js). */
+    const priceProblem = purchasePriceError(form.purchaseRate);
+    if (priceProblem) {
+      setReserveError(priceProblem);
+      return;
+    }
     if (reserving) return;                       // guards the double-click
 
     const generatedRows = [];
@@ -1587,29 +1720,17 @@ function AddItemModal({ open, onClose, onSubmit, onSubmitAndPrint, rowCount = 0,
       cutRows,
     });
 
-    setReserving(true);
-    let numbers = [];
-    try {
-      numbers = await reserveNumbers({
-        uom: form.isMtr ? "MTR" : "PC",
-        batchType: form.uniqueBarcode ? "unique" : "batch",
-        qty: form.isMtr
-          ? Number(form.totalMtr || 0) || (cutRows.length || Number(form.noOfCuts || 1))
-          : Number(form.qty || 1),
-        cuts: form.isMtr ? cutRows.map((c) => Number(c.value || 0)).filter((n) => n > 0) : [],
-        count: barcodePlan.length,
-      });
-    } catch (error) {
-      setReserveError(error.message || "Could not reserve barcode numbers.");
-      setReserving(false);
+    /* No number is reserved any more - the save route gives every barcode its
+       value - so the plan rule that reservation used to enforce is checked
+       here: a unique piece quantity must be whole (lib/barcodeEngine.js
+       planBarcodes). */
+    if (!form.isMtr && form.uniqueBarcode && !Number.isInteger(Number(form.qty || 1))) {
+      setReserveError("A unique piece quantity must be a whole number.");
       return;
     }
-    setReserving(false);
     setReserveError("");
 
     barcodePlan.forEach((planItem, index) => {
-      const distinctBarcode = numbers[index];
-
       generatedRows.push(calculatePrices({
         ...emptyRow(`${Date.now()}-${index}`),
         /* carried through to the saved label (the save route already persists
@@ -1623,6 +1744,7 @@ function AddItemModal({ open, onClose, onSubmit, onSubmitAndPrint, rowCount = 0,
         sm: form.sm,
         p_m_f: form.p_m_f,
         hsn: form.hsn,
+        hsn2: form.hsn2,
         gst: form.gst,
         uom: form.isMtr ? "MTR" : "PC",
         qty: String(planItem.qty || 0),
@@ -1639,7 +1761,13 @@ function AddItemModal({ open, onClose, onSubmit, onSubmitAndPrint, rowCount = 0,
         finalPrice: String(finalPriceValue),
         retailPrice: String(form.rspPrice || 0),
         uniqueBarcode: Boolean(form.uniqueBarcode) ? "Yes" : "No",
-        barcodeNo: distinctBarcode,
+        /* No barcode value here. The save route gives every new barcode its
+           value - SUPPLIER_CODE * GRC_NUMBER * SEQ * QTY, SEQ being the GRC's
+           own running number (lib/barcodeValue.js) - and the grid shows the
+           value it will get by the same rule. Built here too, the two could
+           differ, and a label printed from this copy would not scan as the
+           stored barcode. (grcHeader is not in scope here either.) */
+        barcodeNo: "",
         /* what the operator typed in row 2, falling back to the old behaviour
            (itemName) so a blank field still saves what it always did */
         supplierDescription: form.supplierDescription?.trim() || form.itemName,
@@ -1679,6 +1807,8 @@ function AddItemModal({ open, onClose, onSubmit, onSubmitAndPrint, rowCount = 0,
       itemCode: current.itemCode,
       hsnId: current.hsnId,
       hsn: current.hsn,
+      hsn2Id: current.hsn2Id,
+      hsn2: current.hsn2,
       gst: current.gst,
       goodsType: current.goodsType,
       sm: current.sm,
@@ -1816,18 +1946,19 @@ function AddItemModal({ open, onClose, onSubmit, onSubmitAndPrint, rowCount = 0,
             </div>
           </div>
 
-          {/* ROW 3: Serial No. | HSN | Unique Barcode | MTR.
+          {/* ROW 3: Serial No. | HSN (second, independent) | Unique Barcode | MTR.
 
-              The second Serial No. and the second HSN are the SAME two values
-              as row 2 and row 1 - both serial boxes read form.serialNo and
-              both HSN boxes read form.hsnId / hsnLabel, so there is one value
-              behind each pair and no way for them to disagree. Nothing here
-              generates a second serial: the pair is two windows onto one
-              number, and neither window is writable. */}
+              Serial No. here is a locked read-back of the value entered in row 2
+              — one value, two windows.
+
+              HSN here is the SECOND independent HSN field.  It starts with the
+              same value as the first HSN (Row 1) when an item or old barcode is
+              loaded, but the operator can search, select or clear it freely
+              without affecting the first HSN field, and vice-versa. */}
           <div className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-[90px_170px_230px_230px]">
             <SerialNoField value={form.serialNo} readOnlyClass={readOnlyClass} locked />
 
-            {renderHsnField()}
+            {renderHsn2Field()}
 
             <div className="flex items-end gap-0">
               <label className="flex w-fit cursor-pointer items-center justify-start gap-3 whitespace-nowrap rounded-md border border-[#dfe4eb] bg-white px-3 py-2 text-sm text-gray-700">
@@ -1854,6 +1985,30 @@ function AddItemModal({ open, onClose, onSubmit, onSubmitAndPrint, rowCount = 0,
               </label>
             </div>
           </div>
+
+          {/* What the two boxes above resolve to, by the same rule the label
+              printer uses (lib/barcodeLabelPrint.js) - so there is one answer
+              to "is this Unique, MTR or Batch" and the operator can see it.
+              MTR and Unique are not exclusive here: MTR + Unique is one barcode
+              per cut, MTR alone one barcode for the whole length, and either
+              way it is metres of cloth - MTR, 2 labels. Unique unticked on a
+              piece item is a BATCH barcode: one barcode for the whole
+              quantity, and Print asks how many labels. */}
+          {(() => {
+            const type = resolveLabelMode({
+              uom: form.isMtr ? "MTR" : "PC",
+              uniqueBarcode: form.uniqueBarcode ? "Yes" : "No",
+              mode: form.uniqueBarcode ? "unique" : "batch",
+            }).mode;
+            return (
+              <div className="mt-2 text-right text-xs text-gray-600">
+                Barcode type: <span className="font-bold text-gray-800">{type}</span>
+                {type === LABEL_MODE.METER ? " - 2 labels per barcode"
+                  : type === LABEL_MODE.UNIQUE ? " - 1 label per barcode"
+                    : " - one barcode for the whole quantity; you choose how many labels when printing"}
+              </div>
+            );
+          })()}
 
           <div className="mt-5">
             <div className="mb-4 text-center text-[15px] font-bold uppercase tracking-wide underline decoration-[1.5px] underline-offset-4">Price Calculation</div>
@@ -2068,111 +2223,29 @@ function AddItemModal({ open, onClose, onSubmit, onSubmitAndPrint, rowCount = 0,
 }
 
 /* ==========================================================================
-   From a Barcode Generation row to a label.
+   Labels.
 
-   BarcodeLabelSheet is the one label implementation in this system - it is
-   what the Inventory print screen puts on paper - and it reads a SAVED
-   barcode row (the shape lib/barcodeLabel.js stores). The rows on this
-   screen are the form's own shape, and the two disagree on four fields, so
-   handing them over unmapped printed a label with no quantity, no cost and,
-   on the Submit & Print path, nothing at all below the barcode:
+   Which barcode type a row is, what goes ON its label and how MANY labels it
+   gets are all decided in lib/barcodeLabelPrint.js, not here - the same
+   module GET /api/grc/[id] uses to stamp each row's barcodeType/labelCount -
+   so this screen's preview, its print run and the GRC Barcode Print page
+   cannot drift apart:
 
-     purRate / finalNet   the form calls these purchaseRate / finalPrice
-     batchType            the form calls it mode, or uniqueBarcode "Yes"/"No"
-     qtyNum               the form keeps qty as a string
-     supplierName, grcNo  belong to the GRC header, never to a row
+     resolveLabelMode     UNIQUE / MTR / BATCH, from the uomType / batchType
+                          the save route stores (or, for a row not saved yet,
+                          what it WILL store)
+     getLabelPrintCount   UNIQUE 1 / MTR 2 / BATCH as the operator enters
+     toLabelData          the whitelisted label content, read by
+                          BarcodeLabelSheet
 
-   Mapping here rather than changing either side keeps the saved data format
-   and the label component exactly as they are.
+   Two helpers that lived here went with that. toLabelRow copied the GRC
+   header's supplier name and GRC number, and the bill serial, onto every row
+   so the sticker could print "supplier · GRC · Sl n"; a label no longer
+   receives any of it. defaultCopies seeded a count the operator could then
+   type over - a metre barcode could go out as five stickers, a unique one
+   as fifty, and a batch defaulted to its entire quantity. Counts now follow
+   the rule, and a batch asks.
    ========================================================================== */
-function toLabelRow(row, copies, header) {
-  /* Four fields answer "is this one barcode for one piece, or for the lot?",
-     and they are consulted in order of how much they can be trusted:
-
-       batchType / batchUnique   written by the save route - authoritative
-       uniqueBarcode             the control the operator actually ticked
-       mode                      derived, and last because emptyRow() seeds it
-                                 "unique" while seeding uniqueBarcode "No" -
-                                 reading it first stamps every imported batch
-                                 row as unique
-
-     Getting this backwards is not cosmetic. A batch row read as unique loses
-     the quantity line - the one thing that distinguishes a 5-metre label from
-     a 1-metre one - and a unique row read as batch prints a quantity that
-     overstates what is on the hanger. */
-  const declared = String(row.batchType || row.batchUnique || '').toLowerCase();
-  const ticked = String(row.uniqueBarcode || '').toLowerCase();
-  const isBatch = declared
-    ? declared === 'batch'
-    : ticked
-      ? ticked !== 'yes'
-      : String(row.mode || '').toLowerCase() === 'batch';
-
-  return {
-    ...row,
-    copies,
-    /* every price the label may show, under the name the label looks for */
-    purRate: row.purRate || row.purchaseRate || '',
-    finalNet: row.finalNet || row.finalPrice || '',
-    retailPrice: row.retailPrice || row.rsp || '',
-    batchType: isBatch ? 'batch' : 'unique',
-    qtyNum: Number(row.qtyNum ?? row.qty ?? 0) || 0,
-    serialNo: row.serialNo || row.billSlNo || '',
-    supplierName: row.supplierName || header.supplierName || '',
-    grcNo: row.grcNo || row.grcNumber || header.grcNumber || '',
-  };
-}
-
-/* How many stickers a row starts out asking for.
-
-   Business rules (per master prompt requirements):
-     UNIQUE BARCODE → 1 label (one physical label per unique barcode)
-     MTR/METER      → 2 labels (two physical labels for meter-based items)
-     BATCH          → quantity-based (follows original behavior)
-
-   A sticker count is a WHOLE number of pieces of paper, and it is not the
-   same thing as a quantity:
-
-     PC   the quantity is a count of pieces, so one sticker each is the
-          sensible opening offer - which is what this screen has always done
-     MTR  the quantity is a length. A 12.65-metre cut is one cut and wants
-          labels for handling; metre items get 2 labels by business rule
-     BATCH the whole batch shares one barcode, quantity determines label count
-
-   The fractional case was not merely untidy. The readiness check compares
-   the number of labels asked for against the number actually drawn, and the
-   sheet floors its copy count - so 12.65 could never equal 12, and Print
-   would have been refused outright on every metre-based GRC. */
-function defaultCopies(row) {
-  /* Determine barcode type from the row data.
-     Priority: batchType > batchUnique > uniqueBarcode > mode
-     This matches the priority in toLabelRow() function above. */
-  const declared = String(row.batchType || row.batchUnique || '').toLowerCase();
-  const ticked = String(row.uniqueBarcode || '').toLowerCase();
-  const isUnique = declared
-    ? declared === 'unique'
-    : ticked
-      ? ticked === 'yes'
-      : String(row.mode || '').toLowerCase() === 'unique';
-
-  /* BUSINESS RULE 1: UNIQUE BARCODE → exactly 1 label
-     One barcode = one physical label, regardless of UOM */
-  if (isUnique) {
-    return 1;
-  }
-
-  /* BUSINESS RULE 2: MTR/METER → exactly 2 labels
-     Metre-based items get 2 physical labels for handling */
-  const metres = /mtr|met/i.test(String(row.uom || row.uomType || ''));
-  if (metres) {
-    return 2;
-  }
-
-  /* BUSINESS RULE 3: BATCH → quantity-based labels
-     Batch mode uses quantity to determine label count (original behavior) */
-  const qty = Math.floor(Number(row.qty) || 0);
-  return qty > 0 ? qty : 1;
-}
 
 /* The physical page for a run on sticker stock: the catalog's sheet size,
    widened if the labels on it do not actually fit.
@@ -2197,10 +2270,15 @@ function stockPageCss(format, labelW, labelH, perRow, gapMm) {
   return Math.max(sheetW, needW) + 'mm ' + Math.max(sheetH, labelH) + 'mm';
 }
 
-function PrintLabelPicker({ rows, open, onClose, header = {} }) {
+function PrintLabelPicker({ rows, open, onClose }) {
   const scope = useScope();
   const [selected, setSelected] = useState([]);
-  const [copies, setCopies] = useState({});
+  /* The operator's answer for each BATCH barcode, keyed by barcode number.
+     UNIQUE and MTR barcodes never get an entry: their count is the rule
+     (lib/barcodeLabelPrint.js), not something to type. */
+  const [batchCounts, setBatchCounts] = useState({});
+  /* the open "Print Batch Labels" dialog - { key, continueToPrint } */
+  const [batchPrompt, setBatchPrompt] = useState(null);
 
   /* label geometry - the sticker stock this tenant actually buys */
   const [formats, setFormats] = useState([]);
@@ -2213,25 +2291,31 @@ function PrintLabelPicker({ rows, open, onClose, header = {} }) {
   const printRootRef = useRef(null);
   /* how many labels this particular run was asked for - frozen at the click */
   const wantedRef = useRef(0);
+  /* Taken synchronously the moment a run is asked for and released when it
+     ends, so a double click, a double confirm in the batch dialog or a
+     re-render cannot start a second run - and a second print dialog - for
+     one action. `printing` alone cannot do it: state set in a click is not
+     visible to a second click that lands before the re-render. */
+  const printLockRef = useRef(false);
 
   /* Seeded when the picker OPENS, and not again while it is open.
 
      `rows` is a fresh array on every parent render, and saving calls
      router.refresh() - so keying this on rows meant a refresh landing behind
      the open picker silently threw away whatever the operator had ticked and
-     typed, and put the defaults back. */
+     typed, and put the defaults back.
+
+     Every barcode starts ticked. No batch count is assumed: a batch barcode
+     is asked about when it is printed, or when its Set quantity is pressed. */
   const wasOpen = useRef(false);
   useEffect(() => {
     if (!open) { wasOpen.current = false; return; }
     if (wasOpen.current) return;
     wasOpen.current = true;
 
-    const next = {};
-    rows.forEach((row) => {
-      if (row.barcodeNo) next[row.barcodeNo] = defaultCopies(row);
-    });
-    setCopies(next);
-    setSelected(Object.keys(next));
+    setSelected(rows.map(labelKey).filter(Boolean));
+    setBatchCounts({});
+    setBatchPrompt(null);
   }, [open, rows]);
 
   /* Label formats, loaded the same way the Inventory print screen loads them
@@ -2271,14 +2355,24 @@ function PrintLabelPicker({ rows, open, onClose, header = {} }) {
     [formats, formatName]
   );
 
-  const selectedRows = useMemo(
-    () => rows
-      .filter((row) => row.barcodeNo && selected.includes(row.barcodeNo))
-      /* floored here as well as on input: the sheet expands by a whole
-         number of copies, and the readiness check counts what the sheet
-         produced. If these two ever disagreed, Print would refuse forever. */
-      .map((row) => toLabelRow(row, Math.max(1, Math.floor(Number(copies[row.barcodeNo]) || 1)), header)),
-    [rows, selected, copies, header]
+  /* every row that has a barcode to print, and the ones currently ticked */
+  const printable = useMemo(() => rows.filter((row) => labelKey(row)), [rows]);
+  const chosen = useMemo(
+    () => printable.filter((row) => selected.includes(labelKey(row))),
+    [printable, selected]
+  );
+
+  /* The ticked barcodes, each carrying its sticker count as `copies` - from
+     getLabelPrintCount, through withLabelCounts. The preview AND the print
+     surface are both built from this one list, so the screen cannot show a
+     different number of labels from the number that is printed. A batch with
+     no count yet carries 0 and is simply not on the sheet. */
+  const selectedRows = useMemo(() => withLabelCounts(chosen, batchCounts), [chosen, batchCounts]);
+
+  /* the count shown against every barcode in the list, ticked or not */
+  const countByKey = useMemo(
+    () => Object.fromEntries(withLabelCounts(printable, batchCounts).map((row) => [labelKey(row), row.copies])),
+    [printable, batchCounts]
   );
 
   /* what the printer is being asked for, counted from the same list the sheet
@@ -2287,6 +2381,9 @@ function PrintLabelPicker({ rows, open, onClose, header = {} }) {
     () => selectedRows.reduce((total, row) => total + (row.copies || 0), 0),
     [selectedRows]
   );
+
+  /* ticked BATCH barcodes that have not been given a count yet */
+  const pendingBatch = useMemo(() => pendingBatchRows(chosen, batchCounts), [chosen, batchCounts]);
 
   /* Paper. A4 is the default because that is what a desktop printer and
      "Microsoft Print to PDF" are loaded with; the sticker-stock option sets
@@ -2412,17 +2509,62 @@ function PrintLabelPicker({ rows, open, onClose, header = {} }) {
     }
   }, [open]);
 
-  function runPrint() {
-    setPrintError('');
-    if (!expectedLabels) {
+  /* the run is over - printed, refused or abandoned - so the next click may
+     start one */
+  useEffect(() => {
+    if (!printing) printLockRef.current = false;
+  }, [printing]);
+
+  /* Starts ONE print run, sized from the counts passed in rather than from
+     state: the batch dialog's confirm records a count AND starts the run in
+     the same click, and a count set in that click cannot be read back from
+     state until the next render. The sheet is rendered from state, which by
+     then holds the same counts - so the readiness check still compares the
+     number asked for with the number drawn. */
+  function startPrint(counts) {
+    if (printLockRef.current) return;
+    const wanted = withLabelCounts(chosen, counts).reduce((total, row) => total + (row.copies || 0), 0);
+    if (!wanted) {
       setPrintError('Nothing is selected to print.');
       return;
     }
-    wantedRef.current = expectedLabels;
+    printLockRef.current = true;
+    setPrintError('');
+    wantedRef.current = wanted;
     setPrinting(true);
   }
 
+  /* Print. A ticked BATCH barcode with no count is asked about first - one
+     "Print Batch Labels" dialog per batch barcode, in list order - and the
+     last answer starts the run. UNIQUE and MTR are never asked about. */
+  function runPrint() {
+    if (printLockRef.current) return;
+    setPrintError('');
+    if (pendingBatch.length) {
+      setBatchPrompt({ key: labelKey(pendingBatch[0]), continueToPrint: true });
+      return;
+    }
+    startPrint(batchCounts);
+  }
+
+  /* The dialog only ever hands over a count validateBatchLabelCount accepted. */
+  function confirmBatchCount(value) {
+    if (!batchPrompt) return;
+    const next = { ...batchCounts, [batchPrompt.key]: value };
+    setBatchCounts(next);
+    if (!batchPrompt.continueToPrint) { setBatchPrompt(null); return; }
+    const remaining = pendingBatchRows(chosen, next);
+    if (remaining.length) {
+      setBatchPrompt({ key: labelKey(remaining[0]), continueToPrint: true });
+      return;
+    }
+    setBatchPrompt(null);
+    startPrint(next);
+  }
+
   if (!open) return null;
+
+  const promptRow = batchPrompt ? printable.find((row) => labelKey(row) === batchPrompt.key) || null : null;
 
   /* The box is capped to the viewport and scrolls INTERNALLY.
 
@@ -2442,6 +2584,15 @@ function PrintLabelPicker({ rows, open, onClose, header = {} }) {
        Ctrl+P instead of the Print button would otherwise send this dialog -
        checkboxes, copy counts and all - to the printer. */
     <div className="no-print fixed inset-0 z-[70] flex items-center justify-center bg-black/40 p-4">
+      <BatchLabelCountDialog
+        open={Boolean(batchPrompt)}
+        barcode={batchPrompt?.key || ''}
+        description={promptRow ? (promptRow.printDescription || promptRow.itemName || promptRow.supplierDescription || '') : ''}
+        available={batchAvailableQty(promptRow)}
+        initialValue={batchPrompt ? (batchCounts[batchPrompt.key] ?? '') : ''}
+        onCancel={() => setBatchPrompt(null)}
+        onConfirm={confirmBatchCount}
+      />
       <div className="flex max-h-[calc(100vh-2rem)] w-full max-w-[960px] flex-col rounded-lg bg-white shadow-xl">
         <div className="flex shrink-0 items-center justify-between border-b border-gray-200 px-4 py-3">
           <h3 className="text-lg font-semibold">Print Label Picker</h3>
@@ -2450,17 +2601,58 @@ function PrintLabelPicker({ rows, open, onClose, header = {} }) {
 
         <div className="grid flex-1 gap-4 overflow-y-auto p-4 md:grid-cols-2">
           <div>
-            {rows.filter((row) => row.barcodeNo).length === 0 && <div className="rounded border border-dashed border-gray-300 p-4 text-sm text-gray-500">No barcode generated yet.</div>}
-            {rows.filter((row) => row.barcodeNo).map((row, index) => (
-              <div key={row.barcodeNo || index} className="mb-3 flex items-center gap-3 rounded border border-gray-200 p-2">
-                <input type="checkbox" checked={selected.includes(row.barcodeNo)} onChange={() => setSelected((prev) => prev.includes(row.barcodeNo) ? prev.filter((item) => item !== row.barcodeNo) : [...prev, row.barcodeNo])} />
-                <div className="flex-1">
-                  <div className="font-medium">{row.itemName || row.supplierDescription || "Item"}</div>
-                  <div className="text-xs text-gray-600">{row.barcodeNo}</div>
+            {printable.length === 0 && <div className="rounded border border-dashed border-gray-300 p-4 text-sm text-gray-500">No barcode generated yet.</div>}
+            {printable.map((row, index) => {
+              const key = labelKey(row);
+              const { mode, assumed } = resolveLabelMode(row);
+              const count = countByKey[key] || 0;
+              return (
+                <div key={key || index} className="mb-3 flex items-center gap-3 rounded border border-gray-200 p-2">
+                  <input type="checkbox" checked={selected.includes(key)} onChange={() => setSelected((prev) => prev.includes(key) ? prev.filter((item) => item !== key) : [...prev, key])} />
+                  <div className="min-w-0 flex-1">
+                    <div className="font-medium">{row.itemName || row.supplierDescription || "Item"}</div>
+                    <div className="text-xs text-gray-600">{key}</div>
+                  </div>
+                  {/* The count is the rule's, not an input: an MTR barcode
+                      is always two stickers and a unique one always one. Only
+                      a batch is the operator's to decide, through the same
+                      dialog Print opens. */}
+                  <div className="shrink-0 text-right text-xs">
+                    <div className="font-semibold text-gray-700">
+                      {mode === LABEL_MODE.METER ? 'Meter' : mode === LABEL_MODE.BATCH ? 'Batch' : 'Unique'}
+                    </div>
+                    {mode === LABEL_MODE.BATCH && isUnprintableBatch(row) ? (
+                      /* No whole quantity recorded, so no count can ever be
+                         valid. Print does not ask about it (pendingBatchRows
+                         leaves it out) - asking would only block every other
+                         label - so it says here why it prints nothing. */
+                      <div className="text-red-700">No quantity recorded - cannot print</div>
+                    ) : mode === LABEL_MODE.BATCH ? (
+                      <>
+                        <div className={count ? 'text-gray-600' : 'text-amber-700'}>
+                          {count ? count + ' label' + (count === 1 ? '' : 's') : 'Quantity not set'}
+                        </div>
+                        <button
+                          type="button"
+                          disabled={printing}
+                          onClick={() => setBatchPrompt({ key, continueToPrint: false })}
+                          className="mt-1 rounded border border-gray-300 bg-white px-2 py-0.5 text-xs text-gray-700 hover:bg-gray-50 disabled:opacity-60"
+                        >
+                          {count ? 'Change' : 'Set quantity'}
+                        </button>
+                      </>
+                    ) : (
+                      <div className="text-gray-600">{count} label{count === 1 ? '' : 's'}</div>
+                    )}
+                    {assumed && (
+                      <div className="text-amber-700" title="No Unique / Batch type is recorded for this barcode, so it prints as one label.">
+                        Type not recorded
+                      </div>
+                    )}
+                  </div>
                 </div>
-                <input type="number" min={1} step={1} value={copies[row.barcodeNo] || 1} onWheel={(e) => e.currentTarget.blur()} onChange={(e) => setCopies((prev) => ({ ...prev, [row.barcodeNo]: Math.max(1, Math.floor(Number(e.target.value) || 1)) }))} className="w-[90px] rounded border border-gray-300 px-2 py-1 text-sm" />
-              </div>
-            ))}
+              );
+            })}
           </div>
 
           {/* The preview is the SAME component, with the SAME rows and the
@@ -2478,12 +2670,31 @@ function PrintLabelPicker({ rows, open, onClose, header = {} }) {
                 {format?.labelSize ? ' · ' + format.labelSize : ''}
               </span>
             </div>
-            {selectedRows.length === 0 ? (
+            {chosen.length === 0 ? (
               <div className="rounded border border-dashed border-gray-300 bg-white p-8 text-center text-sm text-gray-500">Select a barcode to preview.</div>
-            ) : (
-              <div className="overflow-auto rounded border border-gray-300 bg-white p-2">
-                <BarcodeLabelSheet rows={selectedRows} format={format} gap={gap} />
+            ) : expectedLabels === 0 ? (
+              <div className="rounded border border-dashed border-gray-300 bg-white p-8 text-center text-sm text-gray-500">
+                {pendingBatch.length
+                  ? 'Set the number of labels for the batch barcode' + (pendingBatch.length === 1 ? '' : 's')
+                    + ' to preview ' + (pendingBatch.length === 1 ? 'it' : 'them') + ' - Print will ask.'
+                  : 'Nothing to print.'}
               </div>
+            ) : (
+              <>
+                {/* A batch is never previewed at a quantity nobody chose, so
+                    say what is missing rather than show a short sheet
+                    silently. */}
+                {pendingBatch.length > 0 && (
+                  <div className="mb-2 rounded border border-amber-200 bg-amber-50 px-2 py-1 text-xs text-amber-900">
+                    {pendingBatch.length} batch barcode{pendingBatch.length === 1 ? ' is' : 's are'} not in the preview yet - Print will ask how many labels.
+                  </div>
+                )}
+                <div className="overflow-auto rounded border border-gray-300 bg-white p-2">
+                  {/* GrcBarcodeLabelSheet is the same component the
+                      barcode-print page renders, so Preview = Print exactly. */}
+                  <GrcBarcodeLabelSheet rows={selectedRows} />
+                </div>
+              </>
             )}
           </div>
         </div>
@@ -2519,7 +2730,12 @@ function PrintLabelPicker({ rows, open, onClose, header = {} }) {
             </select>
           </label>
 
-          <button type="button" disabled={printing} onClick={runPrint} className="rounded-lg border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-700 disabled:opacity-60">{printing ? 'Preparing...' : 'Print'}</button>
+          {/* event.detail > 1 is the second click of a double click. The lock
+              cannot stop it on its own: the real window.print() blocks while
+              the print dialog is open, the lock is released when it returns,
+              and a second click queued behind the dialog would then open it
+              again. A single click is detail 1 and the keyboard detail 0. */}
+          <button type="button" disabled={printing} onClick={(event) => { if (event.detail > 1) return; runPrint(); }} className="rounded-lg border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-700 disabled:opacity-60">{printing ? 'Preparing...' : 'Print'}</button>
           <button type="button" onClick={onClose} className="rounded-lg border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-700">Close</button>
         </div>
       </div>
@@ -2540,7 +2756,9 @@ function PrintLabelPicker({ rows, open, onClose, header = {} }) {
       {printing && typeof document !== 'undefined' && createPortal(
         <div id="barcode-print-root" ref={printRootRef}>
           <style>{pageRule}</style>
-          <BarcodeLabelSheet rows={selectedRows} format={format} gap={gap} />
+          {/* GrcBarcodeLabelSheet matches the print page exactly — same
+              component, same 2-column grid, same Label, same data contract. */}
+          <GrcBarcodeLabelSheet rows={selectedRows} />
         </div>,
         document.body
       )}
@@ -2562,53 +2780,46 @@ export default function GCRBarcodeGeneration({ grcId = null, initialRows = [], s
   const [importMessage, setImportMessage] = useState("");
   /* why the last save was refused, in the server's own words */
   const [saveError, setSaveError] = useState("");
+  /* Set the moment a save starts - `saving` only lands on the next render, so
+     a second click before then would send the same rows again. */
+  const savingRef = useRef(false);
+  /* The GRC the rows were saved to. On the standalone screen (no grcId) the
+     first Submit creates it; every later Submit must update that GRC rather
+     than raise another one carrying the same barcode numbers. */
+  const [savedGrcId, setSavedGrcId] = useState(null);
+  /* Saved rows the operator removed from the grid, as { row, index }. They
+     leave the database only when Submit is pressed - sent as explicit ids,
+     never inferred from what the save leaves out - and Undo puts them back
+     until then. */
+  const [pendingDeletes, setPendingDeletes] = useState([]);
+  /* asks the ITEMS sheet to put its cursor on a cell: a refused Submit
+     points at the first cell to fix */
+  const [sheetFocus, setSheetFocus] = useState(null);
+  const sheetRowSeq = useRef(0);
+  /* the rows as last rendered, for the next serial of a new sheet row */
+  const sheetRowsRef = useRef([]);
+  sheetRowsRef.current = rows;
   const importInputRef = useRef(null);
   const [barcodeFormat, setBarcodeFormat] = useState({ prefix: "", suffix: "", startNumber: 1, numberLenght: 4 });
   /* sequenceRef was the browser-held running number. It is kept only so the
      Barcode Setting's Start From can still be shown as a preview on the
-     settings card; NOTHING is numbered from it any more - see
-     reserveBarcodeNumbers below. */
+     settings card; NOTHING is numbered from it any more - the save route
+     gives every barcode its value (lib/barcodeValue.js). */
   const sequenceRef = useRef(1);
 
   useEffect(() => {
+    /* a fresh read from the database: any deletion that was pending has
+       been saved, or the page was reopened and it no longer applies */
+    setPendingDeletes([]);
     if (!Array.isArray(initialRows) || initialRows.length === 0) {
       setRows([]);
       return;
     }
 
-    const normalized = initialRows.map((row, index) => ({
-      ...row,
-      id: row._id || row.id || `${row.itemCode || row.itemName || 'saved-row'}-${index}`,
-      itemCode: row.itemCode || '',
-      itemName: row.itemName || row.supplierDescription || row.printDescription || '',
-      sm: row.sm || (row.goodsType === 'SM' ? 'SM' : ''),
-      p_m_f: row.p_m_f || (row.goodsType === 'P-M-F' ? 'P-M-F' : ''),
-      hsn: row.hsn || '',
-      gst: row.gst || '',
-      qty: row.qty || '',
-      noOfCuts: row.noOfCuts || '',
-      purchaseRate: row.purchaseRate || row.purRate || '',
-      /* carried through on reload so re-saving an existing GRC does not blank
-         the encoded value that was generated with it */
-      encodedPurchaseRate: row.encodedPurchaseRate || row.encodedPurRate || '',
-      finalPrice: row.finalPrice || row.finalNet || '',
-      retailPrice: row.retailPrice || row.rsp || '',
-      offerPrice: row.offerPrice || '',
-      uniqueBarcode: row.uniqueBarcode || (row.batchUnique === 'unique' ? 'Yes' : 'No') || 'No',
-      uom: row.uom || '',
-      barcodeNo: row.barcodeGenerated || row.barcodeNo || '',
-      supplierDescription: row.supplierDescription || row.itemName || '',
-      printDescription: row.printDescription || '',
-      mode: row.mode || row.batchUnique || '',
-      groupId: row.groupId || null,
-      groupSize: row.groupSize || 1,
-      billSlNo: row.billSlNo || '',
-      rsp: row.rsp || row.retailPrice || '',
-      wsp: row.wspPrice || row.wsp || '',
-      dp: row.dpPrice || row.dp || '',
-      customFields: row.customFields && typeof row.customFields === 'object' ? row.customFields : {},
-    }));
-    setRows(normalized);
+    /* toGridRow (lib/barcodeRowSync.js) is shared with the save route, which
+       uses it to tell a row the operator edited from one left untouched. Each
+       row keeps its database _id - that is how the save finds it again. */
+    setRows(initialRows.map(toGridRow));
   }, [initialRows]);
 
   /* The active Purchase Rate Code Master for this scope. Loaded once here and
@@ -2713,37 +2924,6 @@ export default function GCRBarcodeGeneration({ grcId = null, initialRows = [], s
     setRows((current) => [...current, ...items]);
   }
 
-  /* Reserves `count` real barcode numbers from the server.
-
-     The server applies the PC/MTR x batch/unique rule itself and hands back
-     one number per label it decides is needed, so the browser cannot get the
-     count wrong either. Throws with the server's own message - an invalid
-     quantity ("a unique piece quantity must be a whole number") is worth
-     showing verbatim. */
-  async function reserveBarcodeNumbers(countOrPlan) {
-    const plan = typeof countOrPlan === "number"
-      ? { uom: "PC", batchType: "unique", qty: countOrPlan }
-      : countOrPlan;
-
-    const response = await fetch("/api/barcode-generation/reserve", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        uom: plan.uom,
-        batchType: plan.batchType,
-        qty: plan.qty,
-        cuts: plan.cuts || [],
-        business: scope.business,
-        finYear: scope.finYear,
-      }),
-    });
-    const data = await response.json().catch(() => ({}));
-    if (!response.ok) {
-      throw new Error(data.error || "Could not reserve barcode numbers. Check the Barcode Settings for this business.");
-    }
-    return (data.rows || []).map((r) => r.barcodeNo);
-  }
-
   function exportRowsToExcel() {
     const headers = [...Object.values(exportFieldLabels), ...additionalFields];
     const fields = Object.keys(exportFieldLabels);
@@ -2828,6 +3008,15 @@ export default function GCRBarcodeGeneration({ grcId = null, initialRows = [], s
           problems.push(`${where}: a unique piece quantity must be a whole number (got ${qty})`);
         }
 
+        /* Purchase price, checked here - BEFORE the new rows are numbered
+           below. The save refuses a price that is not greater than 0 anyway
+           (lib/purchasePrice.js), so a file carrying one used to reserve real
+           barcode numbers that the save then threw away. */
+        const priceProblem = purchasePriceError(
+          String(row.purchaseRate ?? "").trim() !== "" ? row.purchaseRate : row.purRate
+        );
+        if (priceProblem) problems.push(`${where}: ${priceProblem}`);
+
         numericKeys.forEach((key) => {
           const value = changes[key];
           if (value !== undefined && String(value).trim() !== "" && !Number.isFinite(Number(value))) {
@@ -2846,20 +3035,15 @@ export default function GCRBarcodeGeneration({ grcId = null, initialRows = [], s
         );
       }
 
-      /* ---- number the NEW rows: reserve exactly that many from the server
-         in one call. Imported rows are numbered the same way scanned ones
-         are - never from a browser-held counter. */
-      const needing = planned.filter((p) => !p.existing?.barcodeNo && !p.importedRow.barcodeNo).length;
-      const issued = needing ? await reserveBarcodeNumbers(needing) : [];
-      let nextNumber = 0;
-
+      /* ---- NEW rows get no number here: the save route gives each its
+         barcode value (SUPPLIER_CODE * GRC_NUMBER * SEQ * QTY) on Submit. */
       const updatedById = new Map();
       const addedRows = [];
       const notes = { offerKept: [], offerStarted: [], finalKept: [] };
       planned.forEach(({ changes, original, index, existing }) => {
         if (original && Object.keys(changes).length === 1) return;   // exported and left untouched
         const id = existing?.id || `import-${Date.now()}-${index}`;
-        const barcodeNo = existing?.barcodeNo || changes.barcodeNo || issued[nextNumber++];
+        const barcodeNo = existing?.barcodeNo || changes.barcodeNo || "";
         const rowNotes = [];
         const merged = mergeImportedRow(existing, changes, {
           id, barcodeNo, rateCodeMapping, original, onNote: (kind) => rowNotes.push(kind),
@@ -2867,7 +3051,7 @@ export default function GCRBarcodeGeneration({ grcId = null, initialRows = [], s
         /* a sheet imported again after its changes were applied changes
            nothing more - not counted as an update, not reported twice */
         if (existing && !rowDiffers(merged, existing)) return;
-        rowNotes.forEach((kind) => notes[kind].push(barcodeNo));
+        rowNotes.forEach((kind) => notes[kind].push(barcodeNo || merged.itemCode || `row ${index + 2}`));
         if (existing) updatedById.set(existing.id, { ...merged, _importStatus: 'CHANGED' });
         else addedRows.push({ ...merged, _importStatus: 'NEW' });
       });
@@ -2905,29 +3089,63 @@ export default function GCRBarcodeGeneration({ grcId = null, initialRows = [], s
   }
 
   async function saveRows(rowsToSave = validRows, printAfterSave = false) {
+    /* one save at a time - see savingRef */
+    if (savingRef.current) return false;
+    savingRef.current = true;
     setSaving(true);
     setSaveError("");
-    /* Strip the UI-only _importStatus field before sending to the API */
-    rowsToSave = rowsToSave.map(({ _importStatus, ...rest }) => rest);
+    /* Strip the UI-only fields before sending to the API, and leave out the
+       empty rows the ITEMS sheet keeps for typing into */
+    rowsToSave = rowsToSave.filter((row) => !isBlankRow(row)).map(({ _importStatus, _edited, ...rest }) => rest);
+    /* saved rows removed on the grid - deleted by this Submit, by id */
+    const deleteIds = pendingDeletes.map((entry) => entry.row._id).filter(Boolean);
     try {
-      /* Validate purchase rate before submission - must be greater than zero.
-         This provides immediate feedback before the API round-trip. */
-      const priceErrors = [];
-      rowsToSave.forEach((row, index) => {
-        const rate = parseFloat(row.purchaseRate || row.purRate || 0);
-        if (!Number.isFinite(rate) || rate <= 0) {
-          const itemRef = row.itemCode || row.itemName || `Row ${index + 1}`;
-          priceErrors.push(itemRef);
-        }
-      });
-
-      if (priceErrors.length > 0) {
-        const shown = priceErrors.slice(0, 3).join(', ');
-        const msg = `Purchase rate must be greater than 0 for: ${shown}${priceErrors.length > 3 ? ` and ${priceErrors.length - 3} more` : ''}`;
-        setSaveError(msg);
+      /* The ITEMS sheet's own rules (lib/itemsSheet.js), over every row that
+         is new or was edited, before anything is sent. A refusal names the
+         cells and puts the sheet's cursor on the first of them. */
+      const problems = sheetProblems(rows, sheetColumns(additionalFields));
+      if (problems.length > 0) {
+        setShowSaveConfirm(false);
+        setActiveTab("items");
+        setSheetFocus({ rowId: problems[0].rowId, key: problems[0].key, at: Date.now() });
+        setSaveError(
+          `Fix ${problems.length} cell${problems.length === 1 ? "" : "s"} in the ITEMS table before submitting: ` +
+          problems.slice(0, 3).map((p) => `Row ${p.index + 1} ${p.label}: ${p.message}`).join(" · ") +
+          (problems.length > 3 ? ` · and ${problems.length - 3} more` : "")
+        );
+        return false;
+      }
+      if (rowsToSave.length === 0 && deleteIds.length === 0) {
+        setShowSaveConfirm(false);
+        setSaveError("There is nothing to save.");
         return false;
       }
 
+      /* Purchase price, before anything is sent - the same rule the Add Item
+         form, the Excel import and the API apply (lib/purchasePrice.js). The
+         offending lines are named so they can be found in the grid. */
+      const priceErrors = [];
+      rowsToSave.forEach((row, index) => {
+        const problem = purchasePriceError(
+          String(row.purchaseRate ?? '').trim() !== '' ? row.purchaseRate : row.purRate
+        );
+        if (problem) priceErrors.push({ ref: row.itemCode || row.itemName || `Row ${index + 1}`, problem });
+      });
+
+      if (priceErrors.length > 0) {
+        const shown = priceErrors.slice(0, 3).map((p) => p.ref).join(', ');
+        const more = priceErrors.length > 3 ? ` and ${priceErrors.length - 3} more` : '';
+        /* the confirm dialog sits over the banner - as on the API-error path
+           below, it has to go or the operator never sees why */
+        setShowSaveConfirm(false);
+        setSaveError(`${priceErrors[0].problem} Check: ${shown}${more}`);
+        return false;
+      }
+
+      /* Rows added on the sheet need no number from the browser: the save
+         route composes each barcode number, and every row carries its own id,
+         so a Submit pressed twice is matched by that id (clientRowId) rather
+         than inserted again. */
       const saveTotals = rowsToSave.reduce((result, row) => {
         const qty = Number(row.qty || 0);
         const beforeTax = Number(row.finalPrice || 0) * qty;
@@ -2941,7 +3159,8 @@ export default function GCRBarcodeGeneration({ grcId = null, initialRows = [], s
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           rows: rowsToSave,
-          grcId: grcId || null,
+          grcId: grcId || savedGrcId || null,
+          deleteIds,
           business: scope.business,
           location: scope.location,
           finYear: scope.finYear,
@@ -2969,12 +3188,41 @@ export default function GCRBarcodeGeneration({ grcId = null, initialRows = [], s
         return false;
       }
       setShowSaveConfirm(false);
-      if (printAfterSave) setShowPrint(true);
+      const saved = await response.json().catch(() => ({}));
+      /* The barcode values are the server's - SEQ is given there - so every
+         row takes back what was stored: its _id, value and SEQ. A print
+         straight after the save prints exactly those, and never a row the
+         save did not store. */
+      const storedById = new Map((saved.rows || []).map((s) => [String(s._id), s]));
+      const storedByClientId = new Map((saved.createdRows || []).map((s) => [String(s.id), s]));
+      const asStored = (row) => {
+        const s = (row._id && storedById.get(String(row._id))) || storedByClientId.get(String(row.id));
+        return s ? { ...row, _id: s._id, barcodeNo: s.barcodeNo, barcodeGenerated: s.barcodeNo, seq: s.seq } : row;
+      };
+      if (printAfterSave) {
+        setPrintRows(rowsToSave.map(asStored).filter((row) => row._id && row.barcodeNo));
+        setShowPrint(true);
+      }
       router.refresh?.();
       /* re-read from the database, so the grid shows what was saved.
          Also clear _importStatus on saved rows so highlights disappear. */
-      setRows((list) => list.map((r) => r._importStatus ? { ...r, _importStatus: undefined } : r));
-      onSaved?.();
+      setRows((list) => list.map((r) => {
+        const next = asStored(r);
+        return (next._importStatus || next._edited) ? { ...next, _importStatus: undefined, _edited: undefined } : next;
+      }));
+      setPendingDeletes([]);
+      if (onSaved) {
+        onSaved();
+      } else if (saved.grcId) {
+        /* The standalone screen has no page to re-read for it: remember the
+           GRC the first Submit created, and take the rows back with their
+           database ids, so the next Submit updates what is already saved. */
+        setSavedGrcId(saved.grcId);
+        fetch(`/api/grc/${saved.grcId}`, { cache: "no-store" })
+          .then((result) => result.json())
+          .then((result) => { if (Array.isArray(result.rows)) setRows(result.rows.map(toGridRow)); })
+          .catch(() => {});
+      }
       return true;
     } catch (error) {
       console.error(error);
@@ -2984,9 +3232,83 @@ export default function GCRBarcodeGeneration({ grcId = null, initialRows = [], s
       setSaveError(error.message || "Save failed");
       return false;
     } finally {
+      savingRef.current = false;
       setSaving(false);
     }
   }
+
+  /* Removing a row - from the ITEMS sheet or the Item With Barcode tab. A row
+     that was never saved lives only in this screen and simply goes. A saved
+     one leaves the grid now but the database only when Submit is pressed:
+     its id is sent as an explicit deletion (a save never infers one from a
+     missing row), the server refuses a unit that has already moved, and
+     until then Undo puts it back where it was. */
+  function removeRow(row) {
+    if (isLockedRow(row)) return;
+    const index = rows.findIndex((item) => item.id === row.id);
+    if (index < 0) return;
+    setRows((list) => list.filter((item) => item.id !== row.id));
+    if (row._id) setPendingDeletes((list) => [...list, { row, index }]);
+  }
+
+  function undoDeletes() {
+    const restore = [...pendingDeletes].sort((a, b) => a.index - b.index);
+    setRows((list) => {
+      const next = list.slice();
+      restore.forEach(({ row, index }) => next.splice(Math.min(index, next.length), 0, row));
+      return next;
+    });
+    setPendingDeletes([]);
+  }
+
+  /* A new row on the ITEMS sheet. The grid has no column for how the unit is
+     counted or discounted, so those follow the row above
+     (SHEET_INHERITED_FIELDS); everything the operator types starts empty.
+     It takes the next bill serial, as Add Item does - the seq in its barcode
+     identifier - after the highest on the grid and the row above (a paste
+     makes several rows before the grid re-renders). No barcode number: the
+     save route composes it. */
+  const createSheetRow = useCallback((template) => {
+    const row = emptyRow(`sheet-${Date.now()}-${sheetRowSeq.current++}`);
+    if (template) {
+      SHEET_INHERITED_FIELDS.forEach((key) => {
+        if (template[key] !== undefined && template[key] !== null) row[key] = template[key];
+      });
+    }
+    const serialOf = (value) => (/^\d+$/.test(String(value ?? "").trim()) ? Number(value) : 0);
+    const highest = sheetRowsRef.current.reduce((max, item) => Math.max(max, serialOf(item.billSlNo)), serialOf(template?.billSlNo));
+    row.billSlNo = String(highest + 1);
+    return row;
+  }, []);
+
+  /* THE barcode value of every row, as this screen shows it - the ITEMS
+     sheet's Barcode Identifier column and the Item With Barcode tab:
+
+       SUPPLIER_CODE * GRC_NUMBER * SEQ * QTY  (lib/barcodeValue.js)
+
+     - a saved row: its SEQ with its quantity as the grid now holds it - the
+       stored value, or the value the save will give it for an edited quantity
+     - a row not saved yet: the SEQ the save route will give it - the next
+       after every barcode on the GRC, in grid order, counted the same way
+     - a row saved before values were composed: its number as printed
+     The save route stores the value by the same function and printing reads
+     only stored values, so the text and the bars cannot disagree. */
+  const provisionalSeq = useMemo(() => {
+    const saved = rows.filter((row) => row._id).concat(pendingDeletes.map((entry) => entry.row));
+    let next = nextSeqStart(saved, grcHeader.lastBarcodeSeq);
+    const map = new Map();
+    rows.forEach((row) => {
+      if (!row._id && String(row.itemCode || row.itemName || "").trim()) map.set(row.id, next++);
+    });
+    return map;
+  }, [rows, pendingDeletes, grcHeader.lastBarcodeSeq]);
+
+  const barcodeValueOf = useCallback((row) => {
+    const parts = { supplierCode: grcHeader.supplierCode, grcNumber: grcHeader.grcNumber };
+    if (row._id && !hasComposedBarcode(row, parts)) return row.barcodeNo || row.barcodeGenerated || "";
+    const seq = row._id ? row.seq : provisionalSeq.get(row.id);
+    return composeBarcodeValue({ ...parts, seq, qty: row.qty });
+  }, [provisionalSeq, grcHeader.grcNumber, grcHeader.supplierCode]);
 
   return (
     <div className="min-h-screen bg-gray-100 px-2 py-4 md:py-6">
@@ -2999,9 +3321,8 @@ export default function GCRBarcodeGeneration({ grcId = null, initialRows = [], s
 
       <AddItemModal
         open={showAddItem}
-        rowCount={rows.length}
+        rowCount={validRows.length}
         barcodeFormat={barcodeFormat}
-        reserveNumbers={reserveBarcodeNumbers}
         /* scopes the Old Barcode lookup to the selected company, so a code
            belonging to another business reports that rather than "not found" */
         business={scope.business}
@@ -3040,7 +3361,7 @@ export default function GCRBarcodeGeneration({ grcId = null, initialRows = [], s
                 and pressing Submit & Print Label. Re-opening a GRC to reprint
                 a damaged sticker - the ordinary reason to come back to this
                 screen - meant generating a barcode nobody wanted. */}
-            <button type="button" onClick={() => { setPrintRows([]); setShowPrint(true); }} disabled={validRows.filter((row) => row.barcodeNo).length === 0} className="flex items-center gap-1 rounded border border-gray-300 bg-white px-2 py-1 text-xs text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50" title="Print labels for the barcodes on this GRC">
+            <button type="button" onClick={() => { setPrintRows([]); setShowPrint(true); }} disabled={validRows.filter((row) => row._id && row.barcodeNo).length === 0} className="flex items-center gap-1 rounded border border-gray-300 bg-white px-2 py-1 text-xs text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50" title="Print labels for the barcodes on this GRC">
               <Icon name="printer" size={14} /> Print Labels
             </button>
             <span className="rounded border border-gray-300 bg-gray-50 px-2 py-1">Pc(s) {totals.pcs}</span>
@@ -3104,48 +3425,17 @@ export default function GCRBarcodeGeneration({ grcId = null, initialRows = [], s
 
         <div className="overflow-auto">
           {activeTab === "items" && (
-            <table className="min-w-[1200px] w-full border-collapse text-xs">
-              <thead>
-                <tr className="bg-gray-100 text-left text-gray-700">
-                  <th className="border border-gray-300 px-2 py-2">Sl No</th>
-                  <th className="border border-gray-300 px-2 py-2">Item Code</th>
-                  <th className="border border-gray-300 px-2 py-2">Item</th>
-                  <th className="border border-gray-300 px-2 py-2">HSN</th>
-                  <th className="border border-gray-300 px-2 py-2">GST%</th>
-                  <th className="border border-gray-300 px-2 py-2">QTY/MTR</th>
-                  <th className="border border-gray-300 px-2 py-2">No. of Cut</th>
-                  <th className="border border-gray-300 px-2 py-2">Rate</th>
-                  <th className="border border-gray-300 px-2 py-2">GST Amount</th>
-                  {additionalFields.map((field) => <th key={field} className="border border-gray-300 px-2 py-2">{field}</th>)}
-                </tr>
-              </thead>
-              <tbody>
-                {validRows.length === 0 ? (
-                  <tr><td colSpan={9 + additionalFields.length} className="px-3 py-8 text-center text-gray-500">No data found</td></tr>
-                ) : validRows.map((row, index) => (
-                  <tr key={row.id || index} className={
-                    row._importStatus === 'CHANGED' ? "bg-red-50 border-l-4 border-l-red-500" :
-                    row._importStatus === 'NEW'     ? "bg-green-50 border-l-4 border-l-green-500" :
-                    "odd:bg-white even:bg-gray-50"
-                  }>
-                    <td className="border border-gray-300 px-2 py-2">{index + 1}</td>
-                    <td className="border border-gray-300 px-2 py-2">{row.itemCode || "-"}</td>
-                    <td className="border border-gray-300 px-2 py-2">
-                      {row.itemName || row.supplierDescription || "-"}
-                      {row._importStatus === 'CHANGED' && <span className="ml-1 rounded bg-red-500 px-1 py-0.5 text-[10px] font-semibold text-white">CHANGED</span>}
-                      {row._importStatus === 'NEW'     && <span className="ml-1 rounded bg-green-600 px-1 py-0.5 text-[10px] font-semibold text-white">NEW</span>}
-                    </td>
-                    <td className="border border-gray-300 px-2 py-2">{row.hsn || "-"}</td>
-                    <td className="border border-gray-300 px-2 py-2">{row.gst || "-"}</td>
-                    <td className="border border-gray-300 px-2 py-2">{row.qty || "-"}</td>
-                    <td className="border border-gray-300 px-2 py-2">{row.noOfCuts || "-"}</td>
-                    <td className="border border-gray-300 px-2 py-2">{money(row.purchaseRate || 0)} / {money(row.finalPrice || 0)}</td>
-                    <td className="border border-gray-300 px-2 py-2">{money((Number(row.finalPrice || 0) * Number(row.qty || 0)) * (Number(row.gst || 0) / 100))}</td>
-                    {additionalFields.map((field) => <td key={field} className="border border-gray-300 px-2 py-2">{row.customFields?.[field] || "-"}</td>)}
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+            <ItemsSheet
+              rows={rows}
+              customFields={additionalFields}
+              rateCodeMapping={rateCodeMapping}
+              createRow={createSheetRow}
+              onChangeRows={setRows}
+              onRemoveRow={removeRow}
+              pendingDeleteCount={pendingDeletes.length}
+              onUndoDeletes={undoDeletes}
+              focusRequest={sheetFocus}
+            />
           )}
 
           {activeTab === "summary" && (
@@ -3241,9 +3531,9 @@ export default function GCRBarcodeGeneration({ grcId = null, initialRows = [], s
                     <td className="border border-gray-300 px-2 py-2">{money(row.wsp || 0)}</td>
                     <td className="border border-gray-300 px-2 py-2">{money(row.dp || 0)}</td>
                     <td className="border border-gray-300 px-2 py-2">{row.uniqueBarcode || "No"}</td>
-                    <td className="border border-gray-300 px-2 py-2"><input value={row.barcodeNo || ""} disabled className="w-32 rounded border border-gray-200 bg-gray-100 px-2 py-1 text-gray-500" aria-label="System generated barcode" /></td>
+                    <td className="border border-gray-300 px-2 py-2"><input value={barcodeValueOf(row)} disabled className="w-52 rounded border border-gray-200 bg-gray-100 px-2 py-1 font-mono text-gray-500" aria-label="System generated barcode" /></td>
                     {additionalFields.map((field) => <td key={field} className="border border-gray-300 px-2 py-2">{row.customFields?.[field] || "-"}</td>)}
-                    <td className="border border-gray-300 px-2 py-2"><div className="flex gap-2"><button type="button" className="text-blue-600 hover:underline">Edit</button><button type="button" onClick={() => setRows((current) => current.filter((item) => item.id !== row.id))} className="text-red-600 hover:underline">Delete</button></div></td>
+                    <td className="border border-gray-300 px-2 py-2"><div className="flex gap-2"><button type="button" className="text-blue-600 hover:underline">Edit</button><button type="button" onClick={() => { if (!row._id || window.confirm(`Remove barcode ${row.barcodeNo || ""}? It will be deleted from this GRC when you click Submit.`)) removeRow(row); }} disabled={isLockedRow(row)} title={lockReason(row) || undefined} className="text-red-600 hover:underline disabled:cursor-not-allowed disabled:text-gray-400 disabled:no-underline">Delete</button></div></td>
                   </tr>
                 ))}
               </tbody>
@@ -3258,11 +3548,16 @@ export default function GCRBarcodeGeneration({ grcId = null, initialRows = [], s
         <div className="flex items-center gap-2"><span className="text-gray-500">Grand Total</span><span className="font-mono font-bold text-indigo-700">₹ {money(totals.net)}</span></div>
       </div>
 
-      {/* The supplier and the GRC number live on the GRC header, never on a
-          barcode row, so they are handed down here. Without them the label's
-          provenance line prints blank - and the label is the only thing that
-          travels with the goods. */}
-      <PrintLabelPicker rows={printRows.length ? printRows : validRows} open={showPrint} header={grcHeader} onClose={() => { setShowPrint(false); setPrintRows([]); }} />
+      {/* The picker deliberately receives the rows and nothing else. What a
+          label may carry is decided by toLabelData (lib/barcodeLabelPrint.js),
+          which whitelists it: the supplier's name and code, the GRC number and
+          the bill serial never reach a label. They used to be handed down here
+          for a "provenance line" on the sticker; that line is gone. */}
+      {/* Only saved barcodes, as saved, are printable: a label carries the
+          stored value (SUPPLIER_CODE * GRC_NUMBER * SEQ * QTY) and nothing
+          else. A row not saved yet, or with an edit not saved yet, prints
+          after Submit - see saveRows. */}
+      <PrintLabelPicker rows={printRows.length ? printRows : validRows.filter((row) => row._id && !row._edited)} open={showPrint} onClose={() => { setShowPrint(false); setPrintRows([]); }} />
 
       {showSaveConfirm && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
@@ -3294,7 +3589,7 @@ export default function GCRBarcodeGeneration({ grcId = null, initialRows = [], s
             {saving ? "Saving..." : `Generate For Changes (${validRows.filter((r) => r._importStatus === 'CHANGED').length})`}
           </button>
         )}
-        <button type="button" onClick={() => setShowSaveConfirm(true)} className="rounded-md bg-green-600 px-5 py-2 text-sm font-semibold text-white shadow hover:bg-green-700">Submit</button>
+        <button type="button" onClick={() => setShowSaveConfirm(true)} disabled={saving} className="rounded-md bg-green-600 px-5 py-2 text-sm font-semibold text-white shadow hover:bg-green-700 disabled:opacity-60">Submit</button>
       </div>
     </div>
   );
