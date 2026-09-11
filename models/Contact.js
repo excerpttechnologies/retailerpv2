@@ -145,5 +145,28 @@ const ContactSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
+/* One supplier per GST NO within a business.
+
+   Partial: only suppliers that actually carry a GST number are indexed -
+   most have none, and customers and agents share this collection without
+   sharing the rule. Collation strength 2 makes the comparison case-blind, so
+   a legacy row stored in lower case still blocks the same number in capitals.
+   The supplier API normalises (trim + upper case) and checks before every
+   write; this index is what stops two saves racing each other from both
+   landing. lib/supplierGst.js queries with the same collation.
+
+   scripts/ensureSupplierGstIndex.mjs builds it on an existing database, and
+   refuses to while duplicates are present rather than touching any record. */
+export const SUPPLIER_GST_INDEX = {
+  key: { businessId: 1, gstNo: 1 },
+  options: {
+    name: 'supplier_gstNo_unique',
+    unique: true,
+    partialFilterExpression: { contactKind: 'Supplier', gstNo: { $gt: '' } },
+    collation: { locale: 'en', strength: 2 },
+  },
+};
+ContactSchema.index(SUPPLIER_GST_INDEX.key, SUPPLIER_GST_INDEX.options);
+
 export default mongoose.models.contact ||
   mongoose.model('contact', ContactSchema, 'contact');

@@ -132,6 +132,27 @@ export const POST = handler(async (req) => {
     return json({ error: 'No rows to save', code: 'EMPTY' }, 400);
   }
 
+  /* Purchase Rate validation - must be greater than zero.
+     This is enforced at the API level to prevent invalid data from being
+     persisted regardless of client validation. */
+  const priceErrors = [];
+  rows.forEach((row, index) => {
+    const rate = parseFloat(row.purRate || row.purchaseRate || 0);
+    if (!Number.isFinite(rate) || rate <= 0) {
+      const itemRef = row.itemCode || row.itemName || `Row ${index + 1}`;
+      priceErrors.push(`${itemRef}: Purchase rate must be greater than 0`);
+    }
+  });
+
+  if (priceErrors.length > 0) {
+    return json({
+      error: 'Purchase rate validation failed',
+      code: 'INVALID_PRICE',
+      details: priceErrors.slice(0, 5),
+      totalErrors: priceErrors.length
+    }, 400);
+  }
+
   /* P-M-F and SM are both optional - a row without one saves with it blank. */
 
   /* An Old Barcode that is supplied must actually EXIST.

@@ -1,11 +1,69 @@
 'use client';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import Icon from './Icon';
 import Field from './Field';
 import ModalForm from './ModalForm';
 import { refreshOptions } from './useOptions';
 import { useScope } from './ScopeContext';
+import {
+  normalizeGstin, isValidGstin,
+  GSTIN_FORMAT_MESSAGE, GSTIN_DUPLICATE_MESSAGE, GSTIN_DUPLICATE_ON_SAVE_MESSAGE,
+} from '@/lib/gstin';
+
+/* What the GST duplicate check has to say about the GST NO in the box.
+
+   Keyed on the normalised value: a result for anything else - a number edited
+   since, a response that arrived late - is not shown at all. The format error
+   is not here; it is an ordinary field error, and Field shows it. */
+function GstCheckNote({ check, value, supplierHref }) {
+  if (!check || !value || check.value !== value) return null;
+
+  if (check.status === 'checking') {
+    return <div className="mt-1 text-xs text-inkmuted">Checking GST number...</div>;
+  }
+  if (check.status === 'available') {
+    return (
+      <div className="mt-1 flex items-center gap-1 text-xs text-okgreen">
+        <Icon name="check" size={13} /> GST number is available.
+      </div>
+    );
+  }
+  if (check.status === 'error') {
+    return (
+      <div className="mt-1 text-xs text-inkmuted">
+        Could not check the GST number just now - it will be checked again on Submit.
+      </div>
+    );
+  }
+  if (check.status !== 'duplicate') return null;
+
+  const s = check.supplier;
+  return (
+    <div role="alert" className="mt-1 rounded-md border border-danger/30 bg-[#fdecea] px-2.5 py-2 text-xs leading-snug text-danger">
+      <div className="font-bold uppercase tracking-wide">&#9888; GST number already exists</div>
+      <div className="mt-0.5">This GST number is already registered to another supplier.</div>
+      {s?.name && (
+        <div className="mt-1 text-ink">
+          Existing Supplier: <span className="font-semibold">{s.name}</span>
+          {s.contactId ? ' (' + s.contactId + ')' : ''}
+        </div>
+      )}
+      {s?.id && (
+        /* a new tab, so a half-filled form - or the consignment behind the
+           Delivery screen's supplier dialog - is not lost by looking */
+        <a
+          href={supplierHref(s.id)}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="mt-1 inline-block font-semibold text-brand-link hover:underline"
+        >
+          View existing supplier
+        </a>
+      )}
+    </div>
+  );
+}
 
 /* Supplier / Customer / Agent add form: four tabs across the top, each with its
    own grey-headed sections and its own Submit (the original saves per tab).
@@ -26,8 +84,14 @@ export default function TabbedFormView({ cfg, id, slug, onSaved }) {
   const [flash, setFlash] = useState(null);
   const [saving, setSaving] = useState(false);
   const [quickAddField, setQuickAddField] = useState(null);
-  const [gstMatch, setGstMatch] = useState(null);
-  const [gstChecking, setGstChecking] = useState(false);
+  /* GST NO duplicate check - see runGstCheck below */
+  const [gstCheck, setGstCheck] = useState(null);
+  const [ownGst, setOwnGst] = useState('');
+  const gstTicket = useRef(0);
+  const gstInflight = useRef(null);
+  /* Set synchronously on the first click, so a double-click cannot send the
+     record twice in the moment before the disabled button has rendered. */
+  const submitting = useRef(false);
 
   useEffect(() => {
     if (tabs.length && active >= tabs.length) setActive(tabs.length - 1);
@@ -53,6 +117,8 @@ export default function TabbedFormView({ cfg, id, slug, onSaved }) {
       .then((r) => r.json())
       .then((d) => {
         if (!d.doc) return;
+        /* the number this record already holds - never its own duplicate */
+        setOwnGst(normalizeGstin(d.doc.gstNo));
         setData((prev) => {
           const next = { ...prev };
           Object.keys(next).forEach((k) => {
@@ -67,6 +133,82 @@ export default function TabbedFormView({ cfg, id, slug, onSaved }) {
   }, [id, slugPath]);
 
   const set = (k, v) => { setData((d) => ({ ...d, [k]: v })); setErrors((e) => ({ ...e, [k]: undefined })); };
+
+  /* GST NO DUPLICATE CHECK - opt in with cfg.gstLookup.
+
+     Asked when the GST field loses focus, when an import fills it, and again
+     on Submit - never per keystroke. Each answer describes ONE normalised
+     value: it is shown only while the box still holds that value, and a
+     response that arrives after a newer check has started is dropped, so a
+     slow answer for an old number can never land on a new one.
+
+     The API is the authority - it checks again on save, and a unique index
+     backs it - so this only warns early and stops a save that is already
+     known to fail. The number the record was loaded (or last saved) with is
+     not sent at all: a supplier cannot be its own duplicate. */
+  const gstValue = normalizeGstin(data.gstNo);
+  const gstTabIndex = tabs.findIndex((t) => (t.sections || []).some((s) => (s.fields || []).some((f) => f.k === 'gstNo')));
+  const gstShown = cfg.gstLookup && gstCheck && gstCheck.value === gstValue ? gstCheck.status : null;
+
+  function runGstCheck(raw) {
+    const value = normalizeGstin(raw);
+    /* the same number is already being asked about - share that answer
+       rather than sending a second request */
+    if (gstInflight.current?.value === value) return gstInflight.current.promise;
+    const ticket = ++gstTicket.current;
+    gstInflight.current = null;
+
+    if (!value) { setGstCheck(null); return Promise.resolve(null); }
+    /* not a GSTIN yet - nothing worth asking the database about */
+    if (!isValidGstin(value)) {
+      const result = { value, status: 'invalid' };
+      setGstCheck(result);
+      setErrors((e) => ({ ...e, gstNo: GSTIN_FORMAT_MESSAGE }));
+      return Promise.resolve(result);
+    }
+    if (recordId && value === ownGst) {
+      const result = { value, status: 'own' };
+      setGstCheck(result);
+      return Promise.resolve(result);
+    }
+
+    setGstCheck({ value, status: 'checking' });
+    const qs = new URLSearchParams({ gstNo: value, business: scope.business || '' });
+    if (recordId) qs.set('excludeId', recordId);
+    const promise = fetch(cfg.endpoint + '?' + qs.toString())
+      .then(async (r) => {
+        const d = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(d.error || 'GST check failed');
+        return d.exists
+          ? { value, status: 'duplicate', supplier: d.supplier || null }
+          : { value, status: 'available' };
+      })
+      /* could not ask - which is not a verdict. Submit is still allowed and
+         the API makes the real check. */
+      .catch(() => ({ value, status: 'error' }))
+      .then((result) => {
+        if (ticket === gstTicket.current) setGstCheck(result);
+        return result;
+      })
+      .finally(() => {
+        if (gstInflight.current?.promise === promise) gstInflight.current = null;
+      });
+    gstInflight.current = { value, promise };
+    return promise;
+  }
+
+  function onGstBlur() {
+    const raw = String(data.gstNo ?? '');
+    const value = normalizeGstin(raw);
+    /* show the number the way it will be stored */
+    if (raw !== value) set('gstNo', value);
+    /* already answered for this exact number - no second request */
+    if (gstCheck && gstCheck.value === value && gstCheck.status !== 'error') {
+      if (gstCheck.status === 'invalid') setErrors((e) => ({ ...e, gstNo: GSTIN_FORMAT_MESSAGE }));
+      return;
+    }
+    runGstCheck(value);
+  }
 
   /* COMPOSITE FIELDS - opt in with `parts` on a field.
 
@@ -148,6 +290,12 @@ export default function TabbedFormView({ cfg, id, slug, onSaved }) {
       setFlash({ type: 'err', msg: 'Please complete the highlighted fields before continuing.' });
       return;
     }
+    /* a GST NO already known to be invalid or taken is not carried forward
+       onto steps that would only have to be filled in again */
+    if (active === gstTabIndex && (gstShown === 'invalid' || gstShown === 'duplicate')) {
+      setFlash({ type: 'err', msg: gstShown === 'invalid' ? GSTIN_FORMAT_MESSAGE : GSTIN_DUPLICATE_MESSAGE });
+      return;
+    }
     setFlash(null);
     setActive((a) => Math.min(a + 1, tabs.length - 1));
   }
@@ -175,49 +323,20 @@ export default function TabbedFormView({ cfg, id, slug, onSaved }) {
 
   /* Used by the import panel: merge reviewed values into the shared state.
      Only the keys the operator ticked arrive here, so a field they typed by
-     hand and did not tick is not in the patch and is left alone. */
+     hand and did not tick is not in the patch and is left alone.
+
+     An imported GST NO is normalised and checked straight away - there is no
+     blur to wait for. A duplicate one is still filled in, so the operator can
+     see what the import said; it is the save that is refused. */
   function applyPatch(patch, source) {
     const keys = Object.keys(patch || {});
     if (!keys.length) return;
-    setData((d) => ({ ...d, ...patch }));
-    setErrors((e) => { const next = { ...e }; keys.forEach((k) => { next[k] = undefined; }); return next; });
+    const gstImported = cfg.gstLookup && Object.prototype.hasOwnProperty.call(patch, 'gstNo');
+    const next = gstImported ? { ...patch, gstNo: normalizeGstin(patch.gstNo) } : patch;
+    setData((d) => ({ ...d, ...next }));
+    setErrors((e) => { const n = { ...e }; keys.forEach((k) => { n[k] = undefined; }); return n; });
     setFlash({ type: 'ok', msg: `${keys.length} field${keys.length === 1 ? '' : 's'} filled from ${source}. Review them, then Submit.` });
-  }
-
-  useEffect(() => {
-    if (!cfg.gstLookup || recordId || !String(data.gstNo || '').trim()) {
-      setGstMatch(null);
-      setGstChecking(false);
-      return undefined;
-    }
-    const gstNo = String(data.gstNo).trim().toUpperCase();
-    let cancelled = false;
-    setGstChecking(true);
-    fetch(`${cfg.endpoint}?gstNo=${encodeURIComponent(gstNo)}&business=${scope.business || ''}`)
-      .then((response) => response.json())
-      .then((result) => {
-        if (!cancelled) setGstMatch(result.doc || null);
-      })
-      .catch(() => {
-        if (!cancelled) setGstMatch(null);
-      })
-      .finally(() => {
-        if (!cancelled) setGstChecking(false);
-      });
-    return () => { cancelled = true; };
-  }, [cfg.endpoint, cfg.gstLookup, data.gstNo, recordId, scope.business]);
-
-  function useExistingSupplier() {
-    if (!gstMatch) return;
-    const next = { ...data };
-    allFields.forEach((f) => {
-      const value = gstMatch[f.k];
-      if (value !== null && value !== undefined) next[f.k] = f.type === 'ref' ? String(value) : value;
-    });
-    setData(next);
-    setRecordId(String(gstMatch._id));
-    setGstMatch(null);
-    setFlash({ type: 'ok', msg: 'Existing supplier details loaded.' });
+    if (gstImported) runGstCheck(next.gstNo);
   }
 
   /* "Same as Billing Address" copies the billing block into shipping */
@@ -235,19 +354,35 @@ export default function TabbedFormView({ cfg, id, slug, onSaved }) {
   }
 
   async function submit() {
-    /* the whole form, before anything is sent. The server still re-checks -
-       this only saves a round trip and lands the operator on the right tab. */
-    if (wizard) {
-      const { found, firstBad } = validateAll();
-      if (firstBad >= 0) {
-        setErrors((e) => ({ ...e, ...found }));
-        setActive(firstBad);
-        setFlash({ type: 'err', msg: 'Please complete the highlighted fields before submitting.' });
-        return;
-      }
-    }
-    setSaving(true); setFlash(null);
+    if (submitting.current) return;
+    submitting.current = true;
+    setSaving(true);
     try {
+      /* the whole form, before anything is sent. The server still re-checks -
+         this only saves a round trip and lands the operator on the right tab. */
+      if (wizard) {
+        const { found, firstBad } = validateAll();
+        if (firstBad >= 0) {
+          setErrors((e) => ({ ...e, ...found }));
+          setActive(firstBad);
+          setFlash({ type: 'err', msg: 'Please complete the highlighted fields before submitting.' });
+          return;
+        }
+      }
+      setFlash(null);
+
+      /* GST NO: waits for the answer (sharing a check already in flight) and
+         stops only for a number known to be invalid or taken. A check that
+         could not be made does not block - the API checks regardless. */
+      if (cfg.gstLookup) {
+        const gst = await runGstCheck(data.gstNo);
+        if (gst && (gst.status === 'invalid' || gst.status === 'duplicate')) {
+          if (gstTabIndex >= 0) setActive(gstTabIndex);
+          setFlash({ type: 'err', msg: gst.status === 'invalid' ? GSTIN_FORMAT_MESSAGE : GSTIN_DUPLICATE_MESSAGE });
+          return;
+        }
+      }
+
       /* contactKind is NOT sent - the API stamps it server-side so the
          supplier/agent/customer discriminator can't be spoofed */
       const payload = {
@@ -261,7 +396,7 @@ export default function TabbedFormView({ cfg, id, slug, onSaved }) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
       });
-      const d = await r.json();
+      const d = await r.json().catch(() => ({}));
       if (r.status === 422) {
         setErrors(d.errors || {});
         /* jump to the first tab that actually has an error */
@@ -271,7 +406,24 @@ export default function TabbedFormView({ cfg, id, slug, onSaved }) {
         setFlash({ type: 'err', msg: 'Please correct the highlighted fields.' });
         return;
       }
+      /* The API found the GST NO taken at the moment of saving - after this
+         form had been told it was free (another user, another tab). */
+      if (r.status === 409 && d.code === 'DUPLICATE_GST') {
+        gstTicket.current += 1;          /* any check still in flight is now stale */
+        gstInflight.current = null;
+        setGstCheck({ value: normalizeGstin(data.gstNo), status: 'duplicate', supplier: d.supplier || null });
+        if (gstTabIndex >= 0) setActive(gstTabIndex);
+        setFlash({ type: 'err', msg: GSTIN_DUPLICATE_ON_SAVE_MESSAGE });
+        return;
+      }
+      /* any other failure is reported - never mistaken for a save */
+      if (!r.ok) {
+        setFlash({ type: 'err', msg: d.error || 'Save failed. Nothing was saved.' });
+        return;
+      }
       setRecordId(d.id);
+      /* the number just saved is now this record's own */
+      setOwnGst(normalizeGstin(data.gstNo));
       if (wizard || active === tabs.length - 1) {
         /* embedded in a dialog: hand the new record back rather than leaving
            the page the caller was in the middle of */
@@ -279,12 +431,20 @@ export default function TabbedFormView({ cfg, id, slug, onSaved }) {
         else router.push(listUrl);
       }
       else { setFlash({ type: 'ok', msg: 'Saved. Continue with the next tab.' }); setActive((a) => a + 1); }
-    } finally { setSaving(false); }
+    } finally {
+      submitting.current = false;
+      setSaving(false);
+    }
   }
 
   const tab = tabs[active] || tabs[0];
 
   const quickAdd = quickAddField ? cfg.quickAdds?.[quickAddField] : null;
+
+  /* Known-taken GST NO: Submit is disabled as well as refused. Not while a
+     check is merely running - clicking Submit is what blurs the GST field,
+     and disabling the button mid-click would swallow that click. */
+  const gstBlocksSubmit = gstShown === 'duplicate';
 
   if (!tab) return null;
 
@@ -371,9 +531,12 @@ export default function TabbedFormView({ cfg, id, slug, onSaved }) {
                    A page that supplies neither hook is unaffected. */
                 const locked = cfg.isFieldReadOnly?.(f, data) === true;
                 const shown = locked ? { ...f, readOnly: true } : f;
+                const gstField = f.k === 'gstNo' && cfg.gstLookup;
                 return (
                   <div key={f.k} className={add ? 'flex items-end gap-1.5' : ''}>
-                    <div className={add ? 'min-w-0 flex-1' : ''}>
+                    {/* blur bubbles in React, so the GST field is heard here
+                        without Field needing an onBlur prop of its own */}
+                    <div className={add ? 'min-w-0 flex-1' : ''} onBlur={gstField ? onGstBlur : undefined}>
                       <Field
                         f={shown}
                         value={f.parts ? joinParts(f) : data[f.k]}
@@ -388,17 +551,8 @@ export default function TabbedFormView({ cfg, id, slug, onSaved }) {
                           }));
                         }}
                       />
-                      {f.k === 'gstNo' && cfg.gstLookup && gstChecking && (
-                        <div className="mt-1 text-xs text-inkmuted">Checking GST...</div>
-                      )}
-                      {f.k === 'gstNo' && cfg.gstLookup && gstMatch && (
-                        <button
-                          type="button"
-                          className="mt-1 inline-flex items-center gap-1 text-xs font-semibold text-danger hover:underline"
-                          onClick={useExistingSupplier}
-                        >
-                          <Icon name="check" size={14} /> GST already exists. Fetch all details
-                        </button>
+                      {gstField && (
+                        <GstCheckNote check={gstCheck} value={gstValue} supplierHref={(sid) => listUrl + '/' + sid} />
                       )}
                     </div>
                     {add && !locked && (
@@ -432,7 +586,7 @@ export default function TabbedFormView({ cfg, id, slug, onSaved }) {
             )}
             <span className="flex-1" />
             {isLastStep ? (
-              <button type="button" className="btn btn-primary flex h-[38px] min-w-[160px] justify-center" onClick={submit} disabled={saving || gstChecking || !!gstMatch}>
+              <button type="button" className="btn btn-primary flex h-[38px] min-w-[160px] justify-center" onClick={submit} disabled={saving || gstBlocksSubmit}>
                 {saving ? <span className="spin" /> : <Icon name="save" size={14} />} Submit
               </button>
             ) : (
@@ -442,7 +596,7 @@ export default function TabbedFormView({ cfg, id, slug, onSaved }) {
             )}
           </div>
         ) : (
-          <button type="button" className="btn btn-primary mt-2 flex h-[38px] w-full max-w-[390px] justify-center" onClick={submit} disabled={saving || gstChecking || !!gstMatch}>
+          <button type="button" className="btn btn-primary mt-2 flex h-[38px] w-full max-w-[390px] justify-center" onClick={submit} disabled={saving || gstBlocksSubmit}>
             {saving ? <span className="spin" /> : <Icon name="save" size={14} />} Submit
           </button>
         )}

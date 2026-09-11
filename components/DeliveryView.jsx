@@ -248,6 +248,8 @@ function DeliveryDialog({ row, onClose, onSaved }) {
                 scope: ['business'],
                 contactKind: 'Supplier',
                 tabs: SUPPLIER_TABS,
+                /* the same GST NO duplicate check as Contacts > Suppliers */
+                gstLookup: true,
                 quickAdds: {
                   agentId: {
                     label: 'Add Agent', title: 'Add Agent', slug: 'agent', ref: 'agent',

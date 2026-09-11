@@ -1,5 +1,6 @@
 import { requireSession } from '@/lib/session';
 import { lookupGstin, isGstLookupConfigured, GST_PROVIDER_ENV } from '@/lib/gstLookup';
+import { GSTIN_RE, normalizeGstin } from '@/lib/gstin';
 
 /* /api/gst/lookup - resolve a GSTIN to taxpayer details.
 
@@ -17,8 +18,8 @@ import { lookupGstin, isGstLookupConfigured, GST_PROVIDER_ENV } from '@/lib/gstL
 const json = (d, s = 200) => Response.json(d, { status: s });
 
 /* Format check only. It is worth doing here as well as in the browser so a
-   malformed code never reaches - and never gets billed by - the provider. */
-const GSTIN_RE = /^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z]{1}[1-9A-Z]{1}Z[0-9A-Z]{1}$/;
+   malformed code never reaches - and never gets billed by - the provider.
+   GSTIN_RE is lib/gstin.js's, the same rule the supplier form and API use. */
 
 export async function POST(req) {
   const session = await requireSession();
@@ -31,7 +32,7 @@ export async function POST(req) {
     return json({ error: 'Expected a JSON body.' }, 400);
   }
 
-  const gstin = String(body.gstin || '').trim().toUpperCase();
+  const gstin = normalizeGstin(body.gstin);
   if (!gstin) return json({ error: 'Enter a GSTIN.' }, 400);
   if (!GSTIN_RE.test(gstin)) {
     return json({ error: 'That is not a valid GSTIN. It should be 15 characters, e.g. 22AAAAA0000A1Z5.' }, 400);

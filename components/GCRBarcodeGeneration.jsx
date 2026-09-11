@@ -2125,22 +2125,51 @@ function toLabelRow(row, copies, header) {
 
 /* How many stickers a row starts out asking for.
 
+   Business rules (per master prompt requirements):
+     UNIQUE BARCODE → 1 label (one physical label per unique barcode)
+     MTR/METER      → 2 labels (two physical labels for meter-based items)
+     BATCH          → quantity-based (follows original behavior)
+
    A sticker count is a WHOLE number of pieces of paper, and it is not the
    same thing as a quantity:
 
      PC   the quantity is a count of pieces, so one sticker each is the
           sensible opening offer - which is what this screen has always done
      MTR  the quantity is a length. A 12.65-metre cut is one cut and wants
-          ONE label reading "12.65 MTR"; asking for 12.65 labels asks for
-          something nobody can print.
+          labels for handling; metre items get 2 labels by business rule
+     BATCH the whole batch shares one barcode, quantity determines label count
 
    The fractional case was not merely untidy. The readiness check compares
    the number of labels asked for against the number actually drawn, and the
    sheet floors its copy count - so 12.65 could never equal 12, and Print
    would have been refused outright on every metre-based GRC. */
 function defaultCopies(row) {
+  /* Determine barcode type from the row data.
+     Priority: batchType > batchUnique > uniqueBarcode > mode
+     This matches the priority in toLabelRow() function above. */
+  const declared = String(row.batchType || row.batchUnique || '').toLowerCase();
+  const ticked = String(row.uniqueBarcode || '').toLowerCase();
+  const isUnique = declared
+    ? declared === 'unique'
+    : ticked
+      ? ticked === 'yes'
+      : String(row.mode || '').toLowerCase() === 'unique';
+
+  /* BUSINESS RULE 1: UNIQUE BARCODE → exactly 1 label
+     One barcode = one physical label, regardless of UOM */
+  if (isUnique) {
+    return 1;
+  }
+
+  /* BUSINESS RULE 2: MTR/METER → exactly 2 labels
+     Metre-based items get 2 physical labels for handling */
   const metres = /mtr|met/i.test(String(row.uom || row.uomType || ''));
-  if (metres) return 1;
+  if (metres) {
+    return 2;
+  }
+
+  /* BUSINESS RULE 3: BATCH → quantity-based labels
+     Batch mode uses quantity to determine label count (original behavior) */
   const qty = Math.floor(Number(row.qty) || 0);
   return qty > 0 ? qty : 1;
 }
@@ -2839,12 +2868,17 @@ export default function GCRBarcodeGeneration({ grcId = null, initialRows = [], s
            nothing more - not counted as an update, not reported twice */
         if (existing && !rowDiffers(merged, existing)) return;
         rowNotes.forEach((kind) => notes[kind].push(barcodeNo));
-        if (existing) updatedById.set(existing.id, merged);
-        else addedRows.push(merged);
+        if (existing) updatedById.set(existing.id, { ...merged, _importStatus: 'CHANGED' });
+        else addedRows.push({ ...merged, _importStatus: 'NEW' });
       });
 
-      /* an updated row is swapped in by id, so it keeps its place in the grid */
-      setRows((list) => list.map((row) => updatedById.get(row.id) || row).concat(addedRows));
+      /* an updated row is swapped in by id, so it keeps its place in the grid.
+         Existing rows that were not touched have their _importStatus cleared so
+         they do not stay highlighted from a previous import. */
+      setRows((list) =>
+        list.map((row) => updatedById.get(row.id) || { ...row, _importStatus: undefined })
+            .concat(addedRows)
+      );
 
       const list = (codes) => codes.slice(0, 8).join(", ") + (codes.length > 8 ? ` and ${codes.length - 8} more` : "");
       const unchanged = planned.length - updatedById.size - addedRows.length;
@@ -2873,7 +2907,27 @@ export default function GCRBarcodeGeneration({ grcId = null, initialRows = [], s
   async function saveRows(rowsToSave = validRows, printAfterSave = false) {
     setSaving(true);
     setSaveError("");
+    /* Strip the UI-only _importStatus field before sending to the API */
+    rowsToSave = rowsToSave.map(({ _importStatus, ...rest }) => rest);
     try {
+      /* Validate purchase rate before submission - must be greater than zero.
+         This provides immediate feedback before the API round-trip. */
+      const priceErrors = [];
+      rowsToSave.forEach((row, index) => {
+        const rate = parseFloat(row.purchaseRate || row.purRate || 0);
+        if (!Number.isFinite(rate) || rate <= 0) {
+          const itemRef = row.itemCode || row.itemName || `Row ${index + 1}`;
+          priceErrors.push(itemRef);
+        }
+      });
+
+      if (priceErrors.length > 0) {
+        const shown = priceErrors.slice(0, 3).join(', ');
+        const msg = `Purchase rate must be greater than 0 for: ${shown}${priceErrors.length > 3 ? ` and ${priceErrors.length - 3} more` : ''}`;
+        setSaveError(msg);
+        return false;
+      }
+
       const saveTotals = rowsToSave.reduce((result, row) => {
         const qty = Number(row.qty || 0);
         const beforeTax = Number(row.finalPrice || 0) * qty;
@@ -2917,7 +2971,9 @@ export default function GCRBarcodeGeneration({ grcId = null, initialRows = [], s
       setShowSaveConfirm(false);
       if (printAfterSave) setShowPrint(true);
       router.refresh?.();
-      /* re-read from the database, so the grid shows what was saved */
+      /* re-read from the database, so the grid shows what was saved.
+         Also clear _importStatus on saved rows so highlights disappear. */
+      setRows((list) => list.map((r) => r._importStatus ? { ...r, _importStatus: undefined } : r));
       onSaved?.();
       return true;
     } catch (error) {
@@ -2991,12 +3047,53 @@ export default function GCRBarcodeGeneration({ grcId = null, initialRows = [], s
           </div>
         </div>
 
-        {importMessage && (
-          <div className="flex items-center justify-between border-b border-blue-100 bg-blue-50 px-4 py-2 text-sm text-blue-800">
-            <span>{importMessage}</span>
-            <button type="button" onClick={() => setImportMessage("")} className="text-blue-700" aria-label="Dismiss import message">×</button>
-          </div>
-        )}
+        {importMessage && (() => {
+          /* Colour the banner based on what happened:
+             - any error (no rows updated/added) → red
+             - changes or new rows present         → amber (action needed)
+             - all unchanged                        → green (nothing to do) */
+          const changedCount = validRows.filter((r) => r._importStatus === 'CHANGED').length;
+          const newCount     = validRows.filter((r) => r._importStatus === 'NEW').length;
+          const hasAction    = changedCount > 0 || newCount > 0;
+          const isError      = importMessage.startsWith("The file was not imported") || importMessage.startsWith("Unable to");
+          const banner = isError
+            ? "border-red-200 bg-red-50 text-red-800"
+            : hasAction
+              ? "border-amber-200 bg-amber-50 text-amber-900"
+              : "border-green-200 bg-green-50 text-green-800";
+          const dismiss = isError ? "text-red-600" : hasAction ? "text-amber-700" : "text-green-700";
+          return (
+            <div className={`flex items-start justify-between gap-4 border-b px-4 py-2 text-sm ${banner}`}>
+              <div className="flex flex-col gap-1">
+                {/* Counts line when we have statuses to show */}
+                {!isError && (changedCount > 0 || newCount > 0) && (
+                  <div className="flex items-center gap-3 font-semibold">
+                    {changedCount > 0 && (
+                      <span className="flex items-center gap-1">
+                        <span className="inline-block h-2.5 w-2.5 rounded-full bg-red-500" />
+                        {changedCount} changed
+                      </span>
+                    )}
+                    {newCount > 0 && (
+                      <span className="flex items-center gap-1">
+                        <span className="inline-block h-2.5 w-2.5 rounded-full bg-green-600" />
+                        {newCount} new
+                      </span>
+                    )}
+                    {validRows.filter((r) => !r._importStatus).length > 0 && (
+                      <span className="flex items-center gap-1 font-normal text-gray-500">
+                        <span className="inline-block h-2.5 w-2.5 rounded-full bg-gray-400" />
+                        {validRows.filter((r) => !r._importStatus).length} unchanged
+                      </span>
+                    )}
+                  </div>
+                )}
+                <span>{importMessage}</span>
+              </div>
+              <button type="button" onClick={() => setImportMessage("")} className={`mt-0.5 shrink-0 ${dismiss}`} aria-label="Dismiss import message">×</button>
+            </div>
+          );
+        })()}
 
         {saveError && (
           <div className="flex items-center justify-between border-b border-red-100 bg-red-50 px-4 py-2 text-sm text-red-800">
@@ -3026,10 +3123,18 @@ export default function GCRBarcodeGeneration({ grcId = null, initialRows = [], s
                 {validRows.length === 0 ? (
                   <tr><td colSpan={9 + additionalFields.length} className="px-3 py-8 text-center text-gray-500">No data found</td></tr>
                 ) : validRows.map((row, index) => (
-                  <tr key={row.id || index} className="odd:bg-white even:bg-gray-50">
+                  <tr key={row.id || index} className={
+                    row._importStatus === 'CHANGED' ? "bg-red-50 border-l-4 border-l-red-500" :
+                    row._importStatus === 'NEW'     ? "bg-green-50 border-l-4 border-l-green-500" :
+                    "odd:bg-white even:bg-gray-50"
+                  }>
                     <td className="border border-gray-300 px-2 py-2">{index + 1}</td>
                     <td className="border border-gray-300 px-2 py-2">{row.itemCode || "-"}</td>
-                    <td className="border border-gray-300 px-2 py-2">{row.itemName || row.supplierDescription || "-"}</td>
+                    <td className="border border-gray-300 px-2 py-2">
+                      {row.itemName || row.supplierDescription || "-"}
+                      {row._importStatus === 'CHANGED' && <span className="ml-1 rounded bg-red-500 px-1 py-0.5 text-[10px] font-semibold text-white">CHANGED</span>}
+                      {row._importStatus === 'NEW'     && <span className="ml-1 rounded bg-green-600 px-1 py-0.5 text-[10px] font-semibold text-white">NEW</span>}
+                    </td>
                     <td className="border border-gray-300 px-2 py-2">{row.hsn || "-"}</td>
                     <td className="border border-gray-300 px-2 py-2">{row.gst || "-"}</td>
                     <td className="border border-gray-300 px-2 py-2">{row.qty || "-"}</td>
@@ -3113,9 +3218,17 @@ export default function GCRBarcodeGeneration({ grcId = null, initialRows = [], s
                 {validRows.length === 0 ? (
                   <tr><td colSpan={16 + additionalFields.length} className="px-3 py-8 text-center text-gray-500">No data found</td></tr>
                 ) : validRows.map((row, index) => (
-                  <tr key={row.id || index} className="odd:bg-white even:bg-gray-50">
+                  <tr key={row.id || index} className={
+                    row._importStatus === 'CHANGED' ? "bg-red-50 border-l-4 border-l-red-500" :
+                    row._importStatus === 'NEW'     ? "bg-green-50 border-l-4 border-l-green-500" :
+                    "odd:bg-white even:bg-gray-50"
+                  }>
                     <td className="border border-gray-300 px-2 py-2">{index + 1}</td>
-                    <td className="border border-gray-300 px-2 py-2">{row.itemCode || "-"}</td>
+                    <td className="border border-gray-300 px-2 py-2">
+                      {row.itemCode || "-"}
+                      {row._importStatus === 'CHANGED' && <span className="ml-1 rounded bg-red-500 px-1 py-0.5 text-[10px] font-semibold text-white">CHANGED</span>}
+                      {row._importStatus === 'NEW'     && <span className="ml-1 rounded bg-green-600 px-1 py-0.5 text-[10px] font-semibold text-white">NEW</span>}
+                    </td>
                     <td className="border border-gray-300 px-2 py-2">{row.qty || "-"}</td>
                     <td className="border border-gray-300 px-2 py-2">{row.noOfCuts || "-"}</td>
                     <td className="border border-gray-300 px-2 py-2">{money(row.purchaseRate || 0)}</td>
@@ -3164,7 +3277,23 @@ export default function GCRBarcodeGeneration({ grcId = null, initialRows = [], s
         </div>
       )}
 
-      <div className="fixed bottom-4 right-4">
+      <div className="fixed bottom-4 right-4 flex items-center gap-2">
+        {validRows.some((r) => r._importStatus === 'CHANGED') && (
+          <button
+            type="button"
+            onClick={() => {
+              const changedRows = validRows.filter((r) => r._importStatus === 'CHANGED');
+              if (window.confirm(`Generate barcodes for ${changedRows.length} changed row${changedRows.length === 1 ? '' : 's'} only?`)) {
+                saveRows(changedRows, false);
+              }
+            }}
+            disabled={saving}
+            className="rounded-md bg-red-600 px-5 py-2 text-sm font-semibold text-white shadow hover:bg-red-700 disabled:opacity-60"
+            title="Save only the rows that were changed during the last import"
+          >
+            {saving ? "Saving..." : `Generate For Changes (${validRows.filter((r) => r._importStatus === 'CHANGED').length})`}
+          </button>
+        )}
         <button type="button" onClick={() => setShowSaveConfirm(true)} className="rounded-md bg-green-600 px-5 py-2 text-sm font-semibold text-white shadow hover:bg-green-700">Submit</button>
       </div>
     </div>
