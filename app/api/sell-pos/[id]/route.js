@@ -57,7 +57,17 @@ export async function PUT(req, { params }) {
   if (!ok) return json({ errors }, 422);
 
   if (Array.isArray(body.data?.items)) doc.items = body.data.items;
-  if (Array.isArray(body.data?.payments)) doc.payments = body.data.payments;
+  if (Array.isArray(body.data?.payments)) {
+    doc.payments = body.data.payments;
+    /* Everything derived from the split has to move with it. Without this an
+       edited payment updated the rows on screen while PAID, DUE and STATUS
+       kept the figures from the original sale. */
+    const existing = await PosInvoice.findById(id).select('totalAmount').lean();
+    const total = Number(existing?.totalAmount || 0);
+    doc.paid = doc.payments.reduce((sum, p) => sum + Number(p.amount || 0), 0);
+    doc.sellDue = Math.max(0, total - doc.paid);
+    doc.paymentStatus = doc.sellDue === 0 ? 'Paid' : doc.paid > 0 ? 'Part Paid' : 'Unpaid';
+  }
   if (body.data?.sellNote !== undefined) doc.sellNote = body.data.sellNote;
   if (body.data?.staffNote !== undefined) doc.staffNote = body.data.staffNote;
 

@@ -58,7 +58,7 @@
   "dependencies": {
     "html5-qrcode": "^2.3.8",
     "jsbarcode": "^3.12.3",
-    "lucide-react": "^1.33.0",
+    "lucide-react": "^1.44.0",
     "mongoose": "8.9.5",
     "motion": "^13.1.0",
     "next": "15.1.6",

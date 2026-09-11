@@ -9,6 +9,7 @@ import ProductImage from '@/components/ProductImage';
 import CustomerProfilePanel from '@/components/CustomerProfilePanel';
 import { useScanner, useBarcodeLookup, useScanSound } from '@/components/useScanner';
 import { useOptions } from '@/components/useOptions';
+import MultiplePayDialog from '@/components/MultiplePayDialog';
 
 const PAYMENT_MODES = ['Cash', 'Credit', 'Export', 'COD'];
 const MULTI_PAYMENT_METHODS = ['Cash', 'PayTM', 'Bank Deposit'];
@@ -31,75 +32,6 @@ const customerLabel = (customer) => {
    components/CustomerProfilePanel.jsx, which shows the same master fields on
    its Details tab and adds the purchase and return history the counter
    actually asks for. */
-
-function MultiplePay({ totalItems, totalPayable, onClose, onSubmit }) {
-  const [payments, setPayments] = useState(() => MULTI_PAYMENT_METHODS.map((method) => ({ method, amount: '', note: '' })));
-  const [selectedMethod, setSelectedMethod] = useState('');
-  const [sellNote, setSellNote] = useState('');
-  const [staffNote, setStaffNote] = useState('');
-  const totalPaying = payments.reduce((sum, payment) => sum + Number(payment.amount || 0), 0);
-  const changeReturn = Math.max(0, totalPaying - totalPayable);
-  const balance = Math.max(0, totalPayable - totalPaying);
-
-  function updatePayment(index, key, value) {
-    setPayments((current) => current.map((payment, i) => i === index ? { ...payment, [key]: value } : payment));
-  }
-
-  /* Picking a method moves the whole payable onto that row and clears the
-     others, so choosing PayTM after Cash swaps the amount across rather than
-     leaving the bill paid twice. Nothing is pre-selected: the cashier chooses,
-     and until they do every row reads 0.
-
-     Split payments still work - type into a second row after choosing, and
-     Total Paying / Balance add up as before. */
-  function chooseMethod(method) {
-    setSelectedMethod(method);
-    setPayments((current) => current.map((payment) => (
-      payment.method === method
-        ? { ...payment, amount: String(totalPayable) }
-        : { ...payment, amount: '' }
-    )));
-  }
-
-  return (
-    <div className="fixed inset-0 z-[80] flex items-center justify-center bg-black/50 p-4" onClick={onClose}>
-      <div className="w-full max-w-5xl rounded-lg bg-white p-4 shadow-2xl" onClick={(event) => event.stopPropagation()}>
-        <div className="flex items-center justify-between border-b border-line pb-3">
-          <h2 className="text-lg font-semibold">Multiple Payment</h2>
-          <button type="button" aria-label="Close payment" className="flex h-8 w-8 items-center justify-center rounded-full bg-danger text-white" onClick={onClose}><Icon name="x" size={16} /></button>
-        </div>
-        <div className="grid gap-4 pt-3 md:grid-cols-[1fr_220px]">
-          <div>
-            <div className="mb-3 text-[12px] text-danger">Enter payment amounts across one or more methods. The totals update automatically.</div>
-            <div className="grid grid-cols-[1fr_1fr_1.5fr] border-b border-line px-2 py-2 text-[12px] font-semibold text-inkmuted"><span>Method *</span><span>Amount</span><span>Payment note</span></div>
-            {payments.map((payment, index) => <div className="grid grid-cols-[1fr_1fr_1.5fr] items-center gap-2 border-b border-line px-2 py-2" key={payment.method}><label className={'flex cursor-pointer items-center text-[13px] ' + (selectedMethod === payment.method ? 'font-bold text-brand' : 'font-semibold text-ink')}><input type="radio" name="pos-pay-method" className="sr-only" checked={selectedMethod === payment.method} onChange={() => chooseMethod(payment.method)} />{payment.method}</label><input className="f-input" type="number" min="0" step="0.01" placeholder="Enter amount" value={payment.amount} onChange={(event) => updatePayment(index, 'amount', event.target.value)} onWheel={(e) => e.currentTarget.blur()} /><input className="f-input" placeholder="Payment note" value={payment.note} onChange={(event) => updatePayment(index, 'note', event.target.value)} /></div>)}
-            <div className="mt-3 grid gap-2 md:grid-cols-2"><label className="field-label">Sell note<input className="f-input" value={sellNote} onChange={(event) => setSellNote(event.target.value)} /></label><label className="field-label">Staff note<input className="f-input" value={staffNote} onChange={(event) => setStaffNote(event.target.value)} /></label></div>
-            <button type="button" className="btn btn-primary mx-auto mt-4 flex min-w-52 justify-center" onClick={() => onSubmit({ payments, sellNote, staffNote })}>Submit</button>
-          </div>
-          <div className="rounded-lg bg-[#ffc400] p-4 text-ink shadow-inner"><div className="border-b border-black/15 pb-3"><div className="text-[12px] font-semibold">Total Items:</div><div className="text-xl font-bold">{totalItems}</div></div><div className="border-b border-black/15 py-3"><div className="text-[12px] font-semibold">Total Payable:</div><div className="text-xl font-bold">{money(totalPayable)}</div></div><div className="border-b border-black/15 py-3"><div className="text-[12px] font-semibold">Total Paying:</div><div className="text-xl font-bold">{money(totalPaying)}</div></div><div className="border-b border-black/15 py-3"><div className="text-[12px] font-semibold">Change Return:</div><div className="text-xl font-bold text-danger">{money(changeReturn)}</div></div><div className="pt-3"><div className="text-[12px] font-semibold">Balance:</div><div className="text-xl font-bold">{money(balance)}</div></div></div>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-/* Billing block, laid out to match the Basic Information tab of
-   /admin/contact/customer/add so the two forms ask for the same things in the
-   same order. Keys are the customer schema's own, not POS-local names. */
-const BILLING_ROWS = [
-  ['billingAddressLine1', 'Address Line 1'],
-  ['billingAddressLine2', 'Address Line 2'],
-  ['billingState', 'State'],
-  ['billingCountry', 'Country'],
-  ['billingDistrict', 'District'],
-  ['billingTaluk', 'Taluk'],
-  ['billingAlternateContactNumber', 'Alternate Contact'],
-  ['billingLandline', 'Landline'],
-  ['billingFax', 'Fax'],
-  ['billingEmail', 'Email'],
-  ['billingEmail2', 'Email 2'],
-  ['billingWebsiteUrl', 'Website URL'],
-];
 
 /* Till calculator - the keypad popover the deployed POS has in its top bar.
 
@@ -489,7 +421,7 @@ export default function PosTill() {
         rsp: Number(item.rsp ?? hit.rsp ?? 0), discountPct: 0, image: hit.image || '',
         uom: item.uom || '', salesPerson: salesPerson || '',
       };
-      setItems((rows) => [...rows, { ...product, isReturn: isExchange && !rows.some((r) => r.isReturn) }]);
+      setItems((rows) => [{ ...product, isReturn: isExchange && !rows.some((r) => r.isReturn) }, ...rows]);
       setSelectedProduct(product);
       setCode(''); setMsg('');
       beep('ok');
@@ -507,10 +439,14 @@ export default function PosTill() {
   /* Kept as the name the search box and the suggestion list already call. */
   function scan() { return addScanned(code); }
 
-  /* Adds a unit the server has just validated. Appended, so the table reads in
-     scan order the way the deployed till does - which matters in exchange
-     mode, where the FIRST line is the returned piece. Prepending buried it at
-     the bottom and made the bill look like the wrong item was credited. */
+  /* Adds a unit the server has just validated. Newest first, so the piece just
+     scanned is the top row and the operator does not have to look down a long
+     bill to confirm it landed.
+
+     Exchange is unaffected: isReturn is decided from what is already on the
+     bill, not from position, so the first piece scanned is still the return
+     however the rows are ordered - it just sits at the BOTTOM once other
+     lines are added on top of it. */
   function addBarcodeUnit(unit) {
     const product = {
       itemId: unit._id,
@@ -541,7 +477,7 @@ export default function PosTill() {
       grcNo: unit.grcNo || '',
       salesPerson: salesPerson || '',
     };
-    setItems((rows) => [...rows, { ...product, isReturn: isExchange && !rows.some((r) => r.isReturn) }]);
+    setItems((rows) => [{ ...product, isReturn: isExchange && !rows.some((r) => r.isReturn) }, ...rows]);
     setSelectedProduct(product);
     setItemSuggestions([]);
     setCode('');
@@ -807,7 +743,7 @@ export default function PosTill() {
       
       <div><div className="text-cell">Net Amount</div><div className="font-bold text-danger">{money(netAmount)}</div></div></div><div className="mt-2 grid grid-cols-2 gap-2 text-[13px] md:grid-cols-6"><div><div className="text-cell">Line Wise Discount %</div><input className="f-input" type="number" min="0" max="100" step="0.01" value={lineDiscPct} onWheel={(e) => e.currentTarget.blur()} onChange={(e) => applyLineDiscountPct(e.target.value)} /></div><div><div className="text-cell">Line Wise Discount Amt</div><input className="f-input" type="number" min="0" step="0.01" value={lineDiscAmt} onWheel={(e) => e.currentTarget.blur()} onChange={(e) => applyLineDiscountAmt(e.target.value)} /></div><div className="flex items-center gap-2"><span className="text-cell">Shipping</span><button type="button" className="font-semibold text-brand underline" onClick={() => { setShippingDraft(String(shipping || 0)); setShowShipping(true); }}>( + ) {money(shipping)}</button></div></div></div>
       <div className="mt-2 flex flex-wrap items-center gap-3 bg-[#eef1f7] px-4 py-3"><button type="button" className="btn bg-[#17a2b8] text-white disabled:opacity-50" disabled={holding} onClick={holdBill}><Icon name="register" size={14} /> {holding ? 'Holding...' : 'Hold'}</button><button type="button" className="btn bg-[#6b7280] text-white disabled:opacity-50" disabled={!holds.length} onClick={() => setShowHolds(true)}><Icon name="register" size={14} /> Held ({holds.length})</button><button type="button" className="btn bg-[#2563a9] text-white" onClick={() => setShowMultiplePay(true)}><Icon name="register" size={14} /> Multiple Pay</button><span className="text-[15px] font-bold">Total Payable: <span className="text-okgreen">{money(netAmount)}</span></span><button type="button" className="btn bg-[#f2a19b] text-white" onClick={clearTill}><Icon name="x" size={14} /> Clear Screen</button><span className="flex-1" /><button type="button" className="btn btn-primary" onClick={() => router.push('/admin/transaction/sell/pos')}>Recent Transactions</button></div>
-      {showMultiplePay && <MultiplePay totalItems={qty} totalPayable={netAmount} onClose={() => setShowMultiplePay(false)} onSubmit={submitPayment} />}
+      {showMultiplePay && <MultiplePayDialog totalItems={qty} totalPayable={netAmount} onClose={() => setShowMultiplePay(false)} onSubmit={submitPayment} />}
 
       {/* Add Shipping Charge. Save commits the draft onto the bill; closing or
           clicking the backdrop leaves the previous charge untouched. */}
