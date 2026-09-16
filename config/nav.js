@@ -451,6 +451,8 @@ export const NAV = [
     children: [
       { label: 'Delivery Challan', icon: LuFileCheck,
         href: '/admin/transaction/intercompanysell/deliverychallan' },
+      { label: 'Reverse Delivery Challan', icon: LuShuffle,
+        href: '/admin/transaction/intercompanysell/reversedeliverychallan' },
       { label: 'Sales Invoice', icon: LuFileText,
         href: '/admin/transaction/intercompanysell/salesinvoice' },
       { label: 'Auto Purchases Received', icon: LuPackageCheck,
