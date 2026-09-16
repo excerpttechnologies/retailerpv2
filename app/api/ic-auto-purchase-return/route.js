@@ -5,6 +5,7 @@ import { requireSession } from '@/lib/session';
 import { resolveRefLabels } from '@/lib/refLabels';
 import { validate, escapeRegex } from '@/lib/validate';
 import { nextDocNumber } from '@/lib/docnumber';
+import { checkHubRoute, routeVia } from '@/lib/icRouting';
 import { FIELDS, computeTotals } from '@/app/admin/transaction/intercompanysell/auto-purchases-return/fields';
 
 /* /api/ic-auto-purchase-return - list + create. */
@@ -105,6 +106,19 @@ export async function POST(req) {
   if (body.business && isValidObjectId(body.business)) doc.businessId = body.business;
   if (body.location && isValidObjectId(body.location)) doc.locationId = body.location;
   if (body.finYear) doc.finYear = body.finYear;
+
+  /* Every inter company movement is mediated by the main branch's warehouse.
+     Checked here as well as in the dropdown because this route takes both
+     branch ids straight from the request body. See lib/icRouting.js. */
+  const badRoute = await checkHubRoute(doc.businessId, doc.toBusinessId);
+  if (badRoute) return json({ error: badRoute.error, code: badRoute.code }, 422);
+
+  /* Stamp the mediator. Null for a single-hop transfer (one end is already
+     the main branch); the warehouse when two child branches trade. Derived,
+     never read off the body. */
+  const via = await routeVia(doc.businessId, doc.toBusinessId);
+  doc.viaBusinessId = via ? via.viaBusinessId : null;
+  doc.viaLocationId = via ? via.viaLocationId : null;
 
   applyTotals(doc, body);
 

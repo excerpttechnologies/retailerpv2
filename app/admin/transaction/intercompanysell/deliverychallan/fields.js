@@ -15,16 +15,22 @@ export const FIELDS = [
   { k: 'customerGstn', label: 'Customer GSTN', type: 'text', readOnly: true },
 
   { k: 'dcDate', label: 'DC Date', type: 'date', req: true, def: 'today' },
-  { k: 'customerAddress', label: 'Customer Address', type: 'text', readOnly: true },
-  { k: 'salesPersonId', label: 'Sales Person', type: 'ref', ref: 'agent', placeholder: 'Select...' },
+  { k: 'stockPointId', label: 'Stock Point', type: 'ref', ref: 'stockpoint', req: true },
+
+  /* `hidden` keeps a field OUT OF THE FORM but IN the spec, which matters
+     because the API routes derive their accepted-field set from this same
+     array. Deleting these entries would make the server drop the values
+     instead of merely stopping the screen from asking for them - and
+     customerAddress is not asked for anyway: the form copies it off the
+     destination business when one is picked. */
+  { k: 'customerAddress', label: 'Customer Address', type: 'text', readOnly: true, hidden: true },
+  { k: 'salesPersonId', label: 'Sales Person', type: 'ref', ref: 'agent', placeholder: 'Select...', hidden: true },
   {
-    k: 'salesTerm', label: 'Sales Term', type: 'select', placeholder: '--Select--',
+    k: 'salesTerm', label: 'Sales Term', type: 'select', placeholder: '--Select--', hidden: true,
     opts: [{ v: 'After Tax', l: 'After Tax' }, { v: 'Before Tax', l: 'Before Tax' }],
   },
-
-  { k: 'agentId', label: 'Agent', type: 'ref', ref: 'agent', placeholder: 'Select...' },
-  { k: 'stockPointId', label: 'Stock Point', type: 'ref', ref: 'stockpoint', req: true },
-  { k: 'logisticId', label: 'Logistic Details', type: 'ref', ref: 'logistic', placeholder: 'Select...' },
+  { k: 'agentId', label: 'Agent', type: 'ref', ref: 'agent', placeholder: 'Select...', hidden: true },
+  { k: 'logisticId', label: 'Logistic Details', type: 'ref', ref: 'logistic', placeholder: 'Select...', hidden: true },
 ];
 
 /* Stored totals. Not header fields, so the API allows them through
@@ -35,10 +41,29 @@ export const TOTAL_KEYS = [
   'roundOff', 'totalQty', 'netValue',
 ];
 
+/* Item Code is deliberately absent: lines are entered BY BARCODE, so the
+   barcode is the identifier on screen. itemCode is still resolved and still
+   stored on every line - the downstream invoice needs it - it is just not a
+   column.
+
+   This is the FULL grid. Auto Purchases Return re-exports it and still shows
+   every column; the Delivery Challan uses COMPACT_GRID_COLS below. */
 export const GRID_COLS = [
-  '#', 'Item Code', 'Item Name', 'HSN', 'GST Slab', 'UOM', 'QTY', 'Unit Rate',
+  '#', 'Barcode No', 'Item Name', 'HSN', 'GST Slab', 'UOM', 'QTY', 'Unit Rate',
   'Discount', 'R.Off Discount', 'Final Rate', 'Before Tax', 'IGST Amount',
   'CGST Amount', 'SGST Amount', 'Net Amount', 'Action',
+];
+
+/* The Delivery Challan grid, matching the printed challan: Sl No, Barcode,
+   Qty, UOM, HSN, Item Name / Description.
+
+   The money columns are gone from the SCREEN only. Every line still carries
+   its unit rate, discounts and tax percentages - supplied by the item lookup
+   and stored on save - so the totals block below the grid keeps working and
+   raising a line's quantity still raises the amount. */
+export const COMPACT_GRID_COLS = [
+  'Sl No.', 'Barcode', 'Qty', 'UOM', 'HSN', 'Item Name / Description',
+  'RSP Price', 'Action',
 ];
 
 export const INFO = [
@@ -113,6 +138,7 @@ export function computeTotals(rows, { discountPercent = 0, roundOffDiscountAmt =
    stock balance - this project has no stock ledger, so the "(Max: n)" hint
    under QTY renders only when the API fills it in. */
 export const BLANK_ROW = {
+  barcodeNo: '', uomType: '',
   itemId: '', itemCode: '', itemName: '', hsn: '', slabName: '',
   igstPct: 0, cgstPct: 0, sgstPct: 0,
   uom: '', qty: '', availableQty: null,

@@ -4,13 +4,69 @@ import IcDeliveryChallan from '@/models/IcDeliveryChallan';
 import { requireSession } from '@/lib/session';
 import { resolveRefLabels } from '@/lib/refLabels';
 import { validate, escapeRegex } from '@/lib/validate';
-import { nextDocNumber } from '@/lib/docnumber';
+import Business from '@/models/Business';
+import { reserveSequence } from '@/models/Counter';
+import { checkHubRoute, routeVia } from '@/lib/icRouting';
 import { FIELDS, TOTAL_KEYS, computeTotals } from '@/app/admin/transaction/intercompanysell/deliverychallan/fields';
 
 /* /api/ic-delivery-challan - list + create. */
 
 const json = (d, s = 200) => Response.json(d, { status: s });
 const PER_PAGE = 10;
+
+/* ---------------------------------------------------------- DC number ----
+
+   DC/26-27/TF/1000
+
+     DC     fixed
+     26-27  the financial year, short form
+     TF     the branch RAISING the challan - Temple Fabrics. Suvarna Fabrics
+            gives SF, Omshree Fabs OF.
+     1000   a running number, per branch and per financial year
+
+   Built here rather than through lib/docnumber.js and the Doc Setup master
+   on purpose: this format is fixed for inter company challans and is not
+   meant to be re-configured per business.
+
+   The running number still comes from models/Counter.js, so it is atomic -
+   two challans saved at the same moment cannot take the same number, and
+   deleting one does not hand its number to the next. */
+
+const FY_SHORT = (finYear) => {
+  const [a, b] = String(finYear || '').split('-');
+  return a && b ? a.slice(2) + '-' + b.slice(2) : String(finYear || '');
+};
+
+/* Initials of the first two meaningful words of the branch name.
+
+   Anything in brackets is dropped first - "OMSHREE FABS (TEMPLE FABRICS,
+   SILKS AND SAREES)" is Omshree Fabs, and carrying the parent's name into
+   the code would make every branch read TF. */
+const BRANCH_CODE = (name) => {
+  const words = String(name || '')
+    .replace(/\([^)]*\)/g, ' ')
+    .replace(/[^A-Za-z ]+/g, ' ')
+    .split(/\s+/)
+    .filter(Boolean);
+
+  const code = words.slice(0, 2).map((w) => w[0]).join('').toUpperCase();
+  return code || 'XX';
+};
+
+async function nextDcNo({ businessId, finYear }) {
+  const business = businessId
+    ? await Business.findById(businessId).select('name').lean()
+    : null;
+
+  const branch = BRANCH_CODE(business && business.name);
+  const fy = FY_SHORT(finYear);
+
+  /* one series per branch per year - the counter name carries both, so
+     Suvarna's numbering is independent of Temple Fabrics' */
+  const seq = await reserveSequence('icDcNo|' + branch, { businessId, finYear }, 1);
+
+  return ['DC', fy, branch, 999 + seq].join('/');
+}
 
 /* Totals are RECOMPUTED here from the line items rather than trusted from the
    form, the way the Transport module handles freight. A request carrying its
@@ -105,13 +161,24 @@ export async function POST(req) {
   if (body.location && isValidObjectId(body.location)) doc.locationId = body.location;
   if (body.finYear) doc.finYear = body.finYear;
 
+  /* Every inter company movement is mediated by the main branch's warehouse.
+     Checked here as well as in the dropdown because this route takes both
+     branch ids straight from the request body. See lib/icRouting.js. */
+  const badRoute = await checkHubRoute(doc.businessId, doc.toBusinessId);
+  if (badRoute) return json({ error: badRoute.error, code: badRoute.code }, 422);
+
+  /* Stamp the mediator. Null for a single-hop transfer (one end is already
+     the main branch); the warehouse when two child branches trade. Derived,
+     never read off the body. */
+  const via = await routeVia(doc.businessId, doc.toBusinessId);
+  doc.viaBusinessId = via ? via.viaBusinessId : null;
+  doc.viaLocationId = via ? via.viaLocationId : null;
+
   applyTotals(doc, body);
 
-  /* document number from the Doc Setup master */
+  /* DC/26-27/TF/1000 - see nextDcNo above */
   if (!doc.dcNo) {
-    doc.dcNo = await nextDocNumber(IcDeliveryChallan, 'dcNo', 'Inter Company Delivery Challan', {
-      businessId: doc.businessId, locationId: doc.locationId, finYear: doc.finYear,
-    });
+    doc.dcNo = await nextDcNo({ businessId: doc.businessId, finYear: doc.finYear });
   }
 
   const created = await IcDeliveryChallan.create(doc);

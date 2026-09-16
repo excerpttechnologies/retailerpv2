@@ -36,6 +36,7 @@ const QUICK_FIELDS = FIELDS.filter((field) => [
   'billingCountry', 'billingDistrict', 'billingTaluk', 'billingZipCode',
   'billingMobile', 'billingAlternateContactNumber', 'billingLandline', 'billingFax',
   'billingEmail', 'billingEmail2', 'billingWebsiteUrl',
+  'additionalDetails',
 ].includes(field.k));
 
 export async function GET(req) {

@@ -28,7 +28,6 @@ export const FORM = {
       },
       {
         "type": "fields",
-        "gridClass": "grc-header-fields-grid",
         "fields": [
           {
             "k": "supplierId",
@@ -114,7 +113,6 @@ export const FORM = {
           },
           {
             "k": "freightMode",
-            "layoutClass": "grc-bottom-freight",
             "label": "Freight",
             "type": "select",
             "opts": [
@@ -126,24 +124,21 @@ export const FORM = {
             "unlockable": true
           },
           {
-            "k": "stockPointId",
-            "layoutClass": "grc-bottom-stock-point",
+            "k": "stockPointName",
             "label": "Stock Point",
-            "type": "ref",
-            "ref": "stockpoint",
-            "defaultOptionLabel": "Warehouse",
+            "type": "text",
+            "def": "Warehouse",
+            "readOnly": true,
             "req": true
           },
           {
             "k": "vendorInvoiceCopy",
-            "layoutClass": "grc-bottom-invoice-copy",
             "label": "Vendor Invoice Copy",
             "type": "file",
             "info": true
           },
           {
             "k": "vendorWaybill",
-            "layoutClass": "grc-bottom-waybill",
             "label": "Vendor Waybill",
             "type": "text",
             "placeholder": "Enter waybill number or scan barcode"

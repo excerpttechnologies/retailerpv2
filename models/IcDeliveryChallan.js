@@ -27,6 +27,15 @@ const IcDeliveryChallanSchema = new mongoose.Schema(
     /* destination */
     toBusinessId: { type: mongoose.Schema.Types.ObjectId, ref: 'business', default: null, index: true },
     toLocationId: { type: mongoose.Schema.Types.ObjectId, ref: 'companyLocation', default: null },
+
+    /* The mediator leg. Null when the transfer is a single hop because one
+       end already IS the main branch; set to the main branch's warehouse when
+       two child branches trade, since the goods pass through it.
+
+       Stamped server-side from lib/icRouting.js routeVia() and never taken
+       from the client - the route is a rule, not an operator's choice. */
+    viaBusinessId: { type: mongoose.Schema.Types.ObjectId, ref: 'business', default: null, index: true },
+    viaLocationId: { type: mongoose.Schema.Types.ObjectId, ref: 'companyLocation', default: null },
     customerGstn: { type: String, default: '' },
     customerAddress: { type: String, default: '' },
 

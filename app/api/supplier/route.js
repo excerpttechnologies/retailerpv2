@@ -5,10 +5,6 @@ import { requireSession } from '@/lib/session';
 import { resolveRefLabels } from '@/lib/refLabels';
 import { validate, escapeRegex } from '@/lib/validate';
 import { TABS } from '@/app/admin/contact/supplier/tabs';
-import { normalizeGstin, isValidGstin, GSTIN_FORMAT_MESSAGE } from '@/lib/gstin';
-import {
-  findSupplierGstConflict, gstConflictResponse, isSupplierGstKeyError, supplierSummary,
-} from '@/lib/supplierGst';
 
 import ContactType from '@/models/ContactType';
 import { nextContactId } from '@/lib/contactId';
@@ -33,27 +29,18 @@ export async function GET(req) {
   const page = Math.max(1, Number(sp.get('page') || 1));
   const perPage = Math.min(500, Number(sp.get('perPage') || PER_PAGE));
   const search = (sp.get('search') || '').trim();
-  const gstNo = normalizeGstin(sp.get('gstNo'));
+  const gstNo = (sp.get('gstNo') || '').trim().toUpperCase();
 
-  /* GST NO duplicate check - the supplier form asks this when the GST field
-     loses focus. It answers only whether ANOTHER supplier holds the number,
-     and names that supplier the way the list already does.
-       excludeId  the supplier being edited; its own number is not a duplicate
-       business   the scope on the add form */
   if (gstNo) {
-    if (!isValidGstin(gstNo)) {
-      return json({ errors: { gstNo: GSTIN_FORMAT_MESSAGE }, valid: false, exists: false }, 422);
-    }
-    const excludeId = sp.get('excludeId');
-    let businessId = sp.get('business');
-    /* editing: the supplier's own business decides the scope, exactly as the
-       PUT that follows will */
-    if (excludeId && isValidObjectId(excludeId)) {
-      const self = await Contact.findById(excludeId, { businessId: 1 }).lean();
-      if (self?.businessId) businessId = String(self.businessId);
-    }
-    const conflict = await findSupplierGstConflict({ gstNo, businessId, excludeId });
-    return json({ valid: true, gstNo, exists: Boolean(conflict), supplier: supplierSummary(conflict) });
+    const exactFilter = {
+      gstNo: { $regex: `^${escapeRegex(gstNo)}$`, $options: 'i' },
+      contactKind: 'Supplier',
+    };
+    if (sp.get('business') && isValidObjectId(sp.get('business'))) exactFilter.businessId = sp.get('business');
+    const doc = await Contact.findOne(exactFilter).lean();
+    return doc
+      ? json({ doc: { ...doc, _id: String(doc._id) } })
+      : json({ doc: null });
   }
 
   const filter = {};
@@ -93,31 +80,21 @@ export async function POST(req) {
   const validationFields = body.allowBlankFirstName === true
     ? FIELDS.map((f) => (f.k === 'firstName' ? { ...f, req: false } : f))
     : FIELDS;
-  const { errors, doc } = validate(validationFields, body.data || {});
-  /* GST NO: normalised before anything compares it, and format-checked before
-     the database is asked about it */
-  doc.gstNo = normalizeGstin(doc.gstNo);
-  if (doc.gstNo && !isValidGstin(doc.gstNo)) errors.gstNo = GSTIN_FORMAT_MESSAGE;
-  if (Object.keys(errors).length) return json({ errors }, 422);
+  const { errors, doc, ok } = validate(validationFields, body.data || {});
+  if (!ok) return json({ errors }, 422);
   if (body.business && isValidObjectId(body.business)) doc.businessId = body.business;
 
   /* stamped here, never taken from the client */
   doc.contactKind = 'Supplier';
-  /* Checked here even though the form checked on blur: the form's answer can
-     be seconds old, and a request need not come from the form at all. */
-  const conflict = await findSupplierGstConflict({ gstNo: doc.gstNo, businessId: doc.businessId });
-  if (conflict) return gstConflictResponse(conflict);
+  if (doc.gstNo) doc.gstNo = String(doc.gstNo).trim().toUpperCase();
+  const duplicate = doc.gstNo && await Contact.exists({
+    gstNo: doc.gstNo,
+    contactKind: 'Supplier',
+    ...(doc.businessId ? { businessId: doc.businessId } : {}),
+  });
+  if (duplicate) return json({ errors: { gstNo: 'GST already exists' } }, 422);
   doc.contactId = await nextContactId(Contact, ContactType, doc.typeId);
 
-  try {
-    const created = await Contact.create(doc);
-    return json({ ok: true, id: String(created._id) });
-  } catch (err) {
-    /* two saves of the same new GSTIN at the same instant both pass the check
-       above; the unique index lets one through and refuses the other */
-    if (isSupplierGstKeyError(err)) {
-      return gstConflictResponse(await findSupplierGstConflict({ gstNo: doc.gstNo, businessId: doc.businessId }));
-    }
-    throw err;
-  }
+  const created = await Contact.create(doc);
+  return json({ ok: true, id: String(created._id) });
 }

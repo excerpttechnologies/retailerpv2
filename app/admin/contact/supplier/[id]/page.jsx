@@ -28,12 +28,6 @@ export default function EditSupplierPage({ params }) {
            GST cleared -> it is editable again. The rule itself lives in
            ../gstAddress.js so the add and edit pages cannot drift apart. */
         isFieldReadOnly: isGstLockedField,
-        /* GST NO is checked against the supplier master when it loses focus,
-           when an import fills it and again on Submit. This supplier's own
-           number is excluded, so opening it never reports a duplicate. The
-           API re-checks on save regardless. See runGstCheck in
-           TabbedFormView. */
-        gstLookup: true,
         /* GST / Excel import belongs with the identity fields it fills, so
            it is rendered on the Basic Information tab only. applyPatch writes
            into the form's shared state - nothing reaches the API until the

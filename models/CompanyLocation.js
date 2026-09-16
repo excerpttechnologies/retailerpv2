@@ -24,6 +24,19 @@ const CompanyLocationSchema = new mongoose.Schema(
     websiteUrl: { type: String, default: '' },
     gstin: { type: String, default: '' },
     termsAndConditions: { type: String, default: '' },
+
+    /* The mediating location for Inter Company Sell.
+
+       Goods moving between two child branches route through the main
+       branch, and this flag says WHICH of its locations receives them -
+       the warehouse rather than a shop floor. A flag rather than a name
+       match, so renaming the warehouse cannot silently break routing.
+
+       Only meaningful on a location whose business is the main branch. */
+    /* 'Yes' / 'No' rather than a Boolean: the form posts radio strings and
+       lib/validate.js passes them through as text, the same way
+       PaymentMethod.isActive and PosCounter.status already work. */
+    isMediator: { type: String, default: 'No', index: true },
   },
   { timestamps: true }
 );

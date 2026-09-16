@@ -93,26 +93,6 @@ select {
   .btn-dark { @apply border-[#6b7280] bg-[#6b7280] text-white hover:bg-[#5b6472]; }
   .btn-submit { @apply mx-auto mt-2 flex h-[38px] w-full max-w-[280px] justify-center; }
 
-  .grc-header-fields-grid {
-    display: grid;
-    grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr) 200px minmax(0, 0.75fr) 140px;
-    gap: 16px;
-  }
-  .grc-header-fields-grid .grc-bottom-freight { grid-row: 3; grid-column: 1; }
-  .grc-header-fields-grid .grc-bottom-stock-point { grid-row: 3; grid-column: 2; }
-  .grc-header-fields-grid .grc-bottom-invoice-copy { grid-row: 3; grid-column: 3; }
-  .grc-header-fields-grid .grc-bottom-waybill { grid-row: 3; grid-column: 4; }
-  @media (max-width: 900px) {
-    .grc-header-fields-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-    .grc-header-fields-grid .grc-bottom-freight,
-    .grc-header-fields-grid .grc-bottom-stock-point,
-    .grc-header-fields-grid .grc-bottom-invoice-copy,
-    .grc-header-fields-grid .grc-bottom-waybill {
-      grid-row: auto;
-      grid-column: auto;
-    }
-  }
-
   .search-input {
     @apply h-[34px] w-[220px] rounded-md border border-linestrong pl-[30px] pr-2.5
            text-[13px] outline-none focus:border-[#8fb0e8];
@@ -260,102 +240,6 @@ select {
   .print-doc { position: absolute; inset: 0; margin: 0; width: 100%; border: 0; }
   .no-print { display: none !important; }
 }
-
-/* ==========================================================================
-   BARCODE LABEL SHEET - its own print surface, deliberately not .print-doc.
-
-   The rule above hides the application with `visibility`, which is right for
-   a one-page invoice: the boxes stay in flow, the document sits on top of
-   them, one sheet comes out. It is wrong for a label run, and that is what
-   produced the blank pages this block exists to fix.
-
-     - `visibility: hidden` paints nothing but KEEPS every box in the flow, so
-       the admin shell (280mm-wide sidebar offset, top bar, the always-open
-       Add Item card, the item grid) still paginated. The printer was asked
-       for three sheets of a document whose every glyph had been made
-       invisible, so it produced three blank sheets. Removing the shell from
-       the BOX TREE with `display: none` is what actually stops it.
-
-     - `.print-doc { position: absolute; inset: 0 }` over-constrains height,
-       so the box is stretched to one page and stops fragmenting. A sheet of
-       labels has to be free to break across as many pages as it needs.
-
-   Everything below is gated on a class that exists only while a label run is
-   in flight, so the rules above are what still govern every other print
-   screen in the application - the GRC print view, the tax invoice, the
-   purchase invoice and the Inventory label sheet are untouched. The block
-   above is APPENDED TO, never edited, for that reason.
-   ========================================================================== */
-/* On screen the sheet remains layoutable but invisible. A `display: none`
-   subtree has no layout, and parking it far offscreen can make Chrome's print
-   compositor discard the same subtree when print media is activated. */
-@media screen {
-  #barcode-print-root {
-    position: fixed;
-    left: 0;
-    top: 0;
-    visibility: hidden;
-    pointer-events: none;
-    background: #fff;
-  }
-}
-
-@media print {
-  /* Everything that is not the label sheet leaves the box tree, so it cannot
-     reserve a single line of paper. A plain class rather than :has() - if the
-     selector is not understood the whole rule is dropped, and the failure
-     mode of dropping THIS one is the blank sheet all over again. */
-  body.printing-labels > *:not(#barcode-print-root) { display: none !important; }
-
-  #barcode-print-root {
-    display: block !important;
-    visibility: visible !important;
-    position: static !important;
-    left: auto !important;
-    top: auto !important;
-    margin: 0 !important;
-    padding: 0 !important;
-    width: auto !important;
-    height: auto !important;
-    max-height: none !important;
-    overflow: visible !important;
-    opacity: 1 !important;
-    background: #fff !important;
-  }
-  #barcode-print-root * { visibility: visible !important; }
-
-  /* BarcodeLabelSheet carries .print-doc for the Inventory screen, which
-     prints it the old way. Inside this root the sheet must stay in normal
-     flow: the .print-doc rule above pins it to inset:0, which over-constrains
-     its height, stretches it to a single page and stops it fragmenting - so
-     everything past the first page would be dropped without a word. */
-  #barcode-print-root .print-doc {
-    position: static !important;
-    inset: auto !important;
-    width: auto !important;
-  }
-
-  /* Never leave the label sheet standing on the shell's page tint. */
-  body.printing-labels { background: #fff !important; }
-
-  /* A sticker is a physical object - it may not be split down the middle by
-     a page boundary. Not scoped to the print root: the Inventory label sheet
-     is the same component on paper and wants the same guarantee. */
-  .barcode-label {
-    break-inside: avoid;
-    page-break-inside: avoid;
-  }
-
-  /* CODE128 bars are SVG <rect fill="#000">, never a CSS background, so they
-     survive Chrome's default "Background graphics: off". This keeps them
-     solid black rather than dithered grey, which is what a scanner needs. */
-  #barcode-print-root svg,
-  #barcode-print-root svg * {
-    -webkit-print-color-adjust: exact;
-    print-color-adjust: exact;
-  }
-}
-
 .prn-tbl { width: 100%; border-collapse: collapse; font-size: 13px; }
 .prn-tbl th,
 .prn-tbl td { border: 1px solid #000; padding: 4px 6px; }

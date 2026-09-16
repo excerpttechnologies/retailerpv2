@@ -93,14 +93,14 @@ export const FORM = {
           }
         ]
       },
-      {
-        "type": "info",
-        "items": [
-          "<b>Item Code Validation:</b> The item code must exist in the GRC Item list, regardless of whether a purchase invoice has been created for the GRC.",
-          "<b>Stock Availability Check:</b> The item must be available in stock before proceeding.",
-          "<b>Unit Price Calculation:</b> The item's unit price is determined based on the selected customer's pricing setup (RSP, WSP, or DP)."
-        ]
-      },
+      // {
+      //   "type": "info",
+      //   "items": [
+      //     "<b>Item Code Validation:</b> The item code must exist in the GRC Item list, regardless of whether a purchase invoice has been created for the GRC.",
+      //     "<b>Stock Availability Check:</b> The item must be available in stock before proceeding.",
+      //     "<b>Unit Price Calculation:</b> The item's unit price is determined based on the selected customer's pricing setup (RSP, WSP, or DP)."
+      //   ]
+      // },
       {
         "type": "scan"
       },

@@ -6,7 +6,6 @@ import { requireSession } from '@/lib/session';
 import { validate } from '@/lib/validate';
 import { FORM } from '@/app/admin/transaction/purchase/grc/form';
 import { nextDocNumber } from '@/lib/docnumber';
-import { itemPriceErrors } from '@/lib/purchasePrice';
 
 /* header fields AND the totals rows - the totals card holds real stored
    numbers (taxable value, round off, net value, the editable discounts).
@@ -51,16 +50,6 @@ export async function PUT(req, { params }) {
 
   if (Array.isArray(body.data?.items)) doc.items = body.data.items;
   if (Array.isArray(body.data?.voucherRows)) doc.voucherRows = body.data.voucherRows;
-
-  /* same rule as the create route - a priced line must carry a real price */
-  const priceProblems = itemPriceErrors(doc.items);
-  if (priceProblems.length) {
-    return json({
-      errors: { items: priceProblems[0].problem },
-      error: priceProblems[0].problem,
-      details: priceProblems.slice(0, 5).map((p) => `${p.ref}: ${p.problem}`),
-    }, 422);
-  }
 
   /* never overwrite the document number on edit */
   delete doc.grcNumber;

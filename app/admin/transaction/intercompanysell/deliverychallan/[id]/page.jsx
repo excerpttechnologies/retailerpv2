@@ -1,6 +1,7 @@
 'use client';
 import { use } from 'react';
 import IcChallanForm from '@/components/IcChallanForm';
+import { COMPACT_GRID_COLS } from '../fields';
 
 /* Edit Inter Company Delivery Challan.
 
@@ -22,6 +23,14 @@ export default function EditIcDeliveryChallanPage({ params }) {
         endpoint: '/api/ic-delivery-challan',
         scope: ['business', 'location', 'finYear'],
         docType: 'Inter Company Delivery Challan',
+        /* the three-rule Info panel is hidden on this screen - the rules still
+           apply, they are just not printed above every challan */
+        showInfo: false,
+        /* the printed challan's column set - see COMPACT_GRID_COLS */
+        gridCols: COMPACT_GRID_COLS,
+        compactGrid: true,
+        /* totals panel hidden - still computed and still saved */
+        showTotals: false,
       }}
     />
   );

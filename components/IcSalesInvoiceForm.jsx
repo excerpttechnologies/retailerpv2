@@ -41,14 +41,21 @@ export default function IcSalesInvoiceForm({ cfg, id }) {
   const [flash, setFlash] = useState(null);
   const [saving, setSaving] = useState(false);
 
-  /* ---------------------------------------------------------- selectors */
+  /* ---------------------------------------------------------- selectors
+
+     Only the branches this one may invoice. An invoice consumes delivery
+     challans, and those already had to route through the main branch, so the
+     same restriction applies here - otherwise the screen would offer a
+     destination that can never have any challans against it. */
   useEffect(() => {
-    if (readOnly) return;
-    fetch('/api/options?ref=business')
+    if (readOnly || !scope.business) return undefined;
+    let off = false;
+    fetch('/api/ic-destinations?business=' + scope.business, { cache: 'no-store' })
       .then((r) => r.json())
-      .then((d) => setBusinesses(d.options || []))
-      .catch(() => setBusinesses([]));
-  }, [readOnly]);
+      .then((d) => { if (!off) setBusinesses(d.options || []); })
+      .catch(() => { if (!off) setBusinesses([]); });
+    return () => { off = true; };
+  }, [readOnly, scope.business]);
 
   useEffect(() => {
     if (readOnly || !toBusinessId) { setLocations([]); return; }

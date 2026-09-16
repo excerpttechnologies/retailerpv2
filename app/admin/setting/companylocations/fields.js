@@ -16,5 +16,8 @@ export const FIELDS = [
     { k: "email", label: "Email", type: "text" },
     { k: "websiteUrl", label: "Website URL", type: "text" },
     { k: "gstin", label: "GSTIN (ex: 27ABCDE1234F1Z5)", type: "text" },
+    { k: "isMediator", label: "Inter Company Mediator", type: "radio", def: "No",
+      opts: [{"v":"Yes","l":"Yes"},{"v":"No","l":"No"}],
+      hint: "Route inter company transfers between branches through this location" },
     { k: "termsAndConditions", label: "Terms & Conditions", type: "textarea", span: "all" },
   ];

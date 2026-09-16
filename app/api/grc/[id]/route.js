@@ -48,7 +48,6 @@ import { BarcodeLabel } from '@/lib/barcodeLabel';
 import { requireSession } from '@/lib/session';
 import { validate } from '@/lib/validate';
 import { FORM } from '@/app/admin/transaction/purchase/grc/form';
-import { LABEL_MODE, resolveBarcodeType, resolveBarcodeLabelCount } from '@/lib/barcodeLabelPrint';
 
 const json = (data, status = 200) => Response.json(data, { status });
 
@@ -65,13 +64,7 @@ export async function GET(_req, { params }) {
 
   const [rows, supplier] = await Promise.all([
     BarcodeLabel.find({ grcId: id }).sort({ createdAt: 1 }).lean(),
-      /* contactId is the supplier's human-facing code (models/Contact.js:143,
-         shown as "Supplier Code" in the contact master, e.g. "G515"). It was
-         already stored on every supplier but was being dropped by this
-         select, so the barcode print page had no way to reach it without a
-         second round trip. Added here rather than fetched separately - the
-         supplier is already being read on this line. */
-      grc.supplierId ? Contact.findById(grc.supplierId).select('contactId businessName firstName lastName markUpOnCostRsp markUpOnCostWsp markUpOnCostDp').lean() : null,
+    grc.supplierId ? Contact.findById(grc.supplierId).select('businessName firstName lastName').lean() : null,
   ]);
 
   return json({
@@ -79,38 +72,8 @@ export async function GET(_req, { params }) {
       ...grc,
       _id: String(grc._id),
       supplierName: supplier?.businessName || [supplier?.firstName, supplier?.lastName].filter(Boolean).join(' '),
-      /* The stored code, verbatim - not derived from the name and never
-         defaulted to a placeholder. It is ERP data for the screens and
-         reports that show this GRC. It is NOW also label data: every barcode
-         label carries the GRC number and supplier code at the top-right. */
-      supplierCode: supplier?.contactId || '',
-        supplierMarkup: {
-          rsp: supplier?.markUpOnCostRsp ?? null,
-          wsp: supplier?.markUpOnCostWsp ?? null,
-          dp: supplier?.markUpOnCostDp ?? null,
-        },
     },
-    /* Every barcode row carries the type and sticker count the label rule
-       resolves for it, here on the server, from the uomType / batchType the
-       save route stored: UNIQUE 1, MTR 2, BATCH null - a batch's count is
-       the operator's, asked for when it is printed. The print screens run the
-       very same function (lib/barcodeLabelPrint.js), so they agree with this
-       by construction.
-       
-       Each row is also enriched with grcNumber and supplierCode from the parent
-       GRC so labels can display "GRC {grcNumber} · Supplier {supplierCode}" at
-       the top-right without requiring every caller to manually merge these fields. */
-    rows: rows.map((r) => {
-      const barcodeType = resolveBarcodeType(r);
-      return {
-        ...r,
-        _id: String(r._id),
-        grcNumber: grc.grcNumber || '',
-        supplierCode: supplier?.contactId || '',
-        barcodeType,
-        labelCount: barcodeType === LABEL_MODE.BATCH ? null : resolveBarcodeLabelCount(r),
-      };
-    }),
+    rows: rows.map((r) => ({ ...r, _id: String(r._id) })),
   });
 }
 

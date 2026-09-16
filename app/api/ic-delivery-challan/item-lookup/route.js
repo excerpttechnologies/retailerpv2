@@ -6,7 +6,7 @@
 // import Tax from '@/models/Tax';
 // import Business from '@/models/Business';
 // import IcDeliveryChallan from '@/models/IcDeliveryChallan';
-// import { BarcodeLabel } from '@/lib/barcodeLabel';
+// import { BarcodeLabel, BARCODE_STATUS } from '@/lib/barcodeLabel';
 // import { requireSession } from '@/lib/session';
 // import { escapeRegex } from '@/lib/validate';
 
@@ -186,8 +186,7 @@ import Hsn from '@/models/Hsn';
 import Uom from '@/models/Uom';
 import Tax from '@/models/Tax';
 import Business from '@/models/Business';
-import IcDeliveryChallan from '@/models/IcDeliveryChallan';
-import { BarcodeLabel } from '@/lib/barcodeLabel';
+import { BarcodeLabel, BARCODE_STATUS } from '@/lib/barcodeLabel';
 import { requireSession } from '@/lib/session';
 import { escapeRegex } from '@/lib/validate';
 
@@ -208,7 +207,11 @@ import { escapeRegex } from '@/lib/validate';
 
      3. Unit Price Calculation - see the note on unitRate.                  */
 
-const json = (d, s = 200) => Response.json(d, { status: s });
+const json = (d, s = 200) => Response.json(d, {
+  status: s,
+  /* a stock lookup must never be answered from a cache */
+  headers: { 'Cache-Control': 'no-store' },
+});
 const num = (v) => { const n = Number(v); return Number.isFinite(n) ? n : 0; };
 
 /* Item codes are typed by hand and scanned by gun, and the barcode rows were
@@ -236,45 +239,11 @@ const stockScope = (scope) => (scope.businessId
     ] }
   : {});
 
-/* Available quantity.
-
-   v10 has no stock ledger - no model carries a running balance - so this is
-   derived: everything received for the code through GRC barcode rows, minus
-   whatever is already committed to inter company challans that have not been
-   invoiced away. It is the same figure the deployed screen prints as
-   "(Max: n)" under the QTY box.
-
-   When a real stock ledger lands, replace this one function and nothing else
-   on the screen has to change. */
-async function availableQty(itemCode, scope) {
-  /* Item codes are matched case-insensitively everywhere else on this route,
-     so they must be here too: an exact-string match against a code the Item
-     master spells differently from the barcode row silently returns 0 stock
-     while the item itself resolves fine. */
-  const received = await BarcodeLabel.find({
-    itemCode: codeMatch(itemCode),
-    ...stockScope(scope),
-  }).select('qty').lean();
-
-  const inStock = received.reduce((a, r) => a + num(r.qty), 0);
-
-  /* already promised on open inter company challans */
-  const open = await IcDeliveryChallan.find({
-    ...(scope.businessId ? { businessId: scope.businessId } : {}),
-    ...(scope.locationId ? { locationId: scope.locationId } : {}),
-    ...(scope.finYear ? { finYear: scope.finYear } : {}),
-  }).select('items').lean();
-
-  const committed = open.reduce((a, dc) => {
-    const lines = Array.isArray(dc.items) ? dc.items : [];
-    return a + lines
-      .filter((l) => String(l.itemCode).trim().toLowerCase()
-        === String(itemCode).trim().toLowerCase())
-      .reduce((s, l) => s + num(l.qty), 0);
-  }, 0);
-
-  return Math.max(0, Math.round((inStock - committed) * 100) / 100);
-}
+/* NOTE: a branch-wide availableQty() used to live here, summing every
+   in-stock barcode row for an item code and subtracting what open challans
+   had already committed. Entry is per-barcode now, so the ceiling is simply
+   that barcode's own quantity and the aggregate is no longer consulted.
+   Recover it from git if a per-item-code balance is ever needed again. */
 
 export async function GET(req) {
   const session = await requireSession();
@@ -294,38 +263,100 @@ export async function GET(req) {
     finYear: sp.get('finYear') || '',
   };
 
-  /* rule 1 - the code must exist in the GRC item list */
+  /* rule 1 - the code must exist in the GRC item list.
+
+     What gets typed here is a BARCODE NUMBER. barcodeNo is carried by every
+     barcodeLabel row; barcodeGenerated and oldBarcode are only populated on
+     some of them, so all three are tried. An item code is still accepted as
+     a fallback - the two namespaces do not overlap, and operators who know a
+     code should not be blocked from using it. */
   const rx = codeMatch(code);
 
   /* Scoped to THIS branch. A barcode row belonging to another branch is not
      stock you can ship from here, and letting it through produced the
      confusing "item resolves but Max is 0" case. */
-  const barcodeRow = await BarcodeLabel.findOne({
-    itemCode: codeMatch(code),
-    ...stockScope(scope),
-  }).lean();
+  /* $and, NEVER a spread of two clauses that both use $or.
+
+     stockScope() returns its own { $or: [...] } for the business, so
+
+         { ...byBarcode, status, ...stockScope(scope) }
+
+     produced ONE object whose $or key was overwritten by the business
+     clause - the barcode condition vanished entirely and the query became
+     "first in-stock row at this branch". Every barcode scanned came back as
+     the same row (PR0144SU), which is exactly what the challan kept showing. */
+  const scoped = (clause) => ({
+    $and: [clause, { status: BARCODE_STATUS.IN_STOCK }, stockScope(scope)]
+      .filter((c) => Object.keys(c).length),
+  });
+
+  const byBarcode = {
+    $or: [{ barcodeNo: rx }, { barcodeGenerated: rx }, { oldBarcode: rx }],
+  };
+
+  const barcodeRow = await BarcodeLabel.findOne(scoped(byBarcode)).lean();
+
+  /* NO item-code fallback.
+
+     It used to pick the first in-stock unit carrying that item code, so
+     typing "sk-10" silently put barcode PR0144SU on the challan - a unit the
+     operator never chose and cannot see the reason for. What goes in the
+     Barcode column must be what was scanned. An item code now gets told what
+     it is, and the type-ahead lists that code's actual barcodes to pick from. */
+  if (!barcodeRow) {
+    const asItemCode = await BarcodeLabel.findOne(scoped({ itemCode: rx })).lean();
+
+    if (asItemCode) {
+      return json({
+        error: '"' + code + '" is an item code, not a barcode. Type it again and'
+          + ' pick one of its barcodes from the list.',
+        code: 'IS_ITEM_CODE',
+      }, 404);
+    }
+  }
 
   if (!barcodeRow) {
-    /* distinguish "never received anywhere" from "not received HERE" */
-    const elsewhere = await BarcodeLabel.findOne({ itemCode: rx }).lean();
+    /* Say WHICH of the three things went wrong rather than one blanket
+       message: never seen at all / not at this branch / already gone. */
+    const anywhere = await BarcodeLabel.findOne({
+      $or: [{ barcodeNo: rx }, { barcodeGenerated: rx }, { oldBarcode: rx }, { itemCode: rx }],
+    }).lean();
+
+    if (!anywhere) {
+      return json({ error: 'No barcode or item code "' + code + '" was found. Receive it first.' }, 404);
+    }
+    if (anywhere.status && anywhere.status !== BARCODE_STATUS.IN_STOCK) {
+      return json({
+        error: '"' + code + '" is not in stock (' + anywhere.status + ').',
+      }, 404);
+    }
     return json({
-      error: elsewhere
-        ? 'No stock of "' + code + '" at this business / location. Receive it here first.'
-        : 'No GRC item found for "' + code + '". Receive it first.',
+      error: 'No stock of "' + code + '" at this business / location. Receive it here first.',
     }, 404);
   }
 
+  /* The barcode row is the authority on WHICH item this is - what was typed
+     may have been a barcode, which the Item master knows nothing about. */
+  const itemRx = codeMatch(barcodeRow.itemCode || code);
+
+  /* The Item master is ENRICHMENT here, not a requirement.
+
+     It holds 144 rows against 23,913 barcode rows and almost all of them have
+     a blank itemCode, so requiring a match would reject very nearly every
+     barcode. The barcode row already carries the description, HSN, GST
+     percentage, UOM and retail price captured when the goods were received,
+     which is everything a challan line needs. Item master values win where
+     they exist; the barcode row fills the gaps. */
   const item = await Item.findOne({
-    itemCode: rx,
+    itemCode: itemRx,
     ...(scope.businessId ? { businessId: scope.businessId } : {}),
   }).lean()
-    || await Item.findOne({ itemCode: rx }).lean();
-
-  if (!item) return json({ error: 'No item master record for "' + code + '".' }, 404);
+    || await Item.findOne({ itemCode: itemRx }).lean()
+    || null;
 
   const [hsn, uom] = await Promise.all([
-    item.hsnId ? Hsn.findById(item.hsnId).lean() : null,
-    item.uomId ? Uom.findById(item.uomId).lean() : null,
+    item && item.hsnId ? Hsn.findById(item.hsnId).lean() : null,
+    item && item.uomId ? Uom.findById(item.uomId).lean() : null,
   ]);
 
   /* GST chain: HSN -> taxSlabs[].gstTaxNameId -> Tax.igst/cgst/sgst,
@@ -345,6 +376,14 @@ export async function GET(req) {
         sgst: num(t.sgst),
       };
     }
+  }
+
+  /* No HSN chain to walk - the barcode row stores the rate the goods were
+     received at, as a plain percentage string ("5"). Intra-state splits it in
+     half, which is what the HSN-driven branch above produces too. */
+  if (!slab) {
+    const pct = num(barcodeRow.gst);
+    if (pct) slab = { name: pct + '%', igst: pct, cgst: pct / 2, sgst: pct / 2 };
   }
 
   /* Inter-state supply carries IGST, intra-state splits into CGST + SGST.
@@ -377,23 +416,63 @@ export async function GET(req) {
      To wire it up properly: decide where a branch's pricing setup lives
      (either add those fields to Business, or map each branch to a Contact),
      then swap the line below for the same markup calculation Contact uses. */
-  const unitRate = num(item.rsp);
+  const unitRate = num(item && item.rsp) || num(barcodeRow.retailPrice);
+
+  /* How much of THIS BARCODE the branch holds.
+
+     Not the single row's quantity: the same printed barcode is spread over
+     one row per physical unit received, so 8A1000 is ten rows of 1 rather
+     than one row of 10. Summing them is what lets the operator scan the same
+     label ten times and ship ten units. */
+  /* Match on the resolved barcode only, and ONLY on fields that actually
+     carry it. codeMatch('') is /^\s*\s*$/ - it matches every EMPTY string,
+     so including a blank barcodeGenerated in this $or swept up every row with
+     no generated barcode and reported the whole branch's stock (24,260) as
+     the ceiling for a single unit. */
+  const label = String(barcodeRow.barcodeNo || barcodeRow.barcodeGenerated || code).trim();
+  const heldOr = [];
+  if (barcodeRow.barcodeNo) heldOr.push({ barcodeNo: codeMatch(label) });
+  if (barcodeRow.barcodeGenerated) heldOr.push({ barcodeGenerated: codeMatch(label) });
+
+  /* $and, not a spread. stockScope() returns its own { $or: [...] }, so
+     spreading it beside `$or: heldOr` silently replaced the barcode clause
+     with the business clause - the match became "every row at this branch"
+     and every barcode reported the branch's entire stock as its ceiling. */
+  const held = heldOr.length
+    ? await BarcodeLabel.aggregate([
+      { $match: scoped({ $or: heldOr }) },
+      { $group: { _id: null, qty: { $sum: { $ifNull: ['$qtyNum', 0] } } } },
+    ])
+    : [];
+
+  const barcodeQty = Math.round((Number(held[0] && held[0].qty) || 0) * 100) / 100
+    || Number(barcodeRow.qtyNum) || Number(barcodeRow.qty) || 0;
 
   return json({
     item: {
-      itemId: String(item._id),
-      itemCode: item.itemCode || code,
-      itemName: item.name || '',
-      hsn: hsn ? hsn.code || '' : '',
+      /* exactly the barcode that was scanned - this is what the grid's
+         Barcode column prints */
+      barcodeNo: barcodeRow.barcodeNo || barcodeRow.barcodeGenerated || '',
+      itemId: item ? String(item._id) : '',
+      itemCode: (item && item.itemCode) || barcodeRow.itemCode || code,
+      itemName: (item && item.name)
+        || barcodeRow.printDescription || barcodeRow.supplierDescription || '',
+      hsn: (hsn && hsn.code) || barcodeRow.hsn || '',
       slabName: slab ? slab.name : '',
-      uom: uom ? uom.shortName || uom.name || '' : '',
+      uom: (uom && (uom.shortName || uom.name)) || barcodeRow.uom || barcodeRow.uomType || '',
+      /* PC or MTR - the only two values in the data. The challan grid locks
+         the quantity box for PC (a piece is a piece) and leaves it editable
+         for MTR, where a length is cut to order. Kept separate from `uom`,
+         which is a free-text label ("Pc(s)", "Mtr", "METERS") and cannot be
+         compared against reliably. */
+      uomType: barcodeRow.uomType || '',
       unitRate,
       discountPct: 0,
       roffDiscount: 0,
       igstPct,
       cgstPct,
       sgstPct,
-      maxQty: await availableQty(item.itemCode || code, scope),
+      maxQty: barcodeQty,
     },
   });
 }

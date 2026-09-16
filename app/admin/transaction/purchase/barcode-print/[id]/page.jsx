@@ -82,23 +82,109 @@
 //
 
 'use client';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useParams } from 'next/navigation';
-import BatchLabelCountDialog from '@/components/BatchLabelCountDialog';
-import GrcBarcodeLabelSheet, { labelFor } from '@/components/GrcBarcodeLabel';
-import {
-  LABEL_MODE,
-  resolveLabelMode,
-  batchAvailableQty,
-  withLabelCounts,
-  pendingBatchRows,
-  labelKey,
-  toLabelData,
-} from '@/lib/barcodeLabelPrint';
+import JsBarcode from 'jsbarcode';
+/* Run: npm install jsbarcode
+   Bundled as a real dependency instead of a <script src="cdnjs..."> tag -
+   the CDN script was the blank-box problem: it either got blocked by a CSP
+   header, a network/proxy filter, or just never resolved before this
+   component rendered. Importing it means it ships inside your own JS
+   bundle, so there's no runtime network call to fail. */
 
-/* Label rendering (BarcodeSvg, Label, labelFor, GrcBarcodeLabelSheet) now
-   lives in components/GrcBarcodeLabel.jsx — the single source of truth shared
-   with the Barcode Generation preview so both always show the same sticker. */
+/* =====================================================================================
+   LABEL FIELD MAP
+   Which row field fills which slot on the printed label. Confirmed:
+     - barcode graphic + the number printed under it -> barcodeGenerated
+     - description line                              -> printDescription
+     - big "RATE : ₹.../-" line                       -> offerPrice, falling back to retailPrice
+
+   NOT yet confirmed against your data (image showed values like
+   "G1260*4953*1", "608", "4-F-W BDR", "MNRG", "MMIO", "12.65 Mtr" with no
+   obvious matching field name) - these four are best guesses so the page
+   renders something sensible today. Swap the field names on the right below
+   once you confirm them; nothing else in this file needs to change.
+===================================================================================== */
+const LABEL_FIELDS = {
+  topRightCode: 'itemCode', // TODO confirm: label showed "G1260*4953*1"
+  detailRow1: ['dummy', 'hsn', 'fma'], // TODO confirm: label showed "608" / "4-F-W BDR" / "MNRG"
+  detailRow2Left: 'uom', // TODO confirm: label showed "MMIO"
+  detailRow2Price: 'wspPrice', // TODO confirm: label showed "1,980" (smaller, above the big RATE line)
+};
+
+/** Renders one CODE128 barcode into an <svg>. barcodeGenerated is whatever
+ *  string your Barcode Setting produced (e.g. "18A1005") - JsBarcode encodes
+ *  it as-is, no reformatting. */
+function BarcodeSvg({ value }) {
+  const svgRef = useRef(null);
+
+  useEffect(() => {
+    if (!value || !svgRef.current) return;
+    try {
+      JsBarcode(svgRef.current, value, {
+        format: 'CODE128',
+        displayValue: false,
+        height: 42,
+        width: 1.3,
+        margin: 0,
+      });
+    } catch {
+      // JsBarcode throws on characters it can't encode (e.g. empty string) -
+      // leave the svg empty rather than crashing the whole sheet over one row
+    }
+  }, [value]);
+
+  return <svg ref={svgRef} className="mx-auto block w-full max-w-[190px]" />;
+}
+
+/* One printable label, laid out top to bottom exactly like the reference:
+   barcode graphic -> (barcode number | top-right code) -> description ->
+   detail row 1 (3 values) -> detail row 2 (left value | qty+uom | price) ->
+   big RATE line -> footer notes. */
+function Label({ row }) {
+  const rate = row.offerPrice || row.retailPrice || '';
+  const detailRow1 = LABEL_FIELDS.detailRow1.map((k) => row[k]).filter((v) => v !== undefined);
+  const qtyWithUom = [row.qty, row.uom].filter(Boolean).join(' ');
+
+  return (
+    <div className="px-3 py-2 text-center break-inside-avoid">
+      <BarcodeSvg value={row.barcodeGenerated} />
+
+      <div className="flex items-center justify-between text-[11px] font-semibold font-mono mt-0.5">
+        <span>{row.barcodeGenerated}</span>
+        <span>{row[LABEL_FIELDS.topRightCode]}</span>
+      </div>
+
+      <div className="text-[9px] text-slate-600 leading-tight mt-0.5 truncate">
+        {row.printDescription || row.supplierDescription}
+      </div>
+
+      <div className="flex items-center justify-between text-[10px] font-semibold mt-1">
+        {detailRow1.map((v, i) => (
+          <span key={i}>{v}</span>
+        ))}
+      </div>
+
+      <div className="flex items-center justify-between text-[10px] font-semibold mt-0.5">
+        <span>{row[LABEL_FIELDS.detailRow2Left]}</span>
+        <span>{qtyWithUom}</span>
+        <span>{row[LABEL_FIELDS.detailRow2Price]}</span>
+      </div>
+
+      <div className="text-[13px] font-extrabold mt-1">
+        RATE : ₹{rate}/-
+      </div>
+
+      <div className="flex items-center justify-between text-[7.5px] text-slate-500 mt-0.5">
+        <span>(Inclusive all taxes)</span>
+        <span>DRY WASH ONLY</span>
+      </div>
+      <div className="text-[7.5px] text-slate-500">
+        No exchange, no guarantee, No Return
+      </div>
+    </div>
+  );
+}
 
 /* =====================================================================================
    PAGE
@@ -107,35 +193,6 @@ export default function GrcBarcodePrintPage() {
   const { id } = useParams();
   const [data, setData] = useState(null);
   const [error, setError] = useState('');
-
-  /* The admin's answer for each BATCH barcode, keyed by labelKey (the barcode
-     number). MTR and UNIQUE barcodes never get an entry: their count is the
-     rule in lib/barcodeLabelPrint.js, not something to type. */
-  const [batchCounts, setBatchCounts] = useState({});
-  /* The open "Print Batch Labels" dialog - { key, continueToPrint }.
-     continueToPrint marks a dialog opened by Print Labels, whose confirm moves
-     on to the next pending batch barcode and finally prints; one opened from
-     the panel only records the count. */
-  const [prompt, setPrompt] = useState(null);
-  const [notice, setNotice] = useState('');
-
-  /* PRINTING HAPPENS EXACTLY ONCE PER USER ACTION.
-     window.print() photographs the DOM as it stands at the instant it is
-     called. Called straight from a click or confirm handler, it would run
-     before React had committed the counts that handler just set, so the paper
-     would miss the batch labels the admin had only just asked for. The handler
-     therefore only bumps printRequest; the effect below prints after the
-     commit.
-     printInFlightRef refuses a second request while one is pending, so a
-     double Enter in the dialog, or a double click that lands before the
-     print, cannot queue a second print dialog (for the second click of a
-     double click that lands after it, see startPrint). printedRef remembers
-     which request has been printed, so an effect that runs twice for the same
-     request (StrictMode, or a re-run after a cancelled frame) still prints
-     once. */
-  const [printRequest, setPrintRequest] = useState(0);
-  const printInFlightRef = useRef(false);
-  const printedRef = useRef(0);
 
   useEffect(() => {
     if (!id) return;
@@ -148,137 +205,10 @@ export default function GrcBarcodePrintPage() {
       .catch((e) => setError(e.message || 'Failed to load'));
   }, [id]);
 
-  /* Two frames: the first lets the commit that carries the updated sheet
-     reach the screen, the second lets the browser lay out the SVG bars
-     JsBarcode drew in that commit's effects. Only then is the page printed.
-     The claim on printedRef is taken inside the frame, at the moment of
-     printing - taken earlier, a cleanup that cancelled the frame would leave
-     the request marked done and nothing would ever print. */
-  useEffect(() => {
-    if (!printRequest) return undefined;
-    let frame = requestAnimationFrame(() => {
-      frame = requestAnimationFrame(() => {
-        frame = 0;
-        if (printedRef.current === printRequest) return;
-        printedRef.current = printRequest;
-        try {
-          window.print();
-        } finally {
-          printInFlightRef.current = false;
-        }
-      });
-    });
-    return () => {
-      if (frame) cancelAnimationFrame(frame);
-    };
-  }, [printRequest]);
-
-  /* Rows without any barcode number are skipped: there is nothing to encode.
-     labelKey is the same key batchCounts is kept under. */
-  const printable = useMemo(() => (data?.rows || []).filter((row) => labelKey(row)), [data]);
-
-  /* Every printable row with its sticker count (`copies`) from the shared
-     rule - MTR 2, UNIQUE 1, BATCH the admin's validated answer or 0. */
-  const counted = useMemo(() => withLabelCounts(printable, batchCounts), [printable, batchCounts]);
-
-  /* THE SHEET - both the on-screen preview and the paper, so it holds
-     exactly the copies that will print. Each copy is the same label data: a
-     second metre sticker or a twentieth batch sticker is a print copy of the
-     same barcode number, never a new barcode, and nothing here writes or
-     reserves anything. A BATCH row with no valid count yet has copies 0 and
-     so is simply not on the sheet until the admin gives it one. */
-  const sheet = useMemo(
-    () => counted.flatMap((row) => {
-      const label = labelFor(row);
-      return Array.from({ length: row.copies }, (_, copy) => ({ key: row._id + '-' + copy, label }));
-    }),
-    [counted]
-  );
-
-  const batchRows = useMemo(
-    () => counted.filter((row) => resolveLabelMode(row).mode === LABEL_MODE.BATCH),
-    [counted]
-  );
-
-  /* The BATCH rows Print Labels has to ask about. pendingBatchRows already
-     leaves out a batch barcode with no quantity recorded - no count can ever
-     be valid for it, so asking would stop the whole GRC from printing. It
-     prints 0 labels and the panel says why. */
-  function askable(counts) {
-    return pendingBatchRows(printable, counts);
-  }
-
-  function askFor(row, continueToPrint) {
-    setPrompt({ key: labelKey(row), continueToPrint });
-  }
-
-  /* Counted from the counts about to be committed rather than from `sheet`,
-     which still holds the previous render's copies at this point. */
-  function requestPrint(counts) {
-    if (printInFlightRef.current) return;
-    const total = withLabelCounts(printable, counts).reduce((sum, row) => sum + row.copies, 0);
-    if (total === 0) {
-      setNotice('Nothing to print: no barcode on this GRC has a label to print.');
-      return;
-    }
-    printInFlightRef.current = true;
-    setNotice('');
-    setPrintRequest((n) => n + 1);
-  }
-
-  /* event.detail counts the clicks of one gesture, so the second click of a
-     double click arrives with detail 2 - and it is not a second request.
-     printInFlightRef alone cannot stop it: window.print() blocks while the
-     print dialog is open, the guard is released when it returns, and a
-     second click that queued up behind the dialog then opened it again.
-     A single click is detail 1 and keyboard activation detail 0, so both
-     still print. */
-  function startPrint(event) {
-    if (event?.detail > 1) return;
-    if (printInFlightRef.current) return;
-    setNotice('');
-    const pending = askable(batchCounts);
-    if (pending.length) {
-      askFor(pending[0], true);
-      return;
-    }
-    requestPrint(batchCounts);
-  }
-
-  /* The dialog only calls this with a value validateBatchLabelCount has
-     accepted. The next counts are built here and handed on, so the pending
-     check and the print total both see the answer just given rather than the
-     state from before it. */
-  function confirmPrompt(value) {
-    if (!prompt) return;
-    const next = { ...batchCounts, [prompt.key]: value };
-    setBatchCounts(next);
-    if (!prompt.continueToPrint) {
-      setPrompt(null);
-      return;
-    }
-    const pending = askable(next);
-    if (pending.length) {
-      askFor(pending[0], true);
-      return;
-    }
-    setPrompt(null);
-    requestPrint(next);
-  }
-
-  /* Cancel at any point prints nothing. Counts already confirmed earlier in
-     the same chain were valid answers and stay set - the panel shows them and
-     they can be changed there. */
-  function cancelPrompt() {
-    setPrompt(null);
-  }
-
-  /* Nothing is rendered until the real data has arrived. */
   if (error) return <div className="p-6 text-sm text-red-600">{error}</div>;
-  if (!data) return <div className="p-6 text-sm text-slate-500">Loading GRC data...</div>;
+  if (!data) return <div className="p-6 text-sm text-slate-500">Loading...</div>;
 
-  const pendingCount = askable(batchCounts).length;
-  const promptRow = prompt ? printable.find((row) => labelKey(row) === prompt.key) : null;
+  const labels = data.rows.filter((r) => r.barcodeGenerated);
 
   return (
     <div className="max-w-5xl mx-auto p-6 print:p-0">
@@ -289,95 +219,52 @@ export default function GrcBarcodePrintPage() {
         }
       `}</style>
 
-      {/* Not printed, so the GRC number may stay here as a reminder of which
-          GRC is on screen. The supplier code is gone: it has no place on this
-          page now that no label carries it. */}
       <div className="no-print flex justify-between items-center mb-4">
         <span className="text-xs text-slate-500">
-          {sheet.length} label(s) &middot; GRC {data.grc?.grcNumber}
-          {pendingCount > 0
-            ? ` · ${pendingCount} batch barcode${pendingCount === 1 ? '' : 's'} awaiting a label count`
-            : ''}
+          {labels.length} label(s) &middot; GRC {data.grc.grcNumber}
         </span>
         <button
-          type="button"
-          onClick={startPrint}
+          onClick={() => window.print()}
           className="bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-semibold px-4 py-2 rounded shadow-sm"
         >
           Print Labels
         </button>
       </div>
 
-      {notice && (
-        <p className="no-print mb-4 rounded border border-amber-300 bg-amber-50 p-3 text-sm text-amber-800">
-          {notice}
-        </p>
-      )}
-
-      {/* BATCH barcodes. A batch barcode stands for the whole received
-          quantity, so how many stickers it needs is the admin's call - asked
-          here, or by Print Labels for any still unanswered. */}
-      {batchRows.length > 0 && (
-        <div className="no-print mb-4 rounded border border-slate-300 bg-slate-50 p-3">
-          <div className="mb-2 text-xs font-semibold text-slate-700">Batch barcodes</div>
-          <ul className="divide-y divide-slate-200">
-            {batchRows.map((row) => {
-              const key = labelKey(row);
-              const noQuantity = batchAvailableQty(row) === 0;
-              return (
-                <li key={row._id} className="flex items-center gap-3 py-1.5 text-xs">
-                  <span className="font-mono font-semibold normal-case">{key}</span>
-                  <span className="min-w-0 flex-1 truncate text-slate-600">{toLabelData(row).description}</span>
-                  {noQuantity ? (
-                    <span className="text-red-700">No quantity recorded - cannot print</span>
-                  ) : (
-                    <>
-                      <span className={row.copies > 0 ? 'text-slate-700' : 'text-amber-700'}>
-                        {row.copies > 0 ? `${row.copies} label${row.copies === 1 ? '' : 's'}` : 'not set'}
-                      </span>
-                      <button
-                        type="button"
-                        onClick={() => askFor(row, false)}
-                        className="rounded border border-slate-300 bg-white px-2 py-1 font-medium text-slate-700 hover:bg-slate-100"
-                      >
-                        {row.copies > 0 ? 'Change' : 'Set quantity'}
-                      </button>
-                    </>
-                  )}
-                </li>
-              );
-            })}
-          </ul>
-        </div>
-      )}
-
-      {printable.length === 0 ? (
-        <p className="no-print text-sm text-slate-400">
+      {labels.length === 0 ? (
+        <p className="text-sm text-slate-400">
           No barcodes have been generated for this GRC yet.
         </p>
-      ) : sheet.length === 0 ? (
-        <p className="no-print text-sm text-slate-400">
-          {pendingCount > 0
-            ? 'No labels on the sheet yet - set a label quantity for the batch barcodes above.'
-            : 'Nothing to print for this GRC.'}
-        </p>
       ) : (
-        /* GrcBarcodeLabelSheet renders the same 2-column grid + Label cells as
-           before, now from the shared component so print and preview are
-           always in sync. print-doc + content-start live inside the sheet so
-           globals.css keeps the labels visible at print time. */
-        <GrcBarcodeLabelSheet rows={counted} />
-      )}
+        // 2 per row for now - the actual physical label size will come from
+        // elsewhere later, per your note, so this grid isn't tuned to a
+        // specific sticker sheet yet.
+        /* print-doc is what makes this sheet survive printing at all.
+           globals.css hides every element on the page at print time
+           (body * { visibility: hidden }) and only un-hides .print-doc and
+           its children - that is how the sidebar, top bar and the Print
+           button are kept off the paper. Without the class the labels were
+           hidden along with everything else and the printout came out as a
+           blank page, even though the screen looked correct.
 
-      <BatchLabelCountDialog
-        open={Boolean(promptRow)}
-        barcode={prompt?.key || ''}
-        description={promptRow ? toLabelData(promptRow).description : ''}
-        available={promptRow ? batchAvailableQty(promptRow) : 0}
-        initialValue={prompt ? batchCounts[prompt.key] ?? '' : ''}
-        onCancel={cancelPrompt}
-        onConfirm={confirmPrompt}
-      />
+           content-start goes with it: .print-doc is absolutely positioned
+           at inset 0, so the grid is as tall as the page and its rows would
+           otherwise stretch to fill it - one row of labels came out a full
+           page tall, with the cut line running the whole sheet. */
+        <div className="print-doc content-start grid grid-cols-2 print:grid-cols-2">
+          {labels.map((r, i) => (
+            <div
+              key={r._id}
+              className={
+                'border-y border-slate-300 ' +
+                (i % 2 === 0 ? 'border-r border-dashed border-slate-400' : '')
+              }
+            >
+              <Label row={r} />
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }

@@ -348,11 +348,11 @@
 //         <div className="overflow-x-auto">
 //           <table className="dt">
 //             <thead>
-//               <tr>{GRID_COLS.map((c) => <th key={c}>{c}</th>)}</tr>
+//               <tr>{COLS.map((c) => <th key={c}>{c}</th>)}</tr>
 //             </thead>
 //             <tbody>
 //               {rows.length === 0 && (
-//                 <tr><td colSpan={GRID_COLS.length} className="dt-empty">
+//                 <tr><td colSpan={COLS.length} className="dt-empty">
 //                     {cfg.emptyGrid || 'No Items Added'}
 //                   </td></tr>
 //               )}
@@ -516,7 +516,7 @@
 
 
 'use client';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import Icon from './Icon';
 import Field from './Field';
@@ -560,11 +560,19 @@ export default function IcChallanForm({ cfg, id }) {
   const isEdit = Boolean(id);
 
   const FIELDS = cfg.fields || DC_FIELDS;
+  /* a screen may supply its own column list; `compactGrid` also switches the
+     row renderer, since the two must agree on cell count */
+  const COLS = cfg.gridCols || GRID_COLS;
+  const compact = Boolean(cfg.compactGrid);
   const docNoKey = cfg.docNoKey || 'dcNo';
   const docNoLabel = cfg.docNoLabel || 'DC No';
 
-  /* every header field except the two the form drives itself */
-  const rest = FIELDS.filter((f) => f.k !== 'toBusinessId' && f.k !== 'toLocationId');
+  /* every header field except the two the form drives itself, and any the
+     spec marks `hidden` - those stay in FIELDS so the API keeps accepting
+     them, they are simply not asked for on screen. */
+  const rest = FIELDS.filter(
+    (f) => f.k !== 'toBusinessId' && f.k !== 'toLocationId' && !f.hidden
+  );
 
   const [data, setData] = useState(() => {
     const d = {};
@@ -585,6 +593,17 @@ export default function IcChallanForm({ cfg, id }) {
   const [locations, setLocations] = useState([]);
 
   const [scan, setScan] = useState('');
+  /* type-ahead over the codes this branch actually holds - fed by
+     /api/ic-delivery-challan/item-codes, which reads the same barcodeLabel
+     collection Inventory > Barcode Item lists. */
+  /* Mirrors `rows` so addScanned can inspect the current lines without
+     either reading stale closure state or doing it inside a setRows updater.
+     Updaters must be pure - calling setFlash from inside one throws
+     "Cannot update a component while rendering a different component", and
+     StrictMode runs the updater twice so the error arrives in pairs. */
+  const rowsRef = useRef([]);
+  const [codeHints, setCodeHints] = useState([]);
+  const [showHints, setShowHints] = useState(false);
   const [errors, setErrors] = useState({});
   const [flash, setFlash] = useState(null);
   const [saving, setSaving] = useState(false);
@@ -594,22 +613,63 @@ export default function IcChallanForm({ cfg, id }) {
     setErrors((e) => (e[k] ? { ...e, [k]: undefined } : e));
   };
 
-  /* ------------------------------------------------- destination business */
-  useEffect(() => {
-    fetch('/api/options?ref=business')
-      .then((r) => r.json())
-      .then((d) => setBusinesses(d.options || []))
-      .catch(() => setBusinesses([]));
-  }, []);
+  /* ------------------------------------------------- destination business
 
-  /* locations of whichever business is picked on THIS form */
+     Every OTHER branch, so a child can name a sibling as the destination.
+     The main branch's warehouse mediates such a transfer - that is a property
+     of the route, stamped on save by lib/icRouting.js, not something the
+     operator picks. /api/ic-destinations decides. */
+  const [routeNotes, setRouteNotes] = useState([]);
+  const [lockedLocation, setLockedLocation] = useState(null);
+  /* the destination whose location list is pinned to the mediator - i.e. the
+     main branch itself. Any other destination picks locations normally. */
+  const [hubBusinessId, setHubBusinessId] = useState('');
+
   useEffect(() => {
-    if (!data.toBusinessId) { setLocations([]); return; }
+    if (!scope.business) { setBusinesses([]); return undefined; }
+    let off = false;
+    fetch('/api/ic-destinations?business=' + scope.business, { cache: 'no-store' })
+      .then((r) => r.json())
+      .then((d) => {
+        if (off) return;
+        setBusinesses(d.options || []);
+        setRouteNotes(d.notes || []);
+        setLockedLocation(d.lockedLocation || null);
+        setHubBusinessId(d.hubBusinessId || '');
+        /* One destination and nothing to choose - pick it, so the operator is
+           not asked a question with a single answer. */
+        if ((d.options || []).length === 1) {
+          setData((cur) => (cur.toBusinessId ? cur : { ...cur, toBusinessId: d.options[0].value }));
+        }
+      })
+      .catch(() => { if (!off) setBusinesses([]); });
+    return () => { off = true; };
+  }, [scope.business]);
+
+  /* locations of whichever business is picked on THIS form.
+
+     Pinned ONLY when the main branch is itself the destination: one of its
+     locations is flagged as the mediator and that is the only one which takes
+     inter company goods. A sibling destination has its own locations and is
+     picked as usual - pinning those to the warehouse was the bug that made
+     every destination look like the main branch. */
+  useEffect(() => {
+    if (!data.toBusinessId) { setLocations([]); return undefined; }
+
+    if (lockedLocation && String(data.toBusinessId) === String(hubBusinessId)) {
+      setLocations([lockedLocation]);
+      setData((cur) => (cur.toLocationId === lockedLocation.value
+        ? cur : { ...cur, toLocationId: lockedLocation.value }));
+      return undefined;
+    }
+
+    let off = false;
     fetch('/api/options?ref=companylocations&business=' + data.toBusinessId)
       .then((r) => r.json())
-      .then((d) => setLocations(d.options || []))
-      .catch(() => setLocations([]));
-  }, [data.toBusinessId]);
+      .then((d) => { if (!off) setLocations(d.options || []); })
+      .catch(() => { if (!off) setLocations([]); });
+    return () => { off = true; };
+  }, [data.toBusinessId, lockedLocation, hubBusinessId]);
 
   /* GSTIN and address follow the chosen business */
   const pickBusiness = async (v) => {
@@ -680,7 +740,12 @@ export default function IcChallanForm({ cfg, id }) {
     });
 
     try {
-      const r = await fetch((cfg.lookupEndpoint || '/api/ic-delivery-challan/item-lookup') + '?' + qs);
+      /* no-store: this is a stock read, and a cached answer would put the
+         previous barcode's figures on the new line */
+      const r = await fetch(
+        (cfg.lookupEndpoint || '/api/ic-delivery-challan/item-lookup') + '?' + qs,
+        { cache: 'no-store' }
+      );
       const d = await r.json();
 
       /* the lookup states WHY a code was refused - surface it rather than a
@@ -688,24 +753,57 @@ export default function IcChallanForm({ cfg, id }) {
       if (!r.ok) { setFlash({ type: 'err', msg: d.error || 'Item lookup failed' }); return; }
 
       const it = d.item;
-      setRows((prev) => {
-        /* scanning a code already on the challan should add ONE to that line,
-           not open a second line for the same item - which is what a barcode
-           gun repeating a scan produces */
-        const at = prev.findIndex(
-          (x) => String(x.itemCode).trim().toLowerCase()
-            === String(it.itemCode).trim().toLowerCase()
-        );
-        if (at >= 0) {
-          return prev.map((x, xi) => (xi === at ? { ...x, qty: num(x.qty) + 1 } : x));
-        }
-        return [...prev, { ...BLANK_ROW, ...it, availableQty: it.maxQty ?? null, qty: 1 }];
-      });
+      const key = (v) => String(v || '').trim().toLowerCase();
+
+      /* EVERY scan opens its own row.
+
+         No merging and no duplicate check: the operator enters one barcode,
+         sees one line, enters the next, sees the next line. The same barcode
+         entered twice is two lines, because the branch holds many units under
+         one printed barcode and each line is a separate entry the operator
+         can set a quantity on or delete. */
+      setRows((prev) => [...prev, {
+        ...BLANK_ROW, ...it,
+        availableQty: it.maxQty ?? null,
+        qty: 1,
+      }]);
       setScan('');
     } catch {
       setFlash({ type: 'err', msg: 'Item lookup failed' });
     }
   }, [scope.business, scope.location, scope.finYear, data.toBusinessId, data.stockPointId, cfg.lookupEndpoint]);
+
+  /* Item-code suggestions.
+
+     Debounced because it fires per keystroke, and guarded with `off` because
+     a slow early response must not overwrite a later one - the same stale
+     -response race the Location selector hit.
+
+     Scoped to the branch in the top bar: a code held by another branch is not
+     stock this challan can ship, and offering it only to have the lookup
+     refuse it is worse than not offering it at all. */
+  useEffect(() => {
+    const term = scan.trim();
+    if (!term) { setCodeHints([]); return undefined; }
+
+    let off = false;
+    const timer = setTimeout(() => {
+      const qs = new URLSearchParams({
+        search: term,
+        business: scope.business || '',
+        location: scope.location || '',
+      });
+      fetch((cfg.codesEndpoint || '/api/ic-delivery-challan/item-codes') + '?' + qs,
+        { cache: 'no-store' })
+        .then((r) => r.json())
+        .then((d) => { if (!off) setCodeHints(Array.isArray(d.rows) ? d.rows : []); })
+        .catch(() => { if (!off) setCodeHints([]); });
+    }, 250);
+
+    return () => { off = true; clearTimeout(timer); };
+  }, [scan, scope.business, scope.location, cfg.codesEndpoint]);
+
+  useEffect(() => { rowsRef.current = rows; }, [rows]);
 
   /* ------------------------------------------------------------ totals --- */
   const totals = useMemo(
@@ -724,6 +822,9 @@ export default function IcChallanForm({ cfg, id }) {
       const lines = rows.map((r, i) => {
         const c = totals.calc[i];
         return {
+          /* which physical unit is being shipped - the line is meaningless
+             without it now that entry is by barcode */
+          barcodeNo: r.barcodeNo || '',
           itemId: r.itemId, itemCode: r.itemCode, itemName: r.itemName,
           hsn: r.hsn, slabName: r.slabName, uom: r.uom,
           qty: num(r.qty), availableQty: r.availableQty ?? null,
@@ -799,6 +900,9 @@ export default function IcChallanForm({ cfg, id }) {
               {businesses.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
             </select>
             {errors.toBusinessId && <div className="f-err">{errors.toBusinessId}</div>}
+            {/* Says why the list is short, rather than leaving the operator to
+                wonder where the other branches went. */}
+            {routeNotes.map((n) => <div className="f-hint mt-1 block" key={n}>{n}</div>)}
           </div>
 
           <div>
@@ -846,30 +950,65 @@ export default function IcChallanForm({ cfg, id }) {
           <span className="kbd">F9</span> / <span className="kbd">Tab</span>
           to add item &amp; and <b>box must be in focus</b>.
         </div>
-        <div className="mb-3 flex max-w-[760px]">
-          <input
-            className="f-input rounded-r-none"
-            placeholder="Enter item code"
-            value={scan}
-            onChange={(e) => setScan(e.target.value)}
-            onKeyDown={(e) => {
-              if (['Enter', 'F9', 'Tab'].includes(e.key)) { e.preventDefault(); addScanned(scan); }
-            }}
-          />
-          <button type="button" className="btn btn-dark rounded-l-none" onClick={() => addScanned(scan)}>
-            <Icon name="search" size={14} />
-          </button>
+        <div className="relative mb-3 max-w-[760px]">
+          <div className="flex">
+            <input
+              className="f-input rounded-r-none"
+              placeholder="Enter barcode number"
+              value={scan}
+              autoComplete="off"
+              onChange={(e) => { setScan(e.target.value); setShowHints(true); }}
+              onFocus={() => setShowHints(true)}
+              onBlur={() => setTimeout(() => setShowHints(false), 150)}
+              onKeyDown={(e) => {
+                if (e.key === 'Escape') { setShowHints(false); return; }
+                if (['Enter', 'F9', 'Tab'].includes(e.key)) {
+                  e.preventDefault();
+                  setShowHints(false);
+                  addScanned(scan);
+                }
+              }}
+            />
+            <button type="button" className="btn btn-dark rounded-l-none" onClick={() => addScanned(scan)}>
+              <Icon name="search" size={14} />
+            </button>
+          </div>
+
+          {/* onMouseDown, not onClick: a click blurs the input first, and the
+              blur handler would unmount this list before the click landed. */}
+          {showHints && !!codeHints.length && (
+            <ul className="absolute left-0 right-0 top-full z-20 mt-0.5 max-h-64 overflow-y-auto rounded border border-line bg-white shadow-lg">
+              {codeHints.map((h) => (
+                <li key={h.barcodeNo + '|' + h.itemCode}>
+                  <button
+                    type="button"
+                    className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[13px] hover:bg-[#f7f9fc]"
+                    onMouseDown={(e) => {
+                      e.preventDefault();
+                      setShowHints(false);
+                      addScanned(h.barcodeNo);
+                    }}
+                  >
+                    <span className="font-semibold">{h.barcodeNo}</span>
+                    <span className="shrink-0 text-inkmuted">{h.itemCode}</span>
+                    <span className="min-w-0 flex-1 truncate text-inkmuted">{h.printDescription}</span>
+                    <span className="shrink-0 text-inkmuted">Qty: {h.qty}</span>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
         </div>
 
         {/* ------------------------------------------------------ grid --- */}
         <div className="overflow-x-auto">
           <table className="dt">
             <thead>
-              <tr>{GRID_COLS.map((c) => <th key={c}>{c}</th>)}</tr>
+              <tr>{COLS.map((c) => <th key={c}>{c}</th>)}</tr>
             </thead>
             <tbody>
               {rows.length === 0 && (
-                <tr><td colSpan={GRID_COLS.length} className="dt-empty">
+                <tr><td colSpan={COLS.length} className="dt-empty">
                     {cfg.emptyGrid || 'No Items Added'}
                   </td></tr>
               )}
@@ -880,20 +1019,35 @@ export default function IcChallanForm({ cfg, id }) {
                   && num(r.qty) > num(r.availableQty);
                 return (
                   <tr key={i}>
+                {/* Compact layout - Sl No, Barcode, Qty, UOM, HSN, Item Name.
+                    The money columns are not shown; the line still carries
+                    unitRate and the tax percentages, so the totals block below
+                    reacts to a quantity change exactly as before. */}
+                {compact ? (
+                  <>
                     <td className="text-center">{i + 1}</td>
-                    <td>{r.itemCode}</td>
-                    <td>{r.itemName}</td>
-                    <td>{r.hsn}</td>
-                    <td>{r.slabName}</td>
-                    <td>{r.uom}</td>
+                    <td>{r.barcodeNo || ''}</td>
+                    {/* PC is a countable unit - one label, one piece - so the
+                        quantity is fixed at what the barcode represents and the
+                        box is locked. MTR is cut to length, so it stays
+                        editable. uomType carries the two values; the `uom`
+                        label is free text and cannot be tested against. */}
                     <td>
                       <input
                         type="number"
                         min="0"
-                        className={'f-input h-8 w-[86px] ' + (over ? 'border-danger' : '')}
+                        readOnly={String(r.uomType).toUpperCase() === 'PC'}
+                        title={String(r.uomType).toUpperCase() === 'PC'
+                          ? 'Sold by the piece - quantity is fixed'
+                          : undefined}
+                        className={'f-input h-8 w-[86px] '
+                          + (over ? 'border-danger ' : '')
+                          + (String(r.uomType).toUpperCase() === 'PC'
+                            ? 'cursor-not-allowed bg-[#f1f3f7] text-inkmuted' : '')}
                         value={r.qty ?? ''}
                         onWheel={(e) => e.currentTarget.blur()}
                         onChange={(e) => {
+                          if (String(r.uomType).toUpperCase() === 'PC') return;
                           /* a negative quantity on a challan is meaningless -
                              it would flip the line's sign all the way through
                              to the invoice's net value */
@@ -909,28 +1063,77 @@ export default function IcChallanForm({ cfg, id }) {
                         </div>
                       )}
                     </td>
-                    {['unitRate', 'discountPct', 'roffDiscount'].map((k) => (
-                      <td key={k}>
-                        <input
-                          type="number"
-                          className="f-input h-8 w-[86px]"
-                          value={r[k] ?? ''}
-                          onWheel={(e) => e.currentTarget.blur()}
-                          onChange={(e) => setCell(i, k, e.target.value)}
-                        />
-                      </td>
-                    ))}
-                    <td className="text-right">{money(c.finalRate)}</td>
-                    <td className="text-right">{money(c.beforeTax)}</td>
-                    <td className="text-right">{money(c.igst)}</td>
-                    <td className="text-right">{money(c.cgst)}</td>
-                    <td className="text-right">{money(c.sgst)}</td>
-                    <td className="text-right font-bold">{money(c.netAmount)}</td>
+                    <td>{r.uom}</td>
+                    <td>{r.hsn}</td>
+                    <td>{r.itemName}</td>
+                    {/* The rate the line is priced at - the item's RSP, taken
+                        from the barcode row when the Item master has none.
+                        Read-only: the price comes from the master data, not
+                        from whoever is raising the challan. It still drives
+                        the totals, so quantity remains the thing that moves
+                        Net Value on this screen. */}
+                    <td className="text-center">{money(r.unitRate)}</td>
                     <td>
                       <button type="button" className="act-btn bg-danger" onClick={() => dropRow(i)}>
                         <Icon name="trash" size={12} />
                       </button>
                     </td>
+                  </>
+                ) : (
+                  <>
+                      <td className="text-center">{i + 1}</td>
+                      <td>{r.barcodeNo || ''}</td>
+                      <td>{r.itemName}</td>
+                      <td>{r.hsn}</td>
+                      <td>{r.slabName}</td>
+                      <td>{r.uom}</td>
+                      <td>
+                        <input
+                          type="number"
+                          min="0"
+                          className={'f-input h-8 w-[86px] ' + (over ? 'border-danger' : '')}
+                          value={r.qty ?? ''}
+                          onWheel={(e) => e.currentTarget.blur()}
+                          onChange={(e) => {
+                            /* a negative quantity on a challan is meaningless -
+                               it would flip the line's sign all the way through
+                               to the invoice's net value */
+                            const v = e.target.value;
+                            setCell(i, 'qty', v === '' ? '' : Math.max(0, Number(v)));
+                          }}
+                        />
+                        {/* the deployed screen prints the stock ceiling here;
+                            shown only when something supplied one */}
+                        {r.availableQty !== null && r.availableQty !== undefined && (
+                          <div className={'pt-0.5 text-[11px] ' + (over ? 'text-danger' : 'text-inkmuted')}>
+                            (Max: {r.availableQty})
+                          </div>
+                        )}
+                      </td>
+                      {['unitRate', 'discountPct', 'roffDiscount'].map((k) => (
+                        <td key={k}>
+                          <input
+                            type="number"
+                            className="f-input h-8 w-[86px]"
+                            value={r[k] ?? ''}
+                            onWheel={(e) => e.currentTarget.blur()}
+                            onChange={(e) => setCell(i, k, e.target.value)}
+                          />
+                        </td>
+                      ))}
+                      <td className="text-right">{money(c.finalRate)}</td>
+                      <td className="text-right">{money(c.beforeTax)}</td>
+                      <td className="text-right">{money(c.igst)}</td>
+                      <td className="text-right">{money(c.cgst)}</td>
+                      <td className="text-right">{money(c.sgst)}</td>
+                      <td className="text-right font-bold">{money(c.netAmount)}</td>
+                      <td>
+                        <button type="button" className="act-btn bg-danger" onClick={() => dropRow(i)}>
+                          <Icon name="trash" size={12} />
+                        </button>
+                      </td>
+                  </>
+                )}
                   </tr>
                 );
               })}
@@ -938,85 +1141,91 @@ export default function IcChallanForm({ cfg, id }) {
           </table>
         </div>
 
-        {/* ---------------------------------------------------- totals --- */}
-        <div className="mt-5">
-          <table className="w-full border-collapse text-[13.5px]">
-            <tbody>
-              <tr className="border-b border-line">
-                <td className="w-[38%] py-2 pr-3 text-right text-cell">Taxable Value</td>
-                <td className="w-[22%]" />
-                <td className="w-[18%] px-2" />
-                <td className="w-[4%] text-center text-[#c07b2a]">+</td>
-                <td className="py-2 pr-3 text-right">{money(totals.taxableValue)}</td>
-              </tr>
-              <tr className="border-b border-line">
-                <td className="py-2 pr-3 text-right text-cell">Discount(%)</td>
-                <td />
-                <td className="px-2">
-                  <input
-                    type="number" className="f-input h-8 text-center"
-                    value={headDiscountPct}
-                    onWheel={(e) => e.currentTarget.blur()}
-                    onChange={(e) => setHeadDiscountPct(e.target.value)}
-                  />
-                </td>
-                <td className="text-center text-[#c07b2a]">&minus;</td>
-                <td className="py-2 pr-3 text-right">{money(totals.headDiscount)}</td>
-              </tr>
-              <tr className="border-b border-line">
-                <td className="py-2 pr-3 text-right text-cell">RoundOff Discount(Amt)</td>
-                <td />
-                <td className="px-2">
-                  <input
-                    type="number" className="f-input h-8 text-center"
-                    value={headRoffDiscount}
-                    onWheel={(e) => e.currentTarget.blur()}
-                    onChange={(e) => setHeadRoffDiscount(e.target.value)}
-                  />
-                </td>
-                <td className="text-center text-[#c07b2a]">&minus;</td>
-                <td className="py-2 pr-3 text-right" />
-              </tr>
-
-              {(totals.cgstTotal > 0 || totals.sgstTotal > 0) && (
+        {/* ------------------------------------------------- totals --- */}
+        {/* Hidden on the Delivery Challan (cfg.showTotals === false).
+            The figures are still COMPUTED and still saved - the document
+            needs its taxable value, tax and net value, and the Sales
+            Invoice reads them back. Only the panel is gone. */}
+        {cfg.showTotals !== false && (
+          <div className="mt-5">
+            <table className="w-full border-collapse text-[13.5px]">
+              <tbody>
                 <tr className="border-b border-line">
-                  <td className="py-2 pr-3 text-right text-cell" />
-                  <td />
-                  <td />
-                  <td className="text-center text-[#c07b2a]">+</td>
-                  <td className="py-2 pr-3 text-right">
-                    <span className="mr-4 text-cell">
-                      CGST + SGST ({totals.cgstPct} + {totals.sgstPct}) %
-                    </span>
-                    {money(totals.cgstTotal + totals.sgstTotal)}
-                  </td>
+                  <td className="w-[38%] py-2 pr-3 text-right text-cell">Taxable Value</td>
+                  <td className="w-[22%]" />
+                  <td className="w-[18%] px-2" />
+                  <td className="w-[4%] text-center text-[#c07b2a]">+</td>
+                  <td className="py-2 pr-3 text-right">{money(totals.taxableValue)}</td>
                 </tr>
-              )}
-              {totals.igstTotal > 0 && (
                 <tr className="border-b border-line">
-                  <td className="py-2 pr-3 text-right text-cell" />
-                  <td /><td />
-                  <td className="text-center text-[#c07b2a]">+</td>
-                  <td className="py-2 pr-3 text-right">
-                    <span className="mr-4 text-cell">IGST ({totals.igstPct}) %</span>
-                    {money(totals.igstTotal)}
+                  <td className="py-2 pr-3 text-right text-cell">Discount(%)</td>
+                  <td />
+                  <td className="px-2">
+                    <input
+                      type="number" className="f-input h-8 text-center"
+                      value={headDiscountPct}
+                      onWheel={(e) => e.currentTarget.blur()}
+                      onChange={(e) => setHeadDiscountPct(e.target.value)}
+                    />
                   </td>
+                  <td className="text-center text-[#c07b2a]">&minus;</td>
+                  <td className="py-2 pr-3 text-right">{money(totals.headDiscount)}</td>
                 </tr>
-              )}
+                <tr className="border-b border-line">
+                  <td className="py-2 pr-3 text-right text-cell">RoundOff Discount(Amt)</td>
+                  <td />
+                  <td className="px-2">
+                    <input
+                      type="number" className="f-input h-8 text-center"
+                      value={headRoffDiscount}
+                      onWheel={(e) => e.currentTarget.blur()}
+                      onChange={(e) => setHeadRoffDiscount(e.target.value)}
+                    />
+                  </td>
+                  <td className="text-center text-[#c07b2a]">&minus;</td>
+                  <td className="py-2 pr-3 text-right" />
+                </tr>
 
-              <tr className="border-b border-line">
-                <td className="py-2 pr-3 text-right text-cell">Round Off</td>
-                <td /><td /><td />
-                <td className="py-2 pr-3 text-right">{money(totals.roundOff)}</td>
-              </tr>
-              <tr className="font-bold">
-                <td className="py-2 pr-3 text-right">Net Value</td>
-                <td /><td /><td />
-                <td className="py-2 pr-3 text-right">{money(totals.netValue)}</td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
+                {(totals.cgstTotal > 0 || totals.sgstTotal > 0) && (
+                  <tr className="border-b border-line">
+                    <td className="py-2 pr-3 text-right text-cell" />
+                    <td />
+                    <td />
+                    <td className="text-center text-[#c07b2a]">+</td>
+                    <td className="py-2 pr-3 text-right">
+                      <span className="mr-4 text-cell">
+                        CGST + SGST ({totals.cgstPct} + {totals.sgstPct}) %
+                      </span>
+                      {money(totals.cgstTotal + totals.sgstTotal)}
+                    </td>
+                  </tr>
+                )}
+                {totals.igstTotal > 0 && (
+                  <tr className="border-b border-line">
+                    <td className="py-2 pr-3 text-right text-cell" />
+                    <td /><td />
+                    <td className="text-center text-[#c07b2a]">+</td>
+                    <td className="py-2 pr-3 text-right">
+                      <span className="mr-4 text-cell">IGST ({totals.igstPct}) %</span>
+                      {money(totals.igstTotal)}
+                    </td>
+                  </tr>
+                )}
+
+                <tr className="border-b border-line">
+                  <td className="py-2 pr-3 text-right text-cell">Round Off</td>
+                  <td /><td /><td />
+                  <td className="py-2 pr-3 text-right">{money(totals.roundOff)}</td>
+                </tr>
+                <tr className="font-bold">
+                  <td className="py-2 pr-3 text-right">Net Value</td>
+                  <td /><td /><td />
+                  <td className="py-2 pr-3 text-right">{money(totals.netValue)}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        )}
 
         <button
           type="button"

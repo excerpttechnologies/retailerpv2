@@ -18,7 +18,6 @@ export default function ModalForm({ cfg, slug, onClose, onSaved }) {
     return d;
   });
   const [errors, setErrors] = useState({});
-  const [formError, setFormError] = useState('');
   const [saving, setSaving] = useState(false);
   const [quickAddField, setQuickAddField] = useState(null);
   const quickAdd = quickAddField ? cfg.quickAdds?.[quickAddField] : null;
@@ -26,7 +25,7 @@ export default function ModalForm({ cfg, slug, onClose, onSaved }) {
   const set = (k, v) => { setData((d) => ({ ...d, [k]: v })); setErrors((e) => ({ ...e, [k]: undefined })); };
 
   async function submit() {
-    setSaving(true); setFormError('');
+    setSaving(true);
     try {
       const payload = {
         data: cfg.prepareData ? cfg.prepareData(data) : data,
@@ -37,16 +36,8 @@ export default function ModalForm({ cfg, slug, onClose, onSaved }) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
       });
-      const d = await r.json().catch(() => ({}));
+      const d = await r.json();
       if (r.status === 422) { setErrors(d.errors || {}); return; }
-      /* Any other failure - a GST number another supplier already holds
-         (409 from /api/supplier), a server fault - is shown here rather than
-         handed to onSaved as though the record had been written. */
-      if (!r.ok) {
-        setErrors(d.errors || {});
-        setFormError(d.error || 'Save failed. Nothing was saved.');
-        return;
-      }
       onSaved(d);
     } finally { setSaving(false); }
   }
@@ -82,7 +73,6 @@ export default function ModalForm({ cfg, slug, onClose, onSaved }) {
         </div>
 
         <div className="px-4 py-4">
-          {formError && <div className="flash flash-err">{formError}</div>}
           <div className={'grid gap-x-4 gap-y-3 ' + (cfg.modalWide ? 'grid-cols-1 md:grid-cols-3' : 'grid-cols-2')}>
             {(cfg.fields || []).filter((f) => !cfg.isFieldVisible || cfg.isFieldVisible(f, data)).map((f) => {
               const add = cfg.quickAdds?.[f.k];

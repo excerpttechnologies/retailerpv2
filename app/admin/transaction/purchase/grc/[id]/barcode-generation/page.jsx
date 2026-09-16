@@ -1,5 +1,5 @@
 'use client';
-import { useCallback, useEffect, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import GCRBarcodeGeneration from '@/components/GCRBarcodeGeneration';
 
@@ -9,13 +9,9 @@ export default function GrcBarcodeGenerationPage() {
   const [data, setData] = useState(null);
   const [error, setError] = useState('');
 
-  /* Also run after every successful Submit (onSaved below), so the grid is
-     re-read from the database and shows what was actually saved rather than
-     what the browser last held. The data is replaced, never cleared first, so
-     the screen - and a print dialog opened by Submit & Print - stays mounted. */
-  const load = useCallback(() => {
+  useEffect(() => {
     if (!id) return;
-    fetch(`/api/grc/${id}`, { cache: 'no-store' })
+    fetch(`/api/grc/${id}`)
       .then((response) => response.json())
       .then((result) => {
         if (result.error) throw new Error(result.error);
@@ -23,8 +19,6 @@ export default function GrcBarcodeGenerationPage() {
       })
       .catch((loadError) => setError(loadError.message || 'Failed to load GRC'));
   }, [id]);
-
-  useEffect(() => { load(); }, [load]);
 
   if (error) return <div className="p-6 text-sm text-red-600">{error}</div>;
   if (!data) return <div className="p-6 text-sm text-slate-500">Loading...</div>;
@@ -37,37 +31,7 @@ export default function GrcBarcodeGenerationPage() {
         </button>
         <div className="text-sm font-semibold">Barcode Generation - {data.grc.grcNumber}</div>
       </div>
-
-      {/* GRC NO + SUPPLIER CODE info bar — gives the operator a constant
-          reference while working through the items list. */}
-      <div className="flex items-center gap-6 border-b border-slate-200 bg-slate-50 px-4 py-2 text-xs">
-        <div className="flex items-center gap-2">
-          <span className="font-semibold uppercase tracking-wide text-slate-500">GRC NO</span>
-          <span className="font-mono font-bold text-slate-800">{data.grc.grcNumber || '—'}</span>
-        </div>
-        <div className="h-4 w-px bg-slate-300" />
-        <div className="flex items-center gap-2">
-          <span className="font-semibold uppercase tracking-wide text-slate-500">Supplier</span>
-          <span className="font-mono font-bold text-slate-800">{data.grc.supplierCode || '—'}</span>
-        </div>
-      </div>
-        {/* The GRC header is passed as grcHeader for the barcode value every
-            barcode of this GRC carries - SUPPLIER_CODE * GRC_NUMBER * SEQ *
-            QTY (lib/barcodeValue.js) - which the grid shows before a row is
-            saved. lastBarcodeSeq is the highest SEQ the GRC has given, so the
-            grid counts on from where the save route will. */}
-        <GCRBarcodeGeneration
-          grcId={id}
-          initialRows={data.rows}
-          supplierMarkup={data.grc.supplierMarkup}
-          grcHeader={{
-            grcNumber: data.grc.grcNumber || '',
-            supplierCode: data.grc.supplierCode || '',
-            lastBarcodeSeq: Number(data.grc.lastBarcodeSeq) || 0,
-          }}
-          onSaved={load}
-          editMode
-        />
+      <GCRBarcodeGeneration grcId={id} initialRows={data.rows} editMode />
     </div>
   );
 }
