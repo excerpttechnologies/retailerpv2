@@ -1,6 +1,6 @@
 import { isValidObjectId } from 'mongoose';
 import dbConnect from '@/lib/db';
-import Contact from '@/models/Contact';
+import { Supplier } from '@/lib/contacts';
 import { requireSession } from '@/lib/session';
 import { validate } from '@/lib/validate';
 import { TABS } from '@/app/admin/contact/supplier/tabs';
@@ -23,7 +23,7 @@ export async function GET(req, { params }) {
   const { id } = await params;
   await dbConnect();
 
-  const doc = await Contact.findById(id).lean();
+  const doc = await Supplier.findById(id).lean();
   if (!doc) return json({ doc: null }, 404);
   return json({ doc: { ...doc, _id: String(doc._id) } });
 }
@@ -45,7 +45,7 @@ export async function PUT(req, { params }) {
 
   /* Scoped to the business this supplier belongs to, not to whichever
      business the screen happens to be switched to. */
-  const current = isValidObjectId(id) ? await Contact.findById(id, { businessId: 1 }).lean() : null;
+  const current = isValidObjectId(id) ? await Supplier.findById(id, { businessId: 1 }).lean() : null;
   if (!current) return json({ error: 'Not found' }, 404);
   const businessId = current.businessId ? String(current.businessId) : body.business;
 
@@ -55,7 +55,7 @@ export async function PUT(req, { params }) {
 
   let updated;
   try {
-    updated = await Contact.findByIdAndUpdate(id, doc, { new: true, runValidators: true });
+    updated = await Supplier.findByIdAndUpdate(id, doc, { new: true, runValidators: true });
   } catch (err) {
     /* another save claimed the number between the check and this write */
     if (isSupplierGstKeyError(err)) {
@@ -75,6 +75,6 @@ export async function DELETE(req, { params }) {
   const { id } = await params;
   await dbConnect();
 
-  await Contact.findByIdAndDelete(id);
+  await Supplier.findByIdAndDelete(id);
   return json({ ok: true });
 }

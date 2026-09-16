@@ -22,6 +22,7 @@
 */
 
 import mongoose from 'mongoose';
+import { contactCollection } from '../lib/contactStorage.js';
 import crypto from 'crypto';
 import { readdirSync, statSync, existsSync } from 'fs';
 import { join } from 'path';
@@ -49,7 +50,7 @@ const SAMPLE = {
   'ic-delivery-challan': 'icdeliverychallan', 'ic-sales-return': 'icsalesreturn',
   'ic-auto-purchase-received': 'icautopurchasereceived', 'ic-auto-purchase-return': 'icautopurchasereturn',
   'cash-register': 'cashregister', 'delivery-challan': 'deliverychallan',
-  customer: 'contact', supplier: 'contact', agent: 'contact', item: 'item', uom: 'uom',
+  customer: contactCollection('Customer'), supplier: contactCollection('Supplier'), agent: contactCollection('Agent'), item: 'item', uom: 'uom',
   hsn: 'hsn', tax: 'tax', ledger: 'ledger', business: 'business', voucher: 'voucher',
   logistic: 'logistic', delivery: 'delivery', dispatch: 'dispatch', driver: 'driver',
   vehicle: 'vehicle', transporter: 'transporter', user: 'user', barcodeitem: 'barcodeLabel',
@@ -68,8 +69,8 @@ const PAGE_SAMPLE = {
   charge: 'purchasecharge', purchasegroup: 'purchasegroup', term: 'purchaseterm',
   stockpoint: 'stockpoint', barcodesetting: 'barcodesetting', users: 'user',
   'split-barcode-setting': 'splitbarcodesetting', 'attribute-addon': 'attributeaddon',
-  route: 'transportroute', salesinvoice_ic: 'icsalesinvoice', customer: 'contact',
-  supplier: 'contact', agent: 'contact', item: 'item', uom: 'uom', hsn: 'hsn',
+  route: 'transportroute', salesinvoice_ic: 'icsalesinvoice', customer: contactCollection('Customer'),
+  supplier: contactCollection('Supplier'), agent: contactCollection('Agent'), item: 'item', uom: 'uom', hsn: 'hsn',
   tax: 'tax', ledger: 'ledger', business: 'business', vehicle: 'vehicle',
   driver: 'driver', transporter: 'transporter', dispatch: 'dispatch', logistic: 'logistic',
   'barcode-print': 'grc', 'barcode-generation': 'grc', print: 'grc', view: 'posinvoice',

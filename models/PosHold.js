@@ -33,7 +33,7 @@ const PosHoldSchema = new mongoose.Schema(
     date: { type: Date, default: Date.now },
 
     /* the whole till header, so resuming restores the screen and not just the cart */
-    customerId: { type: mongoose.Schema.Types.ObjectId, ref: 'contact', default: null },
+    customerId: { type: mongoose.Schema.Types.ObjectId, ref: 'customer', default: null },
     customerName: { type: String, default: '' },
     customerContact: { type: String, default: '' },
     customerSnapshot: { type: mongoose.Schema.Types.Mixed, default: null },

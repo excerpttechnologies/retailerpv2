@@ -3,15 +3,16 @@ import mongoose from 'mongoose';
 /* Sales Persons - the Staff Management master behind
    /admin/staff-management/staff/salesperson.
 
-   Deliberately its own collection rather than another `contactKind` on
-   models/Contact.js. A sales person is staff, not a party you trade with:
+   Deliberately its own collection rather than another contact kind
+   (models/contactSchema.js). A sales person is staff, not a party you trade with:
    nothing here has a GST number, a billing address, a ledger or an opening
    balance, and a contactKind row would carry all of that unused.
 
    NOTE for whoever wires attribution later: the `salesPersonId` already
    stamped on Delivery Challan / Sales Invoice / IC documents resolves through
-   lib/refLabels.js to models/Contact.js, NOT to this model. Those existing
-   documents point at a Contact. Repointing them is a data migration and a
+   lib/refLabels.js to the AGENT model (lib/contacts.js), NOT to this model -
+   the sales screens pick a sales person from the agent list. Those existing
+   documents point at an agent. Repointing them is a data migration and a
    refLabels change, so it is left alone here - this master stands on its own
    until that call is made.
 

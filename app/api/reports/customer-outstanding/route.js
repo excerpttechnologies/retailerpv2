@@ -3,7 +3,7 @@ import dbConnect from '@/lib/db';
 import { requireSession } from '@/lib/session';
 import PosInvoice from '@/models/PosInvoice';
 import PosReturn from '@/models/PosReturn';
-import Contact from '@/models/Contact';
+import { Customer } from '@/lib/contacts';
 import {
   json, num, r2, scopeOf, scopeFilter, dateRange, pageOf, paged,
 } from '@/lib/reports';
@@ -58,7 +58,7 @@ export async function GET(req) {
     [...bills, ...returns].map((d) => d.customerId).filter(Boolean).map(String)
   )];
   const customers = custIds.length
-    ? await Contact.find({ _id: { $in: custIds } })
+    ? await Customer.find({ _id: { $in: custIds } })
       .select('businessName firstName lastName prefix').lean()
     : [];
   const custById = new Map(customers.map((c) => [String(c._id), c]));

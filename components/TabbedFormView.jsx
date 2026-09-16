@@ -520,7 +520,8 @@ export default function TabbedFormView({ cfg, id, slug, onSaved }) {
               className={
                 s.cols === 6 ? 'form-grid-6'
                   : s.cols === 3 ? 'form-grid'
-                    : 'form-grid-4'
+                    : s.cols === 1 ? 'grid grid-cols-1 gap-x-[22px] gap-y-3.5'
+                      : 'form-grid-4'
               }
             >
               {(s.fields || []).filter((f) => !f.hidden && (!cfg.isFieldVisible || cfg.isFieldVisible(f, data))).map((f) => {

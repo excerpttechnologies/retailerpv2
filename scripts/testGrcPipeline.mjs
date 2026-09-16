@@ -25,6 +25,7 @@
    temporary sign-in account. It modifies nothing else. */
 
 import mongoose from 'mongoose';
+import { contactCollection } from '../lib/contactStorage.js';
 import crypto from 'crypto';
 const BASE=process.env.E2E_BASE||'http://127.0.0.1:3111';
 await mongoose.connect(process.env.MONGODB_URI);
@@ -42,7 +43,7 @@ const api=(p,o={})=>fetch(BASE+p,{...o,headers:{'Content-Type':'application/json
 
 const lr=await db.collection('delivery').findOne({transactionNo:'LR/26/011'});
 const business=String(lr.businessId), location=String(lr.locationId), finYear=lr.finYear;
-const sup=await db.collection('contact').findOne({_id:lr.supplierId});
+const sup=await db.collection(contactCollection('Supplier')).findOne({_id:lr.supplierId});
 console.log(`\nreal data: ${lr.transactionNo} | supplier ${sup.businessName} (${sup.contactId}) | inv ${lr.invPmNumber}\n`);
 
 console.log('--- 1. supplier dropdown ---');
@@ -50,7 +51,7 @@ const all=await api(`/api/options?ref=supplier&business=${business}`);
 ok('loads without typing anything', all.ok && all.body.options.length>0, 'got '+(all.body?.options?.length));
 ok('label carries the G-code', /\(G\d+\)|\([A-Z]+\d+\)/.test(all.body.options.map(o=>o.label).join('|')), all.body.options[0]?.label);
 ok('value is the ObjectId, not the text', /^[a-f0-9]{24}$/.test(all.body.options[0]?.value||''), all.body.options[0]?.value);
-const wrongBiz=await db.collection('contact').find({contactKind:'Supplier',businessId:{$ne:lr.businessId}}).toArray();
+const wrongBiz=await db.collection(contactCollection('Supplier')).find({contactKind:'Supplier',businessId:{$ne:lr.businessId}}).toArray();
 const leaked=all.body.options.filter(o=>wrongBiz.some(w=>String(w._id)===o.value));
 ok('no other company\'s vendors leak in', leaked.length===0, leaked.map(l=>l.label).join(','));
 
@@ -70,7 +71,7 @@ const lrs=await api(`/api/purchase-grc?availableLr=1&business=${business}&locati
 ok('this vendor\'s LR appears', (lrs.body.rows||[]).some(r=>r.transactionNo==='LR/26/011'), JSON.stringify((lrs.body.rows||[]).map(r=>r.transactionNo)));
 const row=(lrs.body.rows||[]).find(r=>r.transactionNo==='LR/26/011');
 ok('row carries lrNumber / invoice / value for the label', row?.lrNumber==='64187'&&row?.invPmNumber==='WH0001355'&&row?.value===22134, JSON.stringify({lr:row?.lrNumber,inv:row?.invPmNumber,val:row?.value}));
-const otherSup=await db.collection('contact').findOne({contactKind:'Supplier',businessId:lr.businessId,_id:{$ne:sup._id}});
+const otherSup=await db.collection(contactCollection('Supplier')).findOne({contactKind:'Supplier',businessId:lr.businessId,_id:{$ne:sup._id}});
 const lrs2=await api(`/api/purchase-grc?availableLr=1&business=${business}&location=${location}&finYear=${finYear}&supplierId=${otherSup._id}`);
 ok('a DIFFERENT vendor does not see it', !(lrs2.body.rows||[]).some(r=>r.transactionNo==='LR/26/011'), 'got '+(lrs2.body.rows||[]).length+' rows');
 

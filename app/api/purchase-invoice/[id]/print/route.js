@@ -2,7 +2,7 @@ import dbConnect from '@/lib/db';
 import PurchaseInvoice from '@/models/PurchaseInvoice';
 import Business from '@/models/Business';
 import CompanyLocation from '@/models/CompanyLocation';
-import Contact from '@/models/Contact';
+import { Supplier } from '@/lib/contacts';
 import PurchaseTerm from '@/models/PurchaseTerm';
 import { requireSession } from '@/lib/session';
 
@@ -28,7 +28,7 @@ export async function GET(req, { params }) {
   const [business, location, supplier, term] = await Promise.all([
     inv.businessId ? Business.findById(inv.businessId).lean() : null,
     inv.locationId ? CompanyLocation.findById(inv.locationId).lean() : null,
-    inv.supplierId ? Contact.findById(inv.supplierId).lean() : null,
+    inv.supplierId ? Supplier.findById(inv.supplierId).lean() : null,
     inv.purchaseTermId ? PurchaseTerm.findById(inv.purchaseTermId).lean() : null,
   ]);
 

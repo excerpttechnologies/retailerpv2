@@ -43,7 +43,7 @@
 
 import dbConnect from '@/lib/db';
 import Grc from '@/models/Grc';
-import Contact from '@/models/Contact';
+import { Supplier } from '@/lib/contacts';
 import { BarcodeLabel } from '@/lib/barcodeLabel';
 import { requireSession } from '@/lib/session';
 import { validate } from '@/lib/validate';
@@ -71,7 +71,7 @@ export async function GET(_req, { params }) {
          select, so the barcode print page had no way to reach it without a
          second round trip. Added here rather than fetched separately - the
          supplier is already being read on this line. */
-      grc.supplierId ? Contact.findById(grc.supplierId).select('contactId businessName firstName lastName markUpOnCostRsp markUpOnCostWsp markUpOnCostDp').lean() : null,
+      grc.supplierId ? Supplier.findById(grc.supplierId).select('contactId businessName firstName lastName markUpOnCostRsp markUpOnCostWsp markUpOnCostDp').lean() : null,
   ]);
 
   return json({

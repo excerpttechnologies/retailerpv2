@@ -3,7 +3,7 @@ import dbConnect from '@/lib/db';
 import PosInvoice from '@/models/PosInvoice';
 import Business from '@/models/Business';
 import CompanyLocation from '@/models/CompanyLocation';
-import Contact from '@/models/Contact';
+import { Customer } from '@/lib/contacts';
 import PosCounter from '@/models/PosCounter';
 import StockAdjustment from '@/models/StockAdjustment';
 import { requireSession } from '@/lib/session';
@@ -65,7 +65,7 @@ export async function GET(req) {
   const [businesses, locations, customers, counters] = await Promise.all([
     Business.find({ _id: { $in: rows.map((r) => r.businessId).filter(Boolean) } }).select('_id name businessPrintName').lean(),
     CompanyLocation.find({ _id: { $in: rows.map((r) => r.locationId).filter(Boolean) } }).select('_id name businessPrintName').lean(),
-    Contact.find({ _id: { $in: rows.map((r) => r.customerId).filter(Boolean) } }).select('_id businessName firstName middleName lastName billingMobile').lean(),
+    Customer.find({ _id: { $in: rows.map((r) => r.customerId).filter(Boolean) } }).select('_id businessName firstName middleName lastName billingMobile').lean(),
     PosCounter.find({ _id: { $in: rows.map((r) => r.counterId).filter(Boolean) } }).select('_id counterName').lean(),
   ]);
   const byId = (list) => new Map(list.map((item) => [String(item._id), item]));

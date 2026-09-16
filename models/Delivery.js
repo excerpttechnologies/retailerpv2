@@ -79,7 +79,7 @@ const DeliverySchema = new mongoose.Schema(
     lrNumber: { type: String, default: '' },
     bookingDate: { type: Date, default: null },
 
-    supplierId: { type: mongoose.Schema.Types.ObjectId, ref: 'contact', default: null },
+    supplierId: { type: mongoose.Schema.Types.ObjectId, ref: 'supplier', default: null },
     invPmNumber: { type: String, default: '' },
     parcelQty: { type: Number, default: null },
     value: { type: Number, default: null },

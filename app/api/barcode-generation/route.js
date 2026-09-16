@@ -2,7 +2,7 @@ import { isValidObjectId } from 'mongoose';
 import dbConnect from '@/lib/db';
 import Grc from '@/models/Grc';
 import Item from '@/models/Item';
-import Contact from '@/models/Contact';
+import { Supplier } from '@/lib/contacts';
 import { handler, json } from '@/lib/apiError';
 import { requirePermission, PERMISSIONS } from '@/lib/rbac';
 import { escapeRegex } from '@/lib/validate';
@@ -11,7 +11,7 @@ import { BarcodeLabel, BARCODE_STATUS } from '@/lib/barcodeLabel';
 import { reserveBarcodeNumbers, loadFormat, uomTypeOf, batchTypeOf } from '@/lib/barcodeEngine';
 import { withTransaction, receiveIntoStock, restateReceipt, voidUnits, InventoryError } from '@/lib/inventory';
 import { matchRowsToUnits, editedFields, toGridRow, rowBarcode, unitBarcode, clientIdOf } from '@/lib/barcodeRowSync';
-import { composeBarcodeValue, barcodeValueProblem, nextSeqStart, highestSeq, hasComposedBarcode } from '@/lib/barcodeValue';
+import { composeBarcodeValue, barcodeValueProblem, billSlNoProblem, nextSeqStart, highestSeq, hasComposedBarcode } from '@/lib/barcodeValue';
 import { purchasePriceError, normalisePurchasePrice } from '@/lib/purchasePrice';
 import { saveBatchTypeOf } from '@/lib/barcodeUnits';
 
@@ -94,7 +94,7 @@ export const GET = handler(async (req) => {
 
   const [suppliers, grcs] = await Promise.all([
     supplierIds.length
-      ? Contact.find({ _id: { $in: supplierIds } }).select('businessName firstName lastName contactId').lean()
+      ? Supplier.find({ _id: { $in: supplierIds } }).select('businessName firstName lastName contactId').lean()
       : [],
     grcIds.length
       ? Grc.find({ _id: { $in: grcIds } }).select('grcNumber').lean()
@@ -318,7 +318,8 @@ export const POST = handler(async (req) => {
       };
 
       /* The supplier's code, once for the whole save: every barcode value on
-         this GRC is SUPPLIER_CODE * GRC_NUMBER * SEQ * QTY (lib/barcodeValue.js). */
+         this GRC is SUPPLIER_CODE * GRC_NUMBER * BILL_SL_NO * SEQ
+         (lib/barcodeValue.js). */
       docScope.supplierCode = await supplierCodeOf(docScope.supplierId);
       const valueParts = { supplierCode: docScope.supplierCode, grcNumber: existing.grcNumber };
 
@@ -338,13 +339,19 @@ export const POST = handler(async (req) => {
           buildDoc({ ...untouched, ...row }, docScope),
           buildDoc(untouched, docScope),
         );
-        /* A barcode value carries its own line's quantity. When that quantity
-           is corrected the value follows - same SEQ, new QTY - so the bars, the
-           text under them and the grid never disagree. Only for a value this
-           route composed; an older number stays as it was printed. */
-        if ('qty' in set && hasComposedBarcode(unit, valueParts)) {
+        /* A barcode value carries the Bill Sl No. of the line it was received
+           on. When that is corrected the value follows - same SEQ, new BILL SL
+           NO - so the bars, the text under them, the grid and the Item Summary
+           never disagree. Only for a value this route composed by the current
+           rule; an older number, and one composed when the third part was the
+           quantity, stay as they were printed (hasComposedBarcode).
+
+           The quantity no longer moves the value: it is not in it. Correcting
+           a received quantity therefore leaves every sticker already on those
+           goods valid, which is what it always should have done. */
+        if ('billSlNo' in set && hasComposedBarcode(unit, valueParts)) {
           const before = unitBarcode(unit);
-          const value = composeBarcodeValue({ ...valueParts, seq: unit.seq, qty: set.qty });
+          const value = composeBarcodeValue({ ...valueParts, billSlNo: set.billSlNo, seq: unit.seq });
           if (value && value !== before) {
             if (takenValues.has(value)) {
               throw new InventoryError('DUPLICATE_BARCODE',
@@ -463,7 +470,7 @@ export const POST = handler(async (req) => {
         deleted: deleting.length,
         /* the stored values - the screen shows and prints these, never its own */
         rows: savedRowsOf(all),
-        createdRows: created.map((doc, i) => ({ id: clientIdOf(fresh[i]), _id: String(doc._id), barcodeNo: doc.barcodeNo, seq: doc.seq })),
+        createdRows: created.map((doc, i) => ({ id: clientIdOf(fresh[i]), _id: String(doc._id), barcodeNo: doc.barcodeNo, barcodeGenerated: doc.barcodeGenerated || '', seq: doc.seq })),
       };
     }
 
@@ -517,7 +524,7 @@ export const POST = handler(async (req) => {
     return {
       grcId: String(grc._id), grcNumber: grcPayload.grcNumber, count: created.length,
       rows: savedRowsOf(created),
-      createdRows: created.map((doc, i) => ({ id: clientIdOf(rows[i]), _id: String(doc._id), barcodeNo: doc.barcodeNo, seq: doc.seq })),
+      createdRows: created.map((doc, i) => ({ id: clientIdOf(rows[i]), _id: String(doc._id), barcodeNo: doc.barcodeNo, barcodeGenerated: doc.barcodeGenerated || '', seq: doc.seq })),
     };
   });
 
@@ -595,14 +602,19 @@ export const DELETE = handler(async (req) => {
 /* Turns the screen's NEW rows into barcode documents, each with the value it
    will carry everywhere - the bars, the text under them, the grid, the till:
 
-     SUPPLIER_CODE * GRC_NUMBER * SEQ * QTY          e.g. "G1318 * 05178 * 1 * 16"
+     SUPPLIER_CODE * GRC_NUMBER * BILL_SL_NO * SEQ   e.g. "G512 * 05173 * 5 * 1"
 
-   (lib/barcodeValue.js). SEQ is the GRC's own running number, from startSeq
-   on, one per barcode in the order the rows arrive; QTY is that same row's
-   quantity - never the GRC's total. A value the GRC already holds (an older
-   barcode that happens to compose the same text) is skipped to the next SEQ,
-   so no two barcodes of a GRC share one. Whatever number a row arrives with
-   is ignored: the value is made here, and only here. */
+   (lib/barcodeValue.js). BILL_SL_NO is that row's own Bill Sl No. - the bill
+   line the item was received on, as the GRC's Item Summary shows it against
+   that item - taken from the row being saved and from nothing else. SEQ is the
+   GRC's own running number, from startSeq on, one per barcode in the order the
+   rows arrive. A value the GRC already holds (an older barcode that happens to
+   compose the same text) is skipped to the next SEQ, so no two barcodes of a
+   GRC share one. Whatever number a row arrives with is ignored: the value is
+   made here, and only here.
+
+   The third part is NOT the quantity. Two barcodes of the same bill line are
+   told apart by their SEQ, not by how much each one covers. */
 async function buildDocs({ rows, startSeq = 1, takenValues = new Set(), ...scope }) {
   const supplierCode = scope.supplierCode ?? await supplierCodeOf(scope.supplierId);
   const problem = barcodeValueProblem({ supplierCode, grcNumber: scope.grcNo });
@@ -610,10 +622,16 @@ async function buildDocs({ rows, startSeq = 1, takenValues = new Set(), ...scope
 
   let seq = startSeq;
   return rows.map((r) => {
-    const valueAt = (n) => composeBarcodeValue({ supplierCode, grcNumber: scope.grcNo, seq: n, qty: r.qty });
+    const valueAt = (n) => composeBarcodeValue({ supplierCode, grcNumber: scope.grcNo, billSlNo: r.billSlNo, seq: n });
     if (!valueAt(seq)) {
+      /* The supplier code and the GRC number were checked above and SEQ is
+         this function's own counter, so the missing part is the row's Bill Sl
+         No. - said as billSlNoProblem says it, naming the item and the column
+         to fill in. The row is refused rather than given a value with a
+         quantity, an index or a serial standing in for the bill line. */
       throw new InventoryError('BARCODE_VALUE',
-        (r.itemCode || r.itemName || 'A row') + ' has no quantity, so its barcode value (SUPPLIER CODE * GRC NUMBER * SEQ * QTY) cannot be made. Nothing was saved.',
+        billSlNoProblem(r) || ((r.itemCode || r.itemName || 'A row')
+          + ' cannot be given a barcode value (SUPPLIER CODE * GRC NUMBER * BILL SL NO * SEQ). Nothing was saved.'),
         { status: 400 });
     }
     while (takenValues.has(valueAt(seq))) seq += 1;
@@ -731,15 +749,23 @@ function untouchedRow(unit) {
    barcode value. '' when the GRC has no supplier or the supplier no code. */
 async function supplierCodeOf(supplierId) {
   if (!supplierId || !isValidObjectId(String(supplierId))) return '';
-  const contact = await Contact.findById(supplierId).select('contactId').lean();
+  const contact = await Supplier.findById(supplierId).select('contactId').lean();
   return String(contact?.contactId || '').trim();
 }
 
 /* What the screen gets back about every barcode of the GRC after a save: the
-   stored value to show and print, never one the browser made up. */
+   stored values to show and print, never ones the browser made up.
+
+   BOTH barcode fields, as they are stored. A label prints the unit's own
+   number on the left and the composed value on the right, off the SAME
+   record - so a print taken straight after a Submit has to be given both.
+   With only barcodeNo here the screen had nothing to put on the right of the
+   sticker and copied the number into it, which printed the left-hand value
+   twice for any barcode whose two fields differ. */
 function savedRowsOf(units) {
   return (units || []).map((u) => ({
-    _id: String(u._id), clientRowId: u.clientRowId || '', barcodeNo: unitBarcode(u), seq: u.seq || '', qty: u.qty || '',
+    _id: String(u._id), clientRowId: u.clientRowId || '', barcodeNo: unitBarcode(u),
+    barcodeGenerated: u.barcodeGenerated || '', seq: u.seq || '', qty: u.qty || '',
   }));
 }
 

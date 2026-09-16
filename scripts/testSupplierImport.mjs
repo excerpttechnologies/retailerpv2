@@ -16,6 +16,7 @@
 */
 
 import mongoose from 'mongoose';
+import { contactCollection } from '../lib/contactStorage.js';
 import crypto from 'crypto';
 import XLSX from 'xlsx';
 import { readFileSync, readdirSync, existsSync } from 'fs';
@@ -29,7 +30,7 @@ const T = (v) => (v === null || v === undefined ? '' : String(v).trim());
 
 await mongoose.connect(process.env.MONGODB_URI);
 const db = mongoose.connection.db;
-const contacts = db.collection('contact');
+const contacts = db.collection(contactCollection('Supplier'));
 
 /* the state immediately before the import */
 const backups = existsSync(path.join(ROOT, 'backups'))
@@ -40,11 +41,11 @@ const before = JSON.parse(readFileSync(path.join(ROOT, 'backups', backups[0]), '
 console.log(`baseline: ${backups[0]}  (${before.length} suppliers before the import)\n`);
 
 console.log('--- NOTHING ELSE WAS TOUCHED ---');
-ok('customers untouched', await contacts.countDocuments({ contactKind: 'Customer' }) === 15440,
-  String(await contacts.countDocuments({ contactKind: 'Customer' })));
-ok('agents untouched', await contacts.countDocuments({ contactKind: 'Agent' }) >= 1);
+ok('customers untouched', await db.collection(contactCollection('Customer')).countDocuments({ contactKind: 'Customer' }) === 15440,
+  String(await db.collection(contactCollection('Customer')).countDocuments({ contactKind: 'Customer' })));
+ok('agents untouched', await db.collection(contactCollection('Agent')).countDocuments({ contactKind: 'Agent' }) >= 1);
 ok('the contact collection still holds all three kinds',
-  (await contacts.distinct('contactKind')).length === 3);
+  (await Promise.all(['Supplier', 'Customer', 'Agent'].map((k) => db.collection(contactCollection(k)).countDocuments({ contactKind: k }, { limit: 1 })))).every(Boolean));
 
 console.log('\n--- REFERENTIAL INTEGRITY (measured against the baseline) ---');
 const refs = new Set();
@@ -57,8 +58,8 @@ const codeRefs = [...refs].filter((v) => !mongoose.isValidObjectId(v));
 
 const beforeIds = new Set(before.map((s) => String(s._id)));
 const beforeCodes = new Set(before.map((s) => T(s.contactId).toUpperCase()));
-const nowIds = new Set((await contacts.find({ contactKind: 'Supplier' }).project({ _id: 1 }).toArray()).map((s) => String(s._id)));
-const nowCodes = new Set((await contacts.find({ contactKind: 'Supplier' }).project({ contactId: 1 }).toArray()).map((s) => T(s.contactId).toUpperCase()));
+const nowIds = new Set((await db.collection(contactCollection('Supplier')).find({ contactKind: 'Supplier' }).project({ _id: 1 }).toArray()).map((s) => String(s._id)));
+const nowCodes = new Set((await db.collection(contactCollection('Supplier')).find({ contactKind: 'Supplier' }).project({ contactId: 1 }).toArray()).map((s) => T(s.contactId).toUpperCase()));
 
 const idsOkBefore = idRefs.filter((i) => beforeIds.has(i)).length;
 const idsOkNow = idRefs.filter((i) => nowIds.has(i)).length;
@@ -84,7 +85,7 @@ const xl = rows.filter((r) => T(r[0]) && T(r[1])).map((r) => ({ code: T(r[0]), n
 
 let named = 0; let mobiles = 0; const miss = [];
 for (const x of xl) {
-  const d = await contacts.findOne({ contactKind: 'Supplier', contactId: x.code });
+  const d = await db.collection(contactCollection('Supplier')).findOne({ contactKind: 'Supplier', contactId: x.code });
   if (!d) { miss.push(x.code + ' MISSING'); continue; }
   if (d.businessName === x.name) named += 1; else miss.push(`${x.code} name "${d.businessName}" != "${x.name}"`);
   if (!x.mobile || d.billingMobile === x.mobile) mobiles += 1;
@@ -95,8 +96,7 @@ ok('mobile numbers match the workbook', mobiles === xl.length, `${mobiles}/${xl.
 console.log('\n--- SECTION 14: a company name is never a person name ---');
 /* only the rows this import wrote - the retained legacy suppliers carry
    their own pre-existing quirks and are not this import's to answer for */
-const importedBad = await contacts.countDocuments({
-  contactKind: 'Supplier',
+const importedBad = await db.collection(contactCollection('Supplier')).countDocuments({ contactKind: 'Supplier',
   contactId: { $in: xl.map((x) => x.code) },
   $expr: { $eq: ['$firstName', '$businessName'] },
 });
@@ -112,7 +112,7 @@ console.log('\n--- NO FABRICATED VALUES ---');
    test compares against the workbook rather than against a shape. */
 let fabricated = 0; const invented = [];
 for (const x of xl) {
-  const d = await contacts.findOne({ contactKind: 'Supplier', contactId: x.code });
+  const d = await db.collection(contactCollection('Supplier')).findOne({ contactKind: 'Supplier', contactId: x.code });
   if (!d) continue;
   const dbMobile = T(d.billingMobile);
   if (dbMobile && dbMobile !== T(x.mobile)) {
@@ -124,8 +124,7 @@ for (const x of xl) {
 }
 ok('every stored mobile came from the workbook', fabricated === 0, invented.join(' | '));
 
-const placeholderNames = await contacts.countDocuments({
-  contactKind: 'Supplier',
+const placeholderNames = await db.collection(contactCollection('Supplier')).countDocuments({ contactKind: 'Supplier',
   contactId: { $in: xl.map((x) => x.code) },
   businessName: /^(unknown|test|n\/?a|dummy)$/i,
 });
@@ -156,11 +155,11 @@ try {
   const api = (p) => fetch(BASE + p, { headers: { Cookie: cookie } }).then(async (r) => ({ ok: r.ok, body: await r.json().catch(() => null) }));
   const page = (p) => fetch(BASE + p, { headers: { Cookie: cookie }, redirect: 'manual' }).then((r) => r.status);
 
-  const biz = (await contacts.findOne({ contactKind: 'Supplier', contactId: 'G1316' }))?.businessId;
+  const biz = (await db.collection(contactCollection('Supplier')).findOne({ contactKind: 'Supplier', contactId: 'G1316' }))?.businessId;
   const list = await api(`/api/supplier?business=${biz}&perPage=10`);
   ok('supplier list API works', list.ok && list.body.total > 0, 'total=' + list.body?.total);
   ok('list count matches the database',
-    list.body.total === await contacts.countDocuments({ contactKind: 'Supplier', businessId: biz }),
+    list.body.total === await db.collection(contactCollection('Supplier')).countDocuments({ contactKind: 'Supplier', businessId: biz }),
     `api=${list.body?.total}`);
   ok('supplier list page renders', await page('/admin/contact/supplier') === 200);
 
@@ -169,7 +168,7 @@ try {
     JSON.stringify((search.body.rows || []).map((r) => r.contactId).slice(0, 3)));
   ok('pagination works', (await api(`/api/supplier?business=${biz}&perPage=5&page=2`)).body.page === 2);
 
-  const one = await contacts.findOne({ contactKind: 'Supplier', contactId: 'G1316' });
+  const one = await db.collection(contactCollection('Supplier')).findOne({ contactKind: 'Supplier', contactId: 'G1316' });
   const det = await api('/api/supplier/' + one._id);
   ok('supplier detail API returns the imported values',
     det.ok && det.body.doc.businessName === 'HIMEER TEXTILES' && det.body.doc.gstNo === '27AADPR2705G1ZV',

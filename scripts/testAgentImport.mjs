@@ -7,6 +7,7 @@
 */
 
 import mongoose from 'mongoose';
+import { contactCollection } from '../lib/contactStorage.js';
 import crypto from 'crypto';
 import XLSX from 'xlsx';
 import path from 'path';
@@ -23,7 +24,7 @@ if (!existsSync(EXCEL)) { console.error('Workbook not found: ' + EXCEL); process
 
 await mongoose.connect(process.env.MONGODB_URI);
 const db = mongoose.connection.db;
-const contacts = db.collection('contact');
+const contacts = db.collection(contactCollection('Agent'));
 
 const rows = XLSX.utils.sheet_to_json(
   XLSX.readFile(EXCEL, { raw: true }).Sheets.Agents, { header: 1, raw: true, defval: null }
@@ -31,20 +32,20 @@ const rows = XLSX.utils.sheet_to_json(
 const xl = rows.filter((r) => T(r[0])).map((r) => ({ code: T(r[0]), name: T(r[1]), mobile: T(r[3]) }));
 
 console.log('--- COUNTS ---');
-const agents = await contacts.countDocuments({ contactKind: 'Agent' });
+const agents = await db.collection(contactCollection('Agent')).countDocuments({ contactKind: 'Agent' });
 console.log(`  agents in DB: ${agents}   workbook rows: ${xl.length}`);
 ok('agent count matches the workbook exactly', agents === xl.length, `${agents} vs ${xl.length}`);
 
 console.log('\n--- NOTHING ELSE TOUCHED (agents share the contact collection) ---');
-ok('customers untouched', await contacts.countDocuments({ contactKind: 'Customer' }) === 15440,
-  String(await contacts.countDocuments({ contactKind: 'Customer' })));
-ok('suppliers untouched', await contacts.countDocuments({ contactKind: 'Supplier' }) === 442,
-  String(await contacts.countDocuments({ contactKind: 'Supplier' })));
+ok('customers untouched', await db.collection(contactCollection('Customer')).countDocuments({ contactKind: 'Customer' }) === 15440,
+  String(await db.collection(contactCollection('Customer')).countDocuments({ contactKind: 'Customer' })));
+ok('suppliers untouched', await db.collection(contactCollection('Supplier')).countDocuments({ contactKind: 'Supplier' }) === 442,
+  String(await db.collection(contactCollection('Supplier')).countDocuments({ contactKind: 'Supplier' })));
 
 console.log('\n--- THE WORKBOOK IS THE SOURCE OF TRUTH ---');
 let named = 0; let mob = 0; const bad = [];
 for (const x of xl) {
-  const a = await contacts.findOne({ contactKind: 'Agent', contactId: x.code });
+  const a = await db.collection(contactCollection('Agent')).findOne({ contactKind: 'Agent', contactId: x.code });
   if (!a) { bad.push(x.code + ' MISSING'); continue; }
   /* the list renders firstName + lastName; that must reproduce the
      workbook's Name column exactly */
@@ -57,8 +58,7 @@ ok(`all ${xl.length} agents render the workbook's name`, named === xl.length, ba
 ok('mobile numbers match the workbook', mob === xl.length, `${mob}/${xl.length}`);
 
 console.log('\n--- FIELDS ARE NOT SHIFTED (section 20) ---');
-const shifted = await contacts.countDocuments({
-  contactKind: 'Agent',
+const shifted = await db.collection(contactCollection('Agent')).countDocuments({ contactKind: 'Agent',
   $or: [
     { billingMobile: /[A-Za-z]/ },                 // a name in the mobile field
     { billingState: /^\d+$/ },                     // a number in the state field
@@ -68,14 +68,13 @@ const shifted = await contacts.countDocuments({
 });
 ok('no phone in a name field, no name in a phone field', shifted === 0, String(shifted));
 
-const junk = await contacts.countDocuments({
-  contactKind: 'Agent',
+const junk = await db.collection(contactCollection('Agent')).countDocuments({ contactKind: 'Agent',
   $or: [{ firstName: /^(unknown|test|na)$/i }, { billingMobile: '0000000000' }],
 });
 ok('no invented placeholder values', junk === 0, String(junk));
 
 console.log('\n--- OLD TEST AGENT IS GONE ---');
-ok('the "jjj2" test agent was removed', await contacts.countDocuments({ contactKind: 'Agent', contactId: 'jjj2' }) === 0);
+ok('the "jjj2" test agent was removed', await db.collection(contactCollection('Agent')).countDocuments({ contactKind: 'Agent', contactId: 'jjj2' }) === 0);
 
 console.log('\n--- GRC AGENT LINKS ---');
 const linked = await db.collection('grc').countDocuments({ agentId: { $ne: null } });
@@ -91,7 +90,7 @@ ok('the linked agent matches the name the GRC recorded',
 
 console.log('\n--- SPOT CHECKS ---');
 for (const code of ['AGENT1', 'AGENT6', 'AGENT7', 'AGENT8']) {
-  const a = await contacts.findOne({ contactKind: 'Agent', contactId: code });
+  const a = await db.collection(contactCollection('Agent')).findOne({ contactKind: 'Agent', contactId: code });
   console.log(`  ${code}: ${a.prefix} ${[a.firstName, a.middleName, a.lastName].filter(Boolean).join(' ')}`
     + `  mob=${a.billingMobile || '-'} state=${a.billingState || '-'} country=${a.billingCountry || '-'}`
     + `${a.gender ? ' gender=' + a.gender : ''}${a.shortName ? ' short=' + a.shortName : ''}`);
@@ -116,7 +115,7 @@ try {
   const api = (p) => fetch(BASE + p, { headers: { Cookie: cookie } }).then(async (r) => ({ ok: r.ok, body: await r.json().catch(() => null) }));
   const page = (p) => fetch(BASE + p, { headers: { Cookie: cookie }, redirect: 'manual' }).then((r) => r.status);
 
-  const one = await contacts.findOne({ contactKind: 'Agent', contactId: 'AGENT7' });
+  const one = await db.collection(contactCollection('Agent')).findOne({ contactKind: 'Agent', contactId: 'AGENT7' });
   const list = await api(`/api/agent?business=${one.businessId}&perPage=20`);
   ok('agent list API works', list.ok && list.body.total === xl.length, 'total=' + list.body?.total);
   ok('list rows carry the code and mobile',

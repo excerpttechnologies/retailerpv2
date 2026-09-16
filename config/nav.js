@@ -12,6 +12,7 @@ import {
   LuWarehouse,
   LuMonitor,
   LuBarcode,
+  LuBinary,
   LuSplit,
   LuTag,
   LuCreditCard,
@@ -156,6 +157,14 @@ export const NAV = [
         label: 'Barcode Label Settings',
         icon: LuTag,
         href: '/admin/setting/barcode-label-setting',
+      },
+      /* The digit -> letter code a purchase rate is printed in on a label
+         (lib/purchaseRateCode.js). The page was built but had no menu entry,
+         so it could only be reached by typing its URL. */
+      {
+        label: 'Purchase Rate Code Master',
+        icon: LuBinary,
+        href: '/admin/setting/purchase-rate-code',
       },
       {
         label: 'Payment Method Master',

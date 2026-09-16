@@ -1,7 +1,7 @@
 import { isValidObjectId } from 'mongoose';
 import dbConnect from '@/lib/db';
 import { requireSession } from '@/lib/session';
-import Contact from '@/models/Contact';
+import { Supplier } from '@/lib/contacts';
 import { BarcodeLabel } from '@/lib/barcodeLabel';
 import {
   json, r2, scopeOf, pageOf, paged, salesDocuments, costByItemCode,
@@ -73,7 +73,7 @@ export async function GET(req) {
 
   const supplierIds = [...new Set(supplierByCode.values())].filter((id) => isValidObjectId(id));
   const suppliers = supplierIds.length
-    ? await Contact.find({ _id: { $in: supplierIds } })
+    ? await Supplier.find({ _id: { $in: supplierIds } })
       .select('businessName firstName lastName gstNo billingMobile').lean()
     : [];
   const supplierById = new Map(suppliers.map((s) => [String(s._id), s]));

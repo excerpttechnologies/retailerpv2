@@ -3,7 +3,7 @@ import dbConnect from '@/lib/db';
 import { requireSession } from '@/lib/session';
 import Grc from '@/models/Grc';
 import Grt from '@/models/Grt';
-import Contact from '@/models/Contact';
+import { Supplier } from '@/lib/contacts';
 import CompanyLocation from '@/models/CompanyLocation';
 import { BarcodeLabel } from '@/lib/barcodeLabel';
 import {
@@ -59,7 +59,7 @@ export async function GET(req) {
 
   const [suppliers, locs, grts, barcodes] = await Promise.all([
     supplierIds.length
-      ? Contact.find({ _id: { $in: supplierIds } })
+      ? Supplier.find({ _id: { $in: supplierIds } })
         .select('businessName firstName lastName billingCity').lean() : [],
     locIds.length
       ? CompanyLocation.find({ _id: { $in: locIds } }).select('name').lean() : [],

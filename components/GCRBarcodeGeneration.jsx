@@ -4,8 +4,11 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useRouter } from "next/navigation";
 import { useScope } from "./ScopeContext";
-import BarcodeLabelSheet, { parseSize } from "./BarcodeLabelSheet";
 import GrcBarcodeLabelSheet from "./GrcBarcodeLabel";
+/* One geometry module for the sticker stock - the same one the label
+   renderer lays a label out with and the GRC Barcode Print page prints
+   from, so the preview here cannot be measured differently. */
+import { parseSize, labelsPerRow, stockPageCss, labelPageRule } from "@/lib/barcodeLabelGeometry";
 import { useOptions } from "./useOptions";
 import { useBarcodeLookup } from "./useScanner";
 import Icon from "./Icon";
@@ -1762,9 +1765,10 @@ function AddItemModal({ open, onClose, onSubmit, onSubmitAndPrint, rowCount = 0,
         retailPrice: String(form.rspPrice || 0),
         uniqueBarcode: Boolean(form.uniqueBarcode) ? "Yes" : "No",
         /* No barcode value here. The save route gives every new barcode its
-           value - SUPPLIER_CODE * GRC_NUMBER * SEQ * QTY, SEQ being the GRC's
-           own running number (lib/barcodeValue.js) - and the grid shows the
-           value it will get by the same rule. Built here too, the two could
+           value - SUPPLIER_CODE * GRC_NUMBER * BILL_SL_NO * SEQ, the Bill Sl
+           No. being this row's own and SEQ the GRC's running number
+           (lib/barcodeValue.js) - and the grid shows the value it will get by
+           the same rule. Built here too, the two could
            differ, and a label printed from this copy would not scan as the
            stored barcode. (grcHeader is not in scope here either.) */
         barcodeNo: "",
@@ -2247,29 +2251,6 @@ function AddItemModal({ open, onClose, onSubmit, onSubmitAndPrint, rowCount = 0,
    the rule, and a batch asks.
    ========================================================================== */
 
-/* The physical page for a run on sticker stock: the catalog's sheet size,
-   widened if the labels on it do not actually fit.
-
-   The seeded catalog is not self-consistent - 'RT 72 x 116 mm' declares a
-   72mm sheet, a label size of "0 x 0 mm" and 2 labels per row. parseSize
-   rejects the zero and substitutes 50x40, so two 50mm labels would be laid
-   across a 72mm page and the second one would fall off the edge of the
-   paper. Taking the wider of the two keeps every label on the sheet; a
-   little extra margin is recoverable, a clipped barcode is not.
-
-   Returns null when there is no usable sheet size at all, so the caller can
-   fall back to A4 rather than emit a zero-sized page that prints nothing. */
-function stockPageCss(format, labelW, labelH, perRow, gapMm) {
-  const sheet = String(format?.pageSize || '').match(/(\d+(?:\.\d+)?)\s*[x×]\s*(\d+(?:\.\d+)?)/i);
-  if (!sheet) return null;
-  const sheetW = Number(sheet[1]);
-  const sheetH = Number(sheet[2]);
-  if (!sheetW || !sheetH) return null;
-
-  const needW = labelW * perRow + gapMm * (perRow - 1);
-  return Math.max(sheetW, needW) + 'mm ' + Math.max(sheetH, labelH) + 'mm';
-}
-
 function PrintLabelPicker({ rows, open, onClose }) {
   const scope = useScope();
   const [selected, setSelected] = useState([]);
@@ -2394,14 +2375,12 @@ function PrintLabelPicker({ rows, open, onClose }) {
      push the last column off the edge of the paper - hence gap 0 there, and
      a 1mm cut line on a sheet of A4 that somebody has to guillotine. */
   const geometry = parseSize(format?.labelSize);
-  const perRow = Math.max(1, Number(format?.stickerInRow) || 1);
+  const perRow = labelsPerRow(format);
   const onStock = paper === 'stock';
   const gapMm = onStock ? 0 : 1;
   const stockSize = stockPageCss(format, geometry.w, geometry.h, perRow, gapMm);
 
-  const pageRule = onStock && stockSize
-    ? '@page { size: ' + stockSize + '; margin: 0; }'
-    : '@page { size: A4; margin: 5mm; }';
+  const pageRule = labelPageRule(format, { onStock, gapMm });
   const gap = gapMm + 'mm';
 
   /* ---------------------------------------------------------------- print --
@@ -2692,7 +2671,7 @@ function PrintLabelPicker({ rows, open, onClose }) {
                 <div className="overflow-auto rounded border border-gray-300 bg-white p-2">
                   {/* GrcBarcodeLabelSheet is the same component the
                       barcode-print page renders, so Preview = Print exactly. */}
-                  <GrcBarcodeLabelSheet rows={selectedRows} />
+                  <GrcBarcodeLabelSheet rows={selectedRows} format={format} gap={gap} />
                 </div>
               </>
             )}
@@ -2758,7 +2737,7 @@ function PrintLabelPicker({ rows, open, onClose }) {
           <style>{pageRule}</style>
           {/* GrcBarcodeLabelSheet matches the print page exactly — same
               component, same 2-column grid, same Label, same data contract. */}
-          <GrcBarcodeLabelSheet rows={selectedRows} />
+          <GrcBarcodeLabelSheet rows={selectedRows} format={format} gap={gap} />
         </div>,
         document.body
       )}
@@ -3036,7 +3015,8 @@ export default function GCRBarcodeGeneration({ grcId = null, initialRows = [], s
       }
 
       /* ---- NEW rows get no number here: the save route gives each its
-         barcode value (SUPPLIER_CODE * GRC_NUMBER * SEQ * QTY) on Submit. */
+         barcode value (SUPPLIER_CODE * GRC_NUMBER * BILL_SL_NO * SEQ) on
+         Submit. */
       const updatedById = new Map();
       const addedRows = [];
       const notes = { offerKept: [], offerStarted: [], finalKept: [] };
@@ -3195,9 +3175,17 @@ export default function GCRBarcodeGeneration({ grcId = null, initialRows = [], s
          save did not store. */
       const storedById = new Map((saved.rows || []).map((s) => [String(s._id), s]));
       const storedByClientId = new Map((saved.createdRows || []).map((s) => [String(s.id), s]));
+      /* Both barcode fields as the server stored them, taken together off the
+         one record it answered with. barcodeGenerated used to be filled in
+         here from barcodeNo, which printed the number twice on any barcode
+         whose composed value is a different string - a label taken straight
+         after Submit then disagreed with the same label printed from the
+         Barcode Print page, which reads the record back from the database. */
       const asStored = (row) => {
         const s = (row._id && storedById.get(String(row._id))) || storedByClientId.get(String(row.id));
-        return s ? { ...row, _id: s._id, barcodeNo: s.barcodeNo, barcodeGenerated: s.barcodeNo, seq: s.seq } : row;
+        return s
+          ? { ...row, _id: s._id, barcodeNo: s.barcodeNo, barcodeGenerated: s.barcodeGenerated ?? '', seq: s.seq }
+          : row;
       };
       if (printAfterSave) {
         setPrintRows(rowsToSave.map(asStored).filter((row) => row._id && row.barcodeNo));
@@ -3284,10 +3272,14 @@ export default function GCRBarcodeGeneration({ grcId = null, initialRows = [], s
   /* THE barcode value of every row, as this screen shows it - the ITEMS
      sheet's Barcode Identifier column and the Item With Barcode tab:
 
-       SUPPLIER_CODE * GRC_NUMBER * SEQ * QTY  (lib/barcodeValue.js)
+       SUPPLIER_CODE * GRC_NUMBER * BILL_SL_NO * SEQ  (lib/barcodeValue.js)
 
-     - a saved row: its SEQ with its quantity as the grid now holds it - the
-       stored value, or the value the save will give it for an edited quantity
+     BILL_SL_NO is the row's own "Bill Sl No." cell - the bill line the item
+     was received on, the same value the GRC screen lists in Item Summary.
+     Never the quantity, which is a different column of the same row.
+
+     - a saved row: its SEQ with its Bill Sl No. as the grid now holds it - the
+       stored value, or the value the save will give it for an edited Bill Sl No.
      - a row not saved yet: the SEQ the save route will give it - the next
        after every barcode on the GRC, in grid order, counted the same way
      - a row saved before values were composed: its number as printed
@@ -3307,7 +3299,7 @@ export default function GCRBarcodeGeneration({ grcId = null, initialRows = [], s
     const parts = { supplierCode: grcHeader.supplierCode, grcNumber: grcHeader.grcNumber };
     if (row._id && !hasComposedBarcode(row, parts)) return row.barcodeNo || row.barcodeGenerated || "";
     const seq = row._id ? row.seq : provisionalSeq.get(row.id);
-    return composeBarcodeValue({ ...parts, seq, qty: row.qty });
+    return composeBarcodeValue({ ...parts, billSlNo: row.billSlNo, seq });
   }, [provisionalSeq, grcHeader.grcNumber, grcHeader.supplierCode]);
 
   return (
@@ -3554,7 +3546,7 @@ export default function GCRBarcodeGeneration({ grcId = null, initialRows = [], s
           the bill serial never reach a label. They used to be handed down here
           for a "provenance line" on the sticker; that line is gone. */}
       {/* Only saved barcodes, as saved, are printable: a label carries the
-          stored value (SUPPLIER_CODE * GRC_NUMBER * SEQ * QTY) and nothing
+          stored value (SUPPLIER_CODE * GRC_NUMBER * BILL_SL_NO * SEQ) and nothing
           else. A row not saved yet, or with an edit not saved yet, prints
           after Submit - see saveRows. */}
       <PrintLabelPicker rows={printRows.length ? printRows : validRows.filter((row) => row._id && !row._edited)} open={showPrint} onClose={() => { setShowPrint(false); setPrintRows([]); }} />

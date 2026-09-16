@@ -20,6 +20,7 @@ const CUSTOMER_DEFAULTS = {
   billingCountry: '', billingDistrict: '', billingTaluk: '', billingZipCode: '',
   billingMobile: '', billingAlternateContactNumber: '', billingLandline: '', billingFax: '',
   billingEmail: '', billingEmail2: '', billingWebsiteUrl: '',
+  additionalDetails: '',
 };
 const money = (value) => Number(value || 0).toFixed(2);
 const customerLabel = (customer) => {
@@ -150,7 +151,15 @@ function CustomerForm({ values, setValues, typeOptions, onClose, onSave, saving 
           {text('businessName', 'Business Name')}
           {text('shortName', 'Short Name')}
           <label className="f-label">Prefix<select className="f-input" value={values.prefix} onChange={(e) => set('prefix', e.target.value)}>
-            <option>Mr.</option><option>Mrs.</option><option>Ms.</option><option>Dr.</option>
+            <option>Mr.</option>
+            <option>Mrs.</option>
+            <option>Ms.</option>
+            <option>Dr.</option>
+            <option>Prof.</option>
+            <option>CA</option>
+            <option>Sr.</option>
+            <option>Fr.</option>
+            <option>M/s.</option>
           </select></label>
           {text('firstName', 'First Name *', true)}
           {text('middleName', 'Middle Name')}
@@ -171,6 +180,16 @@ function CustomerForm({ values, setValues, typeOptions, onClose, onSave, saving 
           {text('billingMobile', 'Mobile *', true)}
           {BILLING_ROWS.map(([key, label]) => text(key, label))}
         </div>
+
+        {/* Same free-text notes field as the full Customer form, where it sits
+            below Shipping Details. This dialog has no shipping block, so it
+            goes at the end. */}
+        <div className="form-section-title mt-4 border-t border-line pt-3">Additional Details</div>
+        <label className="f-label block">Additional Details
+          <textarea className="f-input f-textarea" value={values.additionalDetails || ''}
+            placeholder="Any additional details about this customer"
+            onChange={(e) => set('additionalDetails', e.target.value)} />
+        </label>
 
         <div className="mt-4 flex justify-end gap-2">
           <button type="button" className="btn" onClick={onClose}>Cancel</button>
@@ -275,6 +294,9 @@ export default function PosTill() {
   const [exchangePick, setExchangePick] = useState(null);   // { code, rows }
   const [exchangeBusy, setExchangeBusy] = useState(false);
   const scanRef = useRef(null);
+  /* 'qty' | 'scan' | null - where the cursor should go once the row just
+     added has been rendered. Cleared as soon as it has been honoured. */
+  const [focusAfterAdd, setFocusAfterAdd] = useState(null);
   const [exchangeInvoiceId, setExchangeInvoiceId] = useState('');
   const [holds, setHolds] = useState([]);
   const [showHolds, setShowHolds] = useState(false);
@@ -286,6 +308,15 @@ export default function PosTill() {
   /* Ticking Exchange puts the cursor in the scan box - the next thing the
      operator does is scan what is coming back. */
   useEffect(() => { if (isExchange) scanRef.current?.focus(); }, [isExchange]);
+
+  /* Runs after the new row is on screen - see setFocusAfterAdd above. Rows are
+     newest-first, so the one just added is index 0. */
+  useEffect(() => {
+    if (!focusAfterAdd) return;
+    if (focusAfterAdd === 'qty') document.querySelector('[data-qty-row="0"]')?.focus();
+    else scanRef.current?.focus();
+    setFocusAfterAdd(null);
+  }, [focusAfterAdd, items]);
 
   /* A returned piece is SOLD, not in stock, so it cannot be scanned with the
      till's SELL rules - that is what produced "already sold". The return leg
@@ -577,6 +608,23 @@ export default function PosTill() {
     setItemSuggestions([]);
     setCode('');
     setMsg('');
+
+    /* Where the cursor goes next depends on what was scanned.
+
+       BATCH  - one barcode stands for a whole lot, so the quantity is still
+                unknown: the cursor lands in that row's Qty box, which clears
+                itself ready to type.
+       UNIQUE - one barcode is one piece, quantity already known: the cursor
+                goes straight back to the scan box for the next item.
+
+       Requested through state rather than moved here directly. The row does
+       not exist in the DOM until React has committed this update, and a
+       requestAnimationFrame can fire before that commit - which is why the
+       first attempt silently did nothing. The effect below runs after the
+       commit, when the input is really there. */
+    setFocusAfterAdd(
+      String(unit.batchType || '').trim().toLowerCase() === 'batch' ? 'qty' : 'scan'
+    );
     beep('ok');
   }
 
@@ -823,7 +871,7 @@ export default function PosTill() {
       />
       {previewImage && <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/75 p-6" onClick={() => setPreviewImage(null)}><div className="relative max-h-full max-w-4xl rounded bg-white p-2 shadow-2xl" onClick={(e) => e.stopPropagation()}><button type="button" aria-label="Close image preview" className="absolute right-2 top-2 z-10 flex h-8 w-8 items-center justify-center rounded-full bg-black/70 text-white" onClick={() => setPreviewImage(null)}><Icon name="x" size={16} /></button><img src={previewImage.src} alt={previewImage.alt} className="max-h-[80vh] max-w-[80vw] object-contain" /></div></div>}
       {msg && <div className="mx-4 mt-2 flash flash-err">{msg}</div>}
-      <div className="mt-3 flex-1 overflow-x-auto px-4"><table className="dt"><thead><tr>{['#', 'Barcode No', 'Stock Issue', 'Item Code', 'Print Description', 'HSN', 'GST%', 'Qty', 'RSP Price', 'Disc %', 'Disc Amt', 'Line Total', 'Sales Person', 'Image', ''].map((heading) => <th key={heading} className={'!whitespace-normal !leading-tight' + (heading === '#' ? ' !w-9 !px-1.5 !text-left' : '')}>{heading}</th>)}</tr></thead><tbody>{rows.length === 0 ? <tr><td colSpan="15" className="dt-empty">No Items Added</td></tr> : rows.map((row, index) => <tr key={`${row.itemId}-${index}`} className="cursor-pointer !bg-[#FFF3CD]" onClick={() => setSelectedProduct(row)}><td className={'!w-9 !px-1.5 !text-left'}>{index + 1}</td><td className={row.isReturn ? '!text-danger font-semibold' : undefined}>{row.barcode || '-'}</td><td><input type="checkbox" checked={!!row.stockIssue} onClick={(e) => e.stopPropagation()} onChange={(e) => updateItem(index, 'stockIssue', e.target.checked)} /></td><td>{row.code}</td><td>{row.description || row.name}</td><td>{row.hsn}</td><td>{money(row.gst)}</td><td>{(() => { const closing = row.closing; const known = closing !== undefined && closing !== null; const over = known && Number(row.qty || 0) > Number(closing); return (<div className="flex flex-col items-center gap-0.5" onClick={(e) => e.stopPropagation()}><div className="flex items-center justify-center gap-1"><button type="button" aria-label="Decrease quantity" className="inline-flex h-[26px] w-[26px] shrink-0 items-center justify-center rounded border border-line bg-pillgrey text-[15px] font-bold leading-none text-ink hover:bg-linestrong disabled:opacity-40" disabled={Number(row.qty || 0) <= 1} onClick={() => updateItem(index, 'qty', Math.max(1, Number(row.qty || 1) - 1))}>-</button><input className={'f-input w-14 text-center' + (over ? ' border-danger text-danger' : '')} type="number" min="1" max={known ? closing : undefined} value={row.qty} onWheel={(e) => e.currentTarget.blur()} onChange={(e) => updateItem(index, 'qty', e.target.value)} /><button type="button" aria-label="Increase quantity" className="inline-flex h-[26px] w-[26px] shrink-0 items-center justify-center rounded border border-line bg-pillgrey text-[15px] font-bold leading-none text-ink hover:bg-linestrong disabled:opacity-40" disabled={known && Number(row.qty || 0) >= Number(closing)} onClick={() => updateItem(index, 'qty', Number(row.qty || 0) + 1)}>+</button></div>{known && <span className={'text-[11px] ' + (over ? 'font-semibold text-danger' : 'text-inkmuted')}>{over ? 'Only ' + closing + ' in stock' : 'Closing: ' + closing}</span>}</div>); })()}</td><td><input className="f-input w-24" type="number" min="0" value={row.rsp} onWheel={(e) => e.currentTarget.blur()} onChange={(e) => updateItem(index, 'rsp', e.target.value)} /></td><td><input className="f-input w-20" type="number" min="0" value={row.discountPct} onWheel={(e) => e.currentTarget.blur()} onChange={(e) => updateItem(index, 'discountPct', e.target.value)} /></td><td>{money(row.discountAmount)}</td><td className={row.isReturn ? '!text-danger font-semibold' : undefined}>{money(row.lineTotal)}</td><td><select className="f-input min-w-35" value={row.salesPerson || ''} onChange={(e) => updateItem(index, 'salesPerson', e.target.value)}><option value="">Select...</option>{salesPeople.map((person) => <option key={person.value} value={person.value}>{person.label}</option>)}</select></td><td><ProductImage src={row.image} alt={row.name} size={56} onOpen={() => { setSelectedProduct(row); setPreviewImage({ src: row.image, alt: row.name }); }} /></td><td><button type="button" className="act-btn bg-danger" onClick={(e) => { e.stopPropagation(); setItems((current) => current.filter((_, itemIndex) => itemIndex !== index)); if (selectedProduct?.itemId === row.itemId) setSelectedProduct(null); }}><Icon name="x" size={12} /></button></td></tr>)}</tbody></table></div>
+      <div className="mt-3 flex-1 overflow-x-auto px-4"><table className="dt"><thead><tr>{['#', 'Barcode No', 'Stock Issue', 'Item Code', 'Print Description', 'HSN', 'GST%', 'Qty', 'RSP Price', 'Disc %', 'Disc Amt', 'Line Total', 'Sales Person', 'Image', ''].map((heading) => <th key={heading} className={'!whitespace-normal !leading-tight' + (heading === '#' ? ' !w-9 !px-1.5 !text-left' : '')}>{heading}</th>)}</tr></thead><tbody>{rows.length === 0 ? <tr><td colSpan="15" className="dt-empty">No Items Added</td></tr> : rows.map((row, index) => <tr key={`${row.itemId}-${index}`} className="cursor-pointer !bg-[#FFF3CD]" onClick={() => setSelectedProduct(row)}><td className={'!w-9 !px-1.5 !text-left'}>{index + 1}</td><td className={row.isReturn ? '!text-danger font-semibold' : undefined}>{row.barcode || '-'}</td><td><input type="checkbox" checked={!!row.stockIssue} onClick={(e) => e.stopPropagation()} onChange={(e) => updateItem(index, 'stockIssue', e.target.checked)} /></td><td>{row.code}</td><td>{row.description || row.name}</td><td>{row.hsn}</td><td>{money(row.gst)}</td><td>{(() => { const closing = row.closing; const known = closing !== undefined && closing !== null; const over = known && Number(row.qty || 0) > Number(closing); return (<div className="flex flex-col items-center gap-0.5" onClick={(e) => e.stopPropagation()}><div className="flex items-center justify-center gap-1"><button type="button" aria-label="Decrease quantity" className="inline-flex h-[26px] w-[26px] shrink-0 items-center justify-center rounded border border-line bg-pillgrey text-[15px] font-bold leading-none text-ink hover:bg-linestrong disabled:opacity-40" disabled={Number(row.qty || 0) <= 1} onClick={() => updateItem(index, 'qty', Math.max(1, Number(row.qty || 1) - 1))}>-</button><input className={'f-input w-14 text-center' + (over ? ' border-danger text-danger' : '')} data-qty-row={index} type="number" min="1" max={known ? closing : undefined} value={row.qty} onWheel={(e) => e.currentTarget.blur()} onChange={(e) => updateItem(index, 'qty', e.target.value)} /><button type="button" aria-label="Increase quantity" className="inline-flex h-[26px] w-[26px] shrink-0 items-center justify-center rounded border border-line bg-pillgrey text-[15px] font-bold leading-none text-ink hover:bg-linestrong disabled:opacity-40" disabled={known && Number(row.qty || 0) >= Number(closing)} onClick={() => updateItem(index, 'qty', Number(row.qty || 0) + 1)}>+</button></div>{known && <span className={'text-[11px] ' + (over ? 'font-semibold text-danger' : 'text-inkmuted')}>{over ? 'Only ' + closing + ' in stock' : 'Closing: ' + closing}</span>}</div>); })()}</td><td><input className="f-input w-24" type="number" min="0" value={row.rsp} onWheel={(e) => e.currentTarget.blur()} onChange={(e) => updateItem(index, 'rsp', e.target.value)} /></td><td><input className="f-input w-20" type="number" min="0" value={row.discountPct} onWheel={(e) => e.currentTarget.blur()} onChange={(e) => updateItem(index, 'discountPct', e.target.value)} /></td><td>{money(row.discountAmount)}</td><td className={row.isReturn ? '!text-danger font-semibold' : undefined}>{money(row.lineTotal)}</td><td><select className="f-input min-w-35" value={row.salesPerson || ''} onChange={(e) => updateItem(index, 'salesPerson', e.target.value)}><option value="">Select...</option>{salesPeople.map((person) => <option key={person.value} value={person.value}>{person.label}</option>)}</select></td><td><ProductImage src={row.image} alt={row.name} size={56} onOpen={() => { setSelectedProduct(row); setPreviewImage({ src: row.image, alt: row.name }); }} /></td><td><button type="button" className="act-btn bg-danger" onClick={(e) => { e.stopPropagation(); setItems((current) => current.filter((_, itemIndex) => itemIndex !== index)); if (selectedProduct?.itemId === row.itemId) setSelectedProduct(null); }}><Icon name="x" size={12} /></button></td></tr>)}</tbody></table></div>
       
       <div className="border-t border-line px-4 pt-2"><div className="grid grid-cols-2 gap-2 text-[13px] md:grid-cols-6"><div><div className="text-cell">Qty</div><div>{qty}</div></div><div><div className="text-cell">Bill Value</div><div>{money(rows.reduce((sum, row) => sum + (row.isReturn ? -1 : 1) * Number(row.rsp || 0) * Number(row.qty || 0), 0))}</div></div><div><div className="text-cell">Total Discount</div><div>{money(rows.reduce((sum, row) => sum + row.discountAmount, 0))}</div></div><div><div className="text-cell">Sub Total</div><div>{money(billValue)}</div></div>
       
@@ -851,21 +899,21 @@ export default function PosTill() {
             </div>
             <div className="max-h-[60vh] overflow-y-auto p-4">
               <table className="dt">
-                <thead><tr>{['Invoice No', 'Date', 'Customer', 'Item', 'Qty', 'Amount', ''].map((h) => <th key={h}>{h}</th>)}</tr></thead>
+                <thead><tr>{['', 'Invoice No', 'Date', 'Customer', 'Item', 'Qty', 'Amount'].map((h) => <th key={h}>{h}</th>)}</tr></thead>
                 <tbody>
                   {exchangePick.rows.map((row) => (
                     <tr key={row._id}>
+                      <td>
+                        <button type="button" className="btn btn-primary px-2 py-1 disabled:opacity-50" disabled={exchangeBusy} onClick={() => takeExchangePick(row)}>
+                          {exchangeBusy ? 'Working...' : 'Select'}
+                        </button>
+                      </td>
                       <td className="font-semibold">{row.invoiceNo || '-'}</td>
                       <td>{row.date ? new Date(row.date).toLocaleDateString('en-GB') : '-'}</td>
                       <td>{row.customerName}</td>
                       <td>{row.itemName || row.itemCode || '-'}</td>
                       <td>{row.qty}</td>
                       <td>{money(row.netAmount)}</td>
-                      <td>
-                        <button type="button" className="btn btn-primary px-2 py-1 disabled:opacity-50" disabled={exchangeBusy} onClick={() => takeExchangePick(row)}>
-                          {exchangeBusy ? 'Working...' : 'Select'}
-                        </button>
-                      </td>
                     </tr>
                   ))}
                 </tbody>

@@ -1,6 +1,6 @@
 import mongoose, { isValidObjectId } from 'mongoose';
 import dbConnect from '@/lib/db';
-import Contact from '@/models/Contact';
+import { Customer } from '@/lib/contacts';
 import PosInvoice from '@/models/PosInvoice';
 import PosReturn from '@/models/PosReturn';
 import { handler, json } from '@/lib/apiError';
@@ -32,7 +32,7 @@ export const GET = handler(async (req, { params }) => {
   const limit = Math.min(100, Math.max(1, Number(sp.get('limit') || DEFAULT_LIMIT)));
   const scope = business && isValidObjectId(business) ? { businessId: business } : {};
 
-  const customer = await Contact.findById(id).lean();
+  const customer = await Customer.findById(id).lean();
   if (!customer) return json({ error: 'Customer not found.', code: 'NOT_FOUND' }, 404);
 
   const [invoices, returns, totals] = await Promise.all([

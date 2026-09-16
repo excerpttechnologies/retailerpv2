@@ -2,7 +2,7 @@ import { isValidObjectId } from 'mongoose';
 import dbConnect from '@/lib/db';
 import Grc from '@/models/Grc';
 import Delivery from '@/models/Delivery';
-import Contact from '@/models/Contact';
+import { Supplier } from '@/lib/contacts';
 import { requireSession } from '@/lib/session';
 import { resolveRefLabels } from '@/lib/refLabels';
 import { validate, escapeRegex } from '@/lib/validate';
@@ -68,7 +68,7 @@ export async function GET(req) {
       rows.map((r) => r.supplierId).filter((s) => s && isValidObjectId(String(s))).map(String)
     )];
     const suppliers = supplierIds.length
-      ? await Contact.find({ _id: { $in: supplierIds } })
+      ? await Supplier.find({ _id: { $in: supplierIds } })
         .select('contactId businessName firstName middleName lastName').lean()
       : [];
 
@@ -186,7 +186,7 @@ export async function POST(req) {
 
   /* the vendor must exist, be a supplier, and belong to this business - not
      another company's vendor list */
-  const supplier = await Contact.findById(doc.supplierId)
+  const supplier = await Supplier.findById(doc.supplierId)
     .select('contactKind businessName firstName lastName contactId gstNo businessId').lean();
   if (!supplier) {
     return json({ errors: { supplierId: 'That vendor no longer exists.' } }, 422);

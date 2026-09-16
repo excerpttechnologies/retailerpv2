@@ -1,6 +1,6 @@
 import { isValidObjectId } from 'mongoose';
 import dbConnect from '@/lib/db';
-import Contact from '@/models/Contact';
+import { Customer } from '@/lib/contacts';
 import { requireSession } from '@/lib/session';
 import { resolveRefLabels } from '@/lib/refLabels';
 import { validate, escapeRegex } from '@/lib/validate';
@@ -36,6 +36,7 @@ const QUICK_FIELDS = FIELDS.filter((field) => [
   'billingCountry', 'billingDistrict', 'billingTaluk', 'billingZipCode',
   'billingMobile', 'billingAlternateContactNumber', 'billingLandline', 'billingFax',
   'billingEmail', 'billingEmail2', 'billingWebsiteUrl',
+  'additionalDetails',
 ].includes(field.k));
 
 export async function GET(req) {
@@ -59,8 +60,8 @@ export async function GET(req) {
     filter.$or = [{ gstNo: rx }, { businessName: rx }, { shortName: rx }, { firstName: rx }, { middleName: rx }, { lastName: rx }, { userName: rx }, { billingAddressLine1: rx }, { billingMobile: rx }, { billingAlternateContactNumber: rx }];
   }
 
-  const total = await Contact.countDocuments(filter);
-  const rows = await Contact.find(filter)
+  const total = await Customer.countDocuments(filter);
+  const rows = await Customer.find(filter)
     .sort({ createdAt: -1 })
     .skip((page - 1) * perPage)
     .limit(perPage)
@@ -96,9 +97,9 @@ export async function POST(req) {
 
   /* stamped here, never taken from the client */
   doc.contactKind = 'Customer';
-  doc.contactId = await nextContactId(Contact, ContactType, doc.typeId);
+  doc.contactId = await nextContactId(ContactType, doc.typeId);
 
-  const created = await Contact.create(doc);
+  const created = await Customer.create(doc);
   return json({
     ok: true,
     id: String(created._id),

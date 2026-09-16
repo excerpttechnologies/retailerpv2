@@ -11,7 +11,7 @@ const SalesReturnSchema = new mongoose.Schema(
     businessId: { type: mongoose.Schema.Types.ObjectId, ref: 'business', default: null, index: true },
     locationId: { type: mongoose.Schema.Types.ObjectId, ref: 'companyLocation', default: null, index: true },
     finYear: { type: String, default: '', index: true },
-    customerId: { type: mongoose.Schema.Types.ObjectId, ref: 'contact', default: null },
+    customerId: { type: mongoose.Schema.Types.ObjectId, ref: 'customer', default: null },
     customerGstn: { type: String, default: '' },
     customerAddress: { type: String, default: '' },
     returnDate: { type: Date, default: null },

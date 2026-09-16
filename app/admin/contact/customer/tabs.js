@@ -111,26 +111,15 @@ export const TABS = [
               "type": "select",
               "def": "Mr.",
               "opts": [
-                {
-                  "v": "Mr.",
-                  "l": "Mr."
-                },
-                {
-                  "v": "Mrs.",
-                  "l": "Mrs."
-                },
-                {
-                  "v": "Ms.",
-                  "l": "Ms."
-                },
-                {
-                  "v": "Dr.",
-                  "l": "Dr."
-                },
-                {
-                  "v": "M/s.",
-                  "l": "M/s."
-                }
+                { "v": "Mr.",   "l": "Mr."   },
+                { "v": "Mrs.",  "l": "Mrs."  },
+                { "v": "Ms.",   "l": "Ms."   },
+                { "v": "Dr.",   "l": "Dr."   },
+                { "v": "Prof.", "l": "Prof." },
+                { "v": "CA",    "l": "CA"    },
+                { "v": "Sr.",   "l": "Sr."   },
+                { "v": "Fr.",   "l": "Fr."   },
+                { "v": "M/s.",  "l": "M/s."  }
               ],
               "ph": true
             },
@@ -390,6 +379,21 @@ export const TABS = [
             }
           ],
           "cols": 6
+        },
+        {
+          /* Free-text notes about the customer. Deliberately its own
+             full-width section below Shipping Details rather than a field
+             inside it - it belongs to the customer, not to an address. */
+          "title": "Additional Details",
+          "cols": 1,
+          "fields": [
+            {
+              "k": "additionalDetails",
+              "label": "Additional Details",
+              "placeholder": "Any additional details about this customer",
+              "type": "textarea"
+            }
+          ]
         }
       ]
     },

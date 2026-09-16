@@ -34,8 +34,8 @@ const IcDeliveryChallanSchema = new mongoose.Schema(
     dcDate: { type: Date, default: null },
 
     stockPointId: { type: mongoose.Schema.Types.ObjectId, ref: 'stockPoint', default: null },
-    agentId: { type: mongoose.Schema.Types.ObjectId, ref: 'contact', default: null },
-    salesPersonId: { type: mongoose.Schema.Types.ObjectId, ref: 'contact', default: null },
+    agentId: { type: mongoose.Schema.Types.ObjectId, ref: 'agent', default: null },
+    salesPersonId: { type: mongoose.Schema.Types.ObjectId, ref: 'agent', default: null },
     salesTerm: { type: String, default: '' },
     logisticId: { type: mongoose.Schema.Types.ObjectId, ref: 'logistic', default: null },
     customerWaybill: { type: String, default: '' },

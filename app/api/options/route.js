@@ -114,6 +114,13 @@
 import { isValidObjectId } from 'mongoose';
 import dbConnect from '@/lib/db';
 import { requireSession } from '@/lib/session';
+
+/* A contact kind's model, in the { default } shape REFS' loaders return - from
+   lib/contacts.js, so the supplier picker reads suppliers, the customer picker
+   customers and the agent picker agents, wherever lib/contactStorage.js keeps
+   them. */
+const contactOptionsModel = (kind) => import('@/lib/contacts')
+  .then((m) => ({ default: m.CONTACT_MODEL_BY_KIND[kind], LABEL_FIELD: m.LABEL_FIELD }));
  
 /* /api/options?ref=<name>&business=<id>
    Feeds every `ref` dropdown in the app. Replaces the `options` branch of the
@@ -180,9 +187,11 @@ const REFS = {
      which mixed every company's vendors into one list and then truncated
      that list at 200 - so a company with 819 suppliers could not reach most
      of its own, and could pick another company's. */
-  supplier:                  { load: () => import('@/models/Contact'), kind: 'Supplier', label: 'businessName', nameFallback: ['firstName', 'lastName'], codeField: 'contactId' },
-  agent:                     { load: () => import('@/models/Contact'), kind: 'Agent', label: 'businessName', nameFallback: ['firstName', 'lastName'], codeField: 'contactId' },
-  customer:                  { load: () => import('@/models/Contact'), kind: 'Customer', label: 'businessName', nameFallback: ['firstName', 'lastName'], codeField: 'contactId' },
+  /* load: the kind's own model. `kind` still filters on contactKind, which is
+     right whether the kinds share `contact` or each has its own collection. */
+  supplier:                  { load: () => contactOptionsModel('Supplier'), kind: 'Supplier', label: 'businessName', nameFallback: ['firstName', 'lastName'], codeField: 'contactId' },
+  agent:                     { load: () => contactOptionsModel('Agent'), kind: 'Agent', label: 'businessName', nameFallback: ['firstName', 'lastName'], codeField: 'contactId' },
+  customer:                  { load: () => contactOptionsModel('Customer'), kind: 'Customer', label: 'businessName', nameFallback: ['firstName', 'lastName'], codeField: 'contactId' },
  
   'product/filter':          { load: () => import('@/models/ProductFilter') },
   'product/group':           { load: () => import('@/models/ProductGroup') },

@@ -1,7 +1,17 @@
 'use client';
-import { useEffect, useRef } from 'react';
-import JsBarcode from 'jsbarcode';
-import { toLabelData, withLabelCounts } from '@/lib/barcodeLabelPrint';
+import BarcodeSvg from './BarcodeSvg';
+import { toLabelData } from '@/lib/barcodeLabelPrint';
+import { displayBarcodeValue } from '@/lib/barcodeValue';
+import {
+  labelGeometry,
+  labelsPerRow,
+  SECTION_ORDER,
+  PAD_X_MM,
+  PAD_Y_MM,
+  BORDER_MM,
+  QUIET_ZONE_MODULES,
+  mm,
+} from '@/lib/barcodeLabelGeometry';
 
 /* ==========================================================================
    GrcBarcodeLabel — the SINGLE label renderer shared by:
@@ -11,12 +21,18 @@ import { toLabelData, withLabelCounts } from '@/lib/barcodeLabelPrint';
      - components/GCRBarcodeGeneration.jsx PrintLabelPicker preview
          (the WYSIWYG preview that must match print exactly)
 
-   This file was extracted from barcode-print/[id]/page.jsx so that future
-   changes to the sticker design are automatically reflected in both places.
-   The only difference between preview and print is the outer container —
-   GrcBarcodeLabelSheet wraps labels in a 2-column grid for both; the print
-   page adds print CSS via globals.css (.print-doc) and the picker portals
-   the sheet to <body>.
+   Both hand it the SAME rows and the SAME label format, so what is on screen
+   and what comes off the printer are one layout with one geometry.
+
+   A LABEL IS A PHYSICAL OBJECT, not a card on a web page. Its width, height
+   and the eight bands it is divided into come from lib/barcodeLabelGeometry.js
+   and are set in MILLIMETRES — the one CSS unit that survives the browser's
+   print pipeline at its real size. This file used to lay the same label out
+   in pixels inside a box with no size of its own, so a 50 x 40 mm sticker
+   came out as wide as whatever column it landed in (~135mm in a max-w-5xl
+   page) and no band had a fixed height: the description pushed the rate down,
+   the disclaimer fell off the bottom, and the preview and the paper agreed
+   with each other only by accident.
 
    DATA CONTRACT — every label value comes from toLabelData() (whitelist) +
    the row's own qty text. Nothing outside that contract can reach the paper.
@@ -36,17 +52,15 @@ export const LABEL_FIELDS = {
   detailRow2Price: 'wspPrice',
 };
 
-/* Every label row sits on one 3-column grid so each value's horizontal
-   position is fixed regardless of neighbour lengths. minmax(0, …) prevents
-   a long value from widening its own column and displacing the others. */
-export const LABEL_ROW =
-  'grid grid-cols-[minmax(0,1fr)_minmax(0,1.5fr)_minmax(0,1fr)] items-center gap-x-1';
-export const CELL = ['truncate text-left', 'truncate text-center', 'truncate text-right'];
-
 /* -----------------------------------------------------------------------
    labelFor(row) — augments the toLabelData whitelist with qtyWithUnit.
    qty is stored as the operator typed it ("16", "2.50"); the numeric
    quantity from toLabelData is the fallback when that text is blank.
+
+   ONE ROW IN, ONE LABEL OUT. Every value on a sticker — the number, the
+   composed barcode value, the description, the HSN, the price — is read off
+   the SAME barcode record here, so no two fields on a label can ever come
+   from two different barcodes. Nothing downstream pairs values by position.
 ----------------------------------------------------------------------- */
 export function labelFor(row) {
   const label = toLabelData(row);
@@ -56,72 +70,45 @@ export function labelFor(row) {
   return { ...label, qtyWithUnit: [qtyText, label.unit].filter(Boolean).join(' ') };
 }
 
-/* -----------------------------------------------------------------------
-   BarcodeSvg — CODE128 barcode as an inline SVG.
-   Uses useEffect (not useLayoutEffect) to match the print page's own
-   timing model, which the double-rAF print guard was designed around.
-   data-barcode is present so the print readiness check in
-   GCRBarcodeGeneration.jsx still counts it.
------------------------------------------------------------------------ */
-export function BarcodeSvg({ value }) {
-  const svgRef = useRef(null);
+/* The bars are drawn by the shared components/BarcodeSvg.jsx — the one
+   CODE128 implementation in the application, so a label printed from this
+   screen scans the same as the same label printed from any other. It carries
+   data-barcode, which is what the print readiness check in
+   GCRBarcodeGeneration.jsx counts before it opens the print dialog. */
+export { BarcodeSvg };
 
-  useEffect(() => {
-    const svg = svgRef.current;
-    if (!svg) return;
-
-    /* Clear before every render — a reused node keeps the previous barcode's
-       bars while the number beside it changes, which is worse than blank. */
-    while (svg.firstChild) svg.removeChild(svg.firstChild);
-    svg.removeAttribute('width');
-    svg.removeAttribute('height');
-    svg.removeAttribute('viewBox');
-
-    if (!value) return;
-
-    try {
-      JsBarcode(svg, String(value), {
-        format: 'CODE128',
-        displayValue: false,
-        height: 42,
-        width: 1.3,
-        margin: 0,
-      });
-    } catch {
-      /* JsBarcode throws on characters it cannot encode (empty string, control
-         characters). Leave the svg empty rather than taking the sheet down. */
-    }
-  }, [value]);
-
-  return (
-    <svg
-      ref={svgRef}
-      data-barcode=""
-      className="mx-auto block w-full max-w-[190px]"
-    />
-  );
-}
+/* Text that must not be re-cased or wrapped: a barcode value is
+   case-sensitive (globals.css uppercases body text) and must stay on its own
+   single line, cut with an ellipsis rather than pushed onto a second one. */
+const ONE_LINE = { overflow: 'hidden', whiteSpace: 'nowrap', textOverflow: 'ellipsis' };
 
 /* -----------------------------------------------------------------------
-   Label — one complete printable sticker, layout:
+   Label — one complete printable sticker.
 
-              [ barcode bars ]
-              barcode number
-     description (up to 2 lines, left-aligned)
+              [ machine-readable barcode ]
+     barcodeNo                       barcodeGenerated
+     description (up to 2 lines)
      HSN            item code          P-M-F
      encoded PR     qty + unit         wsp price
-              RATE : ₹.../-
+                   RATE : ₹.../-
      (Inclusive all taxes)       DRY WASH ONLY
-      No exchange, no guarantee, No Return
+         No exchange, no guarantee, No Return
 
-   Every block has a fixed height so all labels on a sheet share one
-   geometry: a missing field leaves its column blank, a long value is
-   cut with an ellipsis, a long description wraps into its 2-line box.
+   The eight bands are the eight LABEL_SECTIONS, in SECTION_ORDER, each a
+   fixed millimetre track of the sticker's own height. A band cannot grow:
+   a missing field leaves its place blank, a long value is cut with an
+   ellipsis and a long description wraps inside its two-line box. That is
+   what keeps the barcode at the top where a scanner expects it, and the
+   disclaimer on the label, whatever the data does.
 
-   Accepts the label data object (from labelFor / toLabelData), never
-   the raw barcode row, so the whitelist is the only gate to paper.
+   Accepts the label data object (from labelFor / toLabelData), never the raw
+   barcode row, so the whitelist is the only gate to paper.
 ----------------------------------------------------------------------- */
-export function Label({ label }) {
+export function Label({ label, geometry }) {
+  const g = geometry;
+  const band = (key) => mm(g.band(key));
+  const type = (key) => mm(g.type(key));
+
   const detailRow1 = LABEL_FIELDS.detailRow1.map((k) => label[k] ?? '');
   const detailRow2 = [
     label[LABEL_FIELDS.detailRow2Left],
@@ -129,81 +116,195 @@ export function Label({ label }) {
     label[LABEL_FIELDS.detailRow2Price],
   ];
 
-  return (
-    <div className="overflow-hidden px-3 py-2 text-center break-inside-avoid">
-      <BarcodeSvg value={label.barcode} />
+  /* THE BARCODE IDENTIFIER ROW — both values off the SAME record.
 
-      {/* The barcode value, exactly as the bars encode it
-          (SUPPLIER_CODE * GRC_NUMBER * SEQ * QTY), across the full width so it
-          is not cut short. normal-case: globals.css uppercases body text; a
-          barcode value is case-sensitive. */}
-      <div className="mt-1 h-4 leading-4">
-        <span className="block truncate text-center font-mono text-[11px] font-semibold tracking-wide normal-case">
-          {label.barcode}
+     LEFT   barcodeNo          the unit's own number, "9A1135"
+     RIGHT  barcodeGenerated   the composed value - supplier code, GRC number,
+                               the item's Bill Sl No. and the barcode's SEQ,
+                               "G512 * 05173 * 5 * 1" (lib/barcodeValue.js)
+
+     Printed the way the reference label prints them, with the spaces around
+     the separators closed up (displayBarcodeValue). The STORED strings are
+     untouched — this is the printed form of them, nothing else.
+
+     A row whose two fields hold the SAME string (every barcode the save route
+     writes today stores the composed value in both) prints it once, on the
+     left, rather than twice across the row. Nothing is invented to fill the
+     right-hand side: a row with no separate composed value simply has none. */
+  const barcodeNo = displayBarcodeValue(label.barcodeNo);
+  const composed = displayBarcodeValue(label.barcodeGenerated);
+  const secondary = composed && composed !== barcodeNo ? composed : '';
+
+  /* A row of three values on one grid, so each value's horizontal position is
+     fixed regardless of how long its neighbours are. minmax(0, …) stops
+     a long value widening its own column and displacing the others. */
+  const threeUp = (key, cells, style = {}) => (
+    <div
+      style={{
+        display: 'grid',
+        gridTemplateColumns: 'minmax(0, 1fr) minmax(0, 1.5fr) minmax(0, 1fr)',
+        alignItems: 'center',
+        columnGap: mm(0.8),
+        height: band(key),
+        fontSize: type(key),
+        lineHeight: band(key),
+        ...style,
+      }}
+    >
+      {cells.map((value, i) => (
+        <span key={i} style={{ ...ONE_LINE, textAlign: ['left', 'center', 'right'][i] }}>
+          {value}
         </span>
+      ))}
+    </div>
+  );
+
+  return (
+    <div
+      data-label=""
+      className="barcode-label"
+      style={{
+        boxSizing: 'border-box',
+        width: mm(g.w),
+        height: mm(g.h),
+        padding: mm(PAD_Y_MM) + ' ' + mm(PAD_X_MM),
+        border: mm(BORDER_MM) + ' dashed #94a3b8',
+        overflow: 'hidden',
+        display: 'grid',
+        /* One track per section, in the one order they are rendered in, so a
+           section can neither be given a track it is not rendered into nor
+           rendered into a track it was not given. */
+        gridTemplateRows: SECTION_ORDER.map((key) => band(key)).join(' '),
+        color: '#000',
+        background: '#fff',
+      }}
+    >
+      {/* 1 — MACHINE-READABLE BARCODE, at the top of every label.
+
+          preserveAspectRatio="none" keeps the bars the full height of their
+          band: under the default, a symbol wider than the sticker is scaled
+          down on BOTH axes and the lost height is what makes a label need a
+          second pass under the scanner. quietZone is the blank run either
+          side that tells a scanner where the symbol starts and ends — inside
+          the SVG's own viewBox, so it survives however narrow the label is. */}
+      <div style={{ height: band('barcode'), overflow: 'hidden' }}>
+        <BarcodeSvg
+          value={label.barcode}
+          height={60}
+          quietZone={QUIET_ZONE_MODULES}
+          preserveAspectRatio="none"
+          className="block h-full w-full"
+        />
       </div>
 
-      {/* Description — up to two lines, left-aligned, slate-600 */}
-      <div className="mt-1 h-[2.5em] text-left text-[9px] leading-tight text-slate-600 line-clamp-2 break-words">
+      {/* 2 — barcodeNo (LEFT) and barcodeGenerated (RIGHT), one row, directly
+          below the bars. textTransform none: globals.css uppercases body
+          text and a barcode value is case-sensitive. */}
+      <div
+        style={{
+          display: 'grid',
+          gridTemplateColumns: 'minmax(0, auto) minmax(0, 1fr)',
+          alignItems: 'center',
+          columnGap: mm(1),
+          height: band('identifier'),
+          fontSize: type('identifier'),
+          lineHeight: band('identifier'),
+          fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
+          fontWeight: 600,
+          letterSpacing: '0.01em',
+          textTransform: 'none',
+        }}
+      >
+        <span style={{ ...ONE_LINE, textAlign: 'left' }}>{barcodeNo}</span>
+        <span style={{ ...ONE_LINE, textAlign: 'right' }}>{secondary}</span>
+      </div>
+
+      {/* 3 — the print description, two lines, left-aligned */}
+      <div
+        style={{
+          height: band('description'),
+          fontSize: type('description'),
+          lineHeight: mm(g.band('description') / 2),
+          textAlign: 'left',
+          color: '#334155',
+          overflow: 'hidden',
+          display: '-webkit-box',
+          WebkitBoxOrient: 'vertical',
+          WebkitLineClamp: 2,
+          wordBreak: 'break-word',
+        }}
+      >
         {label.description}
       </div>
 
-      {/* Row 1: HSN | item code | P-M-F */}
-      <div className={`${LABEL_ROW} mt-1.5 h-[15px] text-[10px] font-semibold leading-[15px]`}>
-        {detailRow1.map((v, i) => (
-          <span key={i} className={CELL[i]}>{v}</span>
-        ))}
-      </div>
+      {/* 4 — HSN | item code | P-M-F */}
+      {threeUp('detailRow1', detailRow1, { fontWeight: 600 })}
 
-      {/* Row 2: encoded cost price | qty + unit | wsp price */}
-      <div className={`${LABEL_ROW} mt-1 h-[15px] text-[10px] font-semibold leading-[15px]`}>
-        {detailRow2.map((v, i) => (
-          <span key={i} className={CELL[i]}>{v}</span>
-        ))}
-      </div>
+      {/* 5 — encoded cost price | qty + unit | wsp price */}
+      {threeUp('detailRow2', detailRow2, { fontWeight: 600 })}
 
-      {/* RATE line */}
-      <div className="text-[13px] font-extrabold mt-1.5">
+      {/* 6 — RATE */}
+      <div
+        style={{
+          height: band('rate'),
+          fontSize: type('rate'),
+          lineHeight: band('rate'),
+          textAlign: 'center',
+          fontWeight: 800,
+          ...ONE_LINE,
+        }}
+      >
         RATE : ₹{label.sellingPrice}/-
       </div>
 
-      {/* Footer row: tax note (left) | DRY WASH ONLY (right) */}
-      <div className={`${LABEL_ROW} mt-0.5 h-3 text-[7.5px] leading-3 text-slate-500`}>
-        <span className={CELL[0]}>(Inclusive all taxes)</span>
-        <span className={CELL[1]} />
-        <span className={CELL[2]}>DRY WASH ONLY</span>
-      </div>
+      {/* 7 — tax note (left) | washing instruction (right) */}
+      {threeUp('taxWash', ['(Inclusive all taxes)', '', 'DRY WASH ONLY'], { color: '#475569' })}
 
-      {/* No exchange footer — full width, same tiny type */}
-      <div className="mt-0.5 h-3 text-[7.5px] leading-3 text-slate-500">
+      {/* 8 — disclaimer */}
+      <div
+        style={{
+          height: band('disclaimer'),
+          fontSize: type('disclaimer'),
+          lineHeight: band('disclaimer'),
+          textAlign: 'center',
+          color: '#475569',
+          ...ONE_LINE,
+        }}
+      >
         No exchange, no guarantee, No Return
       </div>
-
-      {/* The same barcode value at the foot: SUPPLIER_CODE * GRC_NUMBER * SEQ * QTY,
-          e.g. "G1318 * 05178 * 1 * 16" - identical to the bars and the line
-          under them (toLabelData). */}
-      {label.labelIdentifier && (
-        <div className="mt-0.5 h-3 text-[7.5px] leading-3 text-slate-600 font-semibold normal-case">
-          {label.labelIdentifier}
-        </div>
-      )}
     </div>
   );
 }
 
 /* -----------------------------------------------------------------------
-   GrcBarcodeLabelSheet — 2-column grid of Label cells, matching the
-   barcode-print page layout exactly.
+   GrcBarcodeLabelSheet — the labels of a GRC, laid out on the sticker stock
+   they are printed on.
 
-   rows   — array of barcode rows, each carrying `copies` (from withLabelCounts)
-   gap    — CSS gap between cells (default '0' — matches print page behaviour)
+   rows    — barcode rows, each carrying `copies` (from withLabelCounts)
+   format  — the chosen barcode label catalog row (labelSize "50 x 40 mm",
+             stickerInRow 2). null until the catalog answers, which falls back
+             to that same 50 x 40 mm 2-up default rather than rendering a
+             label with no size.
+   gap     — the gutter between stickers: a cut line's worth on a sheet of A4
+             that somebody has to guillotine, zero on die-cut stock where the
+             sheet IS the page.
 
-   Each row is expanded into `copies` identical label cells. The left column
-   of each pair gets a dashed right border matching the print page separator.
-   The outer wrapper gets print-doc + content-start so it survives @media
-   print via globals.css (only .print-doc and its children are visible).
+   Each row is expanded into `copies` identical stickers — the same barcode
+   number on every copy. Nothing here reserves, generates or saves anything,
+   so printing a second metre sticker or a twenty-fifth batch sticker cannot
+   move the barcode sequence.
+
+   print-doc + alignContent:start stay on the wrapper so the sheet still
+   survives the generic @media print rules in globals.css for a Ctrl+P on the
+   print page; a label RUN takes the #barcode-print-root path instead, where
+   globals.css overrides .print-doc back into normal flow so the sheet can
+   fragment across as many pages as it needs.
 ----------------------------------------------------------------------- */
-export default function GrcBarcodeLabelSheet({ rows, gap = '0' }) {
+export default function GrcBarcodeLabelSheet({ rows, format = null, gap = '1mm' }) {
+  const geometry = labelGeometry(format);
+  const perRow = labelsPerRow(format);
+
   const labels = (rows || []).flatMap((row, ri) => {
     const n = Math.max(0, Math.floor(Number(row.copies) || 0));
     return Array.from({ length: n }, (_, copy) => ({
@@ -222,19 +323,21 @@ export default function GrcBarcodeLabelSheet({ rows, gap = '0' }) {
 
   return (
     <div
-      className="print-doc content-start grid grid-cols-2 print:grid-cols-2"
-      style={{ gap }}
+      className="print-doc"
+      style={{
+        display: 'grid',
+        gridTemplateColumns: 'repeat(' + perRow + ', ' + mm(geometry.w) + ')',
+        gridAutoRows: mm(geometry.h),
+        gap,
+        justifyContent: 'center',
+        /* Without this the implicit rows stretch to fill whatever height the
+           sheet is given, and a single row of labels comes out a full page
+           tall with the cut line running the length of the paper. */
+        alignContent: 'start',
+      }}
     >
-      {labels.map(({ key, label }, i) => (
-        <div
-          key={key}
-          className={
-            'border-y border-slate-300 ' +
-            (i % 2 === 0 ? 'border-r border-dashed border-slate-400' : '')
-          }
-        >
-          <Label label={label} />
-        </div>
+      {labels.map(({ key, label }) => (
+        <Label key={key} label={label} geometry={geometry} />
       ))}
     </div>
   );

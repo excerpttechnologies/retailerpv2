@@ -10,7 +10,7 @@ const LogisticSchema = new mongoose.Schema(
   {
     businessId: { type: mongoose.Schema.Types.ObjectId, ref: 'business', default: null, index: true },
     locationId: { type: mongoose.Schema.Types.ObjectId, ref: 'companyLocation', default: null, index: true },
-    supplierId: { type: mongoose.Schema.Types.ObjectId, ref: 'contact', default: null },
+    supplierId: { type: mongoose.Schema.Types.ObjectId, ref: 'supplier', default: null },
     logisticNo: { type: String, default: '' },
     logisticDate: { type: Date, default: null },
     ewayBillDate: { type: Date, default: null },

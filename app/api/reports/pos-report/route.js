@@ -3,7 +3,7 @@ import dbConnect from '@/lib/db';
 import { requireSession } from '@/lib/session';
 import PosInvoice from '@/models/PosInvoice';
 import CompanyLocation from '@/models/CompanyLocation';
-import Contact from '@/models/Contact';
+import { Customer } from '@/lib/contacts';
 import {
   json, num, r2, scopeOf, scopeFilter, dateRange, pageOf, paged,
   linesOf, lineItemCode, lineItemName, lineQty, lineNet,
@@ -73,7 +73,7 @@ export async function GET(req) {
     locIds.length
       ? CompanyLocation.find({ _id: { $in: locIds } }).select('name').lean() : [],
     custIds.length
-      ? Contact.find({ _id: { $in: custIds } })
+      ? Customer.find({ _id: { $in: custIds } })
         .select('businessName firstName lastName gstNo billingMobile').lean() : [],
   ]);
   const locName = new Map(locs.map((l) => [String(l._id), l.name || '']));

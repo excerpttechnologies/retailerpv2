@@ -1,6 +1,12 @@
-/* Gives EXISTING GRC barcodes the value every new one gets:
+/* Gives EXISTING GRC barcodes their display value in barcodeGenerated:
 
-     SUPPLIER_CODE * GRC_NUMBER * SEQ * QTY          e.g. "G1318 * 05178 * 1 * 16"
+     SUPPLIER_CODE * GRC_NUMBER * BILL_SL_NO * SEQ   e.g. "G512 * 05173 * 5 * 1"
+
+   barcodeNo IS NEVER WRITTEN. It is the unit's own number (8A4086) - what
+   scans, what bills, transfers and the stock ledger name, what the barcode
+   engine counts on from. An earlier version of this script wrote the display
+   value into barcodeNo as well, which is what scripts/restoreBarcodeNumbers.mjs
+   had to undo on 1,173 rows.
 
    DRY RUN unless --apply. Name the GRCs - by number or id - or pass --all:
 
@@ -10,24 +16,26 @@
 
    For each GRC, in the order its barcodes were created:
      - a barcode that already carries a SEQ keeps it; the others take the
-       lowest free SEQ from 1 up - so GRC 05178's 16, 16, 89 become
-       "G1318 * 05178 * 1 * 16", "* 2 * 16", "* 3 * 89"
-     - the value is the GRC supplier's code, the GRC number, that SEQ and that
-       barcode's OWN quantity (lib/barcodeValue.js - the save route's rule)
-     - a unit still in stock where it was received is given the new value; one
-       that has been sold, transferred, returned or written off KEEPS the
-       number it moved under (its bill, transfer and ledger name that number)
-       and is only given its SEQ
-     - a value another barcode of the business already carries is not
-       written - it is reported
+       lowest free SEQ from 1 up - so three barcodes of bill line 5 become
+       "G512 * 05173 * 5 * 1", "* 5 * 2", "* 5 * 3"
+     - the value is the GRC supplier's code, the GRC number, that barcode's
+       OWN Bill Sl No. - the bill line it was received on, as the GRC's Item
+       Summary shows it - and that SEQ (lib/barcodeValue.js - the save route's
+       rule). Never the quantity: that is a different column of the same row
+     - a barcode with no Bill Sl No. composes nothing, so it KEEPS the value it
+       has and is reported; nothing is stood in that place for it
+     - every barcode gets it, whether in stock or already moved: only the
+       display field changes, so a sold or transferred unit still scans and
+       reports under the number it moved with
+     - a value another barcode of the business already carries in
+       barcodeGenerated is not written - it is reported
    The GRC's lastBarcodeSeq is raised to its highest SEQ.
 
-   THE LABELS ALREADY ON THE GOODS STILL CARRY THE OLD NUMBERS. Reprint the
-   labels of every barcode this changes - once applied, only the new value
-   scans. The stock ledger keeps the old numbers as history; it is tied to each
-   unit by id, not by number. */
+   Nothing that scans changes, so no label has to be reprinted for scanning -
+   reprint only where the printed display value should show the new text. */
 
 import mongoose from 'mongoose';
+import { contactCollection } from '../lib/contactStorage.js';
 import { composeBarcodeValue, barcodeValueProblem } from '@/lib/barcodeValue';
 
 const argv = process.argv.slice(2);
@@ -52,15 +60,13 @@ const grcs = await db.collection('grc').find(filter).sort({ grcDate: 1, _id: 1 }
 console.log(`${APPLY ? 'APPLYING' : 'DRY RUN'} - ${grcs.length} GRC(s)\n`);
 
 const seqOf = (value) => (/^\d+$/.test(String(value ?? '').trim()) ? Number(value) : 0);
-const moved = (u) => (u.status && u.status !== 'IN_STOCK')
-  || Boolean(u.currentLocationId && u.locationId && String(u.currentLocationId) !== String(u.locationId));
 
 let revalued = 0;
 let seqOnly = 0;
 let conflicts = 0;
 
 for (const grc of grcs) {
-  const supplier = grc.supplierId ? await db.collection('contact').findOne({ _id: grc.supplierId }, { projection: { contactId: 1 } }) : null;
+  const supplier = grc.supplierId ? await db.collection(contactCollection('Supplier')).findOne({ _id: grc.supplierId }, { projection: { contactId: 1 } }) : null;
   const supplierCode = String(supplier?.contactId || '').trim();
   const units = await db.collection('barcodeLabel').find({ grcId: String(grc._id) }).sort({ createdAt: 1, _id: 1 }).toArray();
   console.log(`GRC ${grc.grcNumber || '(no number)'}  [${grc._id}]  supplier ${supplierCode || '(no code)'}  - ${units.length} barcode(s)`);
@@ -86,18 +92,22 @@ for (const grc of grcs) {
 
   const plan = units.map((u) => {
     const seq = seqs.get(String(u._id));
-    const value = composeBarcodeValue({ supplierCode, grcNumber: grc.grcNumber, seq, qty: u.qty });
-    const current = String(u.barcodeNo || u.barcodeGenerated || '');
-    const keep = moved(u) || !value;
-    return { u, seq, value, current, keep };
+    /* the unit's own Bill Sl No. - the bill line it was received on, which
+       is what the third part of the value carries (lib/barcodeValue.js). A
+       unit without one composes nothing and is reported, never restated with
+       its quantity in that place. */
+    const value = composeBarcodeValue({ supplierCode, grcNumber: grc.grcNumber, seq, billSlNo: u.billSlNo });
+    /* only barcodeGenerated is compared and written - never barcodeNo */
+    const current = String(u.barcodeGenerated || '');
+    return { u, seq, value, current, keep: !value };
   });
 
-  /* a value some OTHER barcode of the business already carries */
+  /* a display value some OTHER barcode of the business already carries */
   const wanted = plan.filter((p) => !p.keep && p.value !== p.current).map((p) => p.value);
   const taken = wanted.length
     ? new Set((await db.collection('barcodeLabel').find({
-      businessId: String(grc.businessId || ''), barcodeNo: { $in: wanted }, grcId: { $ne: String(grc._id) },
-    }, { projection: { barcodeNo: 1 } }).toArray()).map((u) => u.barcodeNo))
+      businessId: String(grc.businessId || ''), barcodeGenerated: { $in: wanted }, grcId: { $ne: String(grc._id) },
+    }, { projection: { barcodeGenerated: 1 } }).toArray()).map((u) => u.barcodeGenerated))
     : new Set();
 
   const writes = [];
@@ -106,7 +116,7 @@ for (const grc of grcs) {
     if (String(u.seq ?? '') !== String(seq)) set.seq = String(seq);
     let action;
     if (keep) {
-      action = moved(u) ? `KEEPS ${current} (${u.status || 'moved'})` : 'KEEPS (no quantity)';
+      action = 'KEEPS (no Bill Sl No.)';
       if (set.seq) seqOnly += 1;
     } else if (value === current) {
       action = 'already right';
@@ -114,10 +124,8 @@ for (const grc of grcs) {
       action = `NOT CHANGED - ${value} is already another barcode's`;
       conflicts += 1;
     } else {
-      set.barcodeNo = value;
       set.barcodeGenerated = value;
-      if (u.batchNo && u.batchNo === current) set.batchNo = value;
-      action = `${current}  ->  ${value}`;
+      action = `${u.barcodeNo}  generated ${current || '(blank)'}  ->  ${value}`;
       revalued += 1;
     }
     console.log(`  SEQ ${String(seq).padStart(3)}  qty ${String(u.qty).padEnd(6)} ${action}`);
@@ -132,7 +140,6 @@ for (const grc of grcs) {
   console.log(`  lastBarcodeSeq -> ${highest}${APPLY ? '' : ' (dry run)'}\n`);
 }
 
-console.log(`${revalued} barcode(s) ${APPLY ? 'given' : 'would be given'} the new value, ${seqOnly} moved unit(s) ${APPLY ? 'given' : 'would get'} a SEQ only, ${conflicts} conflict(s) left alone.`);
-if (!APPLY) console.log('Nothing was written. Add --apply to write it - then reprint those labels.');
-else if (revalued) console.log('Reprint the labels of the barcodes changed above: the old numbers on the goods no longer scan.');
+console.log(`${revalued} barcode(s) ${APPLY ? 'given' : 'would be given'} their barcodeGenerated value, ${seqOnly} ${APPLY ? 'given' : 'would get'} a SEQ only, ${conflicts} conflict(s) left alone. barcodeNo untouched.`);
+if (!APPLY) console.log('Nothing was written. Add --apply to write it.');
 await mongoose.disconnect();

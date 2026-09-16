@@ -2,7 +2,7 @@ import { isValidObjectId } from 'mongoose';
 import dbConnect from '@/lib/db';
 import { requireSession } from '@/lib/session';
 import CompanyLocation from '@/models/CompanyLocation';
-import Contact from '@/models/Contact';
+import { Agent } from '@/lib/contacts';
 import DeliveryChallan from '@/models/DeliveryChallan';
 import SalesInvoice from '@/models/SalesInvoice';
 import SalesReturn from '@/models/SalesReturn';
@@ -74,7 +74,7 @@ export async function GET(req) {
     sales.map((d) => d.salesPersonId).filter(Boolean).map(String)
   )];
   const people = personIds.length
-    ? await Contact.find({ _id: { $in: personIds } })
+    ? await Agent.find({ _id: { $in: personIds } })
       .select('businessName firstName lastName').lean()
     : [];
   const personName = new Map(people.map((p) => [

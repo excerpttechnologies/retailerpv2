@@ -42,6 +42,7 @@
 import path from 'path';
 import { existsSync, writeFileSync, mkdirSync } from 'fs';
 import mongoose from 'mongoose';
+import { contactCollection } from '../lib/contactStorage.js';
 import XLSX from 'xlsx';
 
 const APPLY = process.argv.includes('--apply');
@@ -204,7 +205,7 @@ async function main() {
   /* ------------------------------------------------------- database ---- */
   await mongoose.connect(URI);
   const db = mongoose.connection.db;
-  const contacts = db.collection('contact');
+  const contacts = db.collection(contactCollection('Agent'));
 
   const existing = await contacts.find({ contactKind: 'Agent' }).toArray();
   report.before = existing.length;

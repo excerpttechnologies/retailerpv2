@@ -1,6 +1,6 @@
 import { isValidObjectId } from 'mongoose';
 import dbConnect from '@/lib/db';
-import Contact from '@/models/Contact';
+import { Supplier } from '@/lib/contacts';
 import { requireSession } from '@/lib/session';
 import { resolveRefLabels } from '@/lib/refLabels';
 import { validate, escapeRegex } from '@/lib/validate';
@@ -49,7 +49,7 @@ export async function GET(req) {
     /* editing: the supplier's own business decides the scope, exactly as the
        PUT that follows will */
     if (excludeId && isValidObjectId(excludeId)) {
-      const self = await Contact.findById(excludeId, { businessId: 1 }).lean();
+      const self = await Supplier.findById(excludeId, { businessId: 1 }).lean();
       if (self?.businessId) businessId = String(self.businessId);
     }
     const conflict = await findSupplierGstConflict({ gstNo, businessId, excludeId });
@@ -66,8 +66,8 @@ export async function GET(req) {
     filter.$or = [{ gstNo: rx }, { businessName: rx }, { shortName: rx }, { firstName: rx }, { middleName: rx }, { lastName: rx }, { userName: rx }, { billingAddressLine1: rx }];
   }
 
-  const total = await Contact.countDocuments(filter);
-  const rows = await Contact.find(filter)
+  const total = await Supplier.countDocuments(filter);
+  const rows = await Supplier.find(filter)
     .sort({ _id: -1 })
     .skip((page - 1) * perPage)
     .limit(perPage)
@@ -107,10 +107,10 @@ export async function POST(req) {
      be seconds old, and a request need not come from the form at all. */
   const conflict = await findSupplierGstConflict({ gstNo: doc.gstNo, businessId: doc.businessId });
   if (conflict) return gstConflictResponse(conflict);
-  doc.contactId = await nextContactId(Contact, ContactType, doc.typeId);
+  doc.contactId = await nextContactId(ContactType, doc.typeId);
 
   try {
-    const created = await Contact.create(doc);
+    const created = await Supplier.create(doc);
     return json({ ok: true, id: String(created._id) });
   } catch (err) {
     /* two saves of the same new GSTIN at the same instant both pass the check

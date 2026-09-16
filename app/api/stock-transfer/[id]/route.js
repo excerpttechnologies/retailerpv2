@@ -2,7 +2,7 @@ import { isValidObjectId } from 'mongoose';
 import dbConnect from '@/lib/db';
 import StockTransfer, { TRANSFER_STATUS } from '@/models/StockTransfer';
 import StockMovement from '@/models/StockMovement';
-import Contact from '@/models/Contact';
+import { Supplier } from '@/lib/contacts';
 import { handler, json } from '@/lib/apiError';
 import { requirePermission, PERMISSIONS, canUseLocation } from '@/lib/rbac';
 import { AuthzError } from '@/lib/rbac';
@@ -42,7 +42,7 @@ export const GET = handler(async (req, { params }) => {
     (doc.lines || []).map((l) => l.supplierId).filter((s) => s && isValidObjectId(String(s))).map(String)
   )];
   const suppliers = supplierIds.length
-    ? await Contact.find({ _id: { $in: supplierIds } })
+    ? await Supplier.find({ _id: { $in: supplierIds } })
       .select('businessName firstName lastName contactId').lean()
     : [];
   const supplierNames = Object.fromEntries(suppliers.map((s) => [

@@ -26,7 +26,7 @@ const IcAutoPurchaseReturnSchema = new mongoose.Schema(
     toBusinessId: { type: mongoose.Schema.Types.ObjectId, ref: 'business', default: null, index: true },
     toLocationId: { type: mongoose.Schema.Types.ObjectId, ref: 'companyLocation', default: null },
 
-    supplierId: { type: mongoose.Schema.Types.ObjectId, ref: 'contact', default: null },
+    supplierId: { type: mongoose.Schema.Types.ObjectId, ref: 'supplier', default: null },
 
     returnNo: { type: String, default: '', index: true },
     returnDate: { type: Date, default: null },
@@ -34,8 +34,8 @@ const IcAutoPurchaseReturnSchema = new mongoose.Schema(
     debitNoteNo: { type: String, default: '' },
 
     stockPointId: { type: mongoose.Schema.Types.ObjectId, ref: 'stockPoint', default: null },
-    agentId: { type: mongoose.Schema.Types.ObjectId, ref: 'contact', default: null },
-    salesPersonId: { type: mongoose.Schema.Types.ObjectId, ref: 'contact', default: null },
+    agentId: { type: mongoose.Schema.Types.ObjectId, ref: 'agent', default: null },
+    salesPersonId: { type: mongoose.Schema.Types.ObjectId, ref: 'agent', default: null },
     salesTerm: { type: String, default: '' },
     logisticId: { type: mongoose.Schema.Types.ObjectId, ref: 'logistic', default: null },
     customerWaybill: { type: String, default: '' },

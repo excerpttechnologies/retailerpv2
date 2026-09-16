@@ -4,7 +4,7 @@ import { handler, json } from '@/lib/apiError';
 import { BarcodeLabel } from '@/lib/barcodeLabel';
 import { barcodeHistory, shape, InventoryError, SCAN_ERRORS } from '@/lib/inventory';
 import CompanyLocation from '@/models/CompanyLocation';
-import Contact from '@/models/Contact';
+import { Supplier } from '@/lib/contacts';
 import Grc from '@/models/Grc';
 
 /* GET /api/barcode/<code>
@@ -48,7 +48,7 @@ export const GET = handler(async (req, { params }) => {
       ? CompanyLocation.find({ _id: { $in: locationIds } }).select('name businessPrintName').lean()
       : [],
     unit.supplierId
-      ? Contact.findById(unit.supplierId).select('businessName firstName lastName contactId').lean().catch(() => null)
+      ? Supplier.findById(unit.supplierId).select('businessName firstName lastName contactId').lean().catch(() => null)
       : null,
     unit.grcId
       ? Grc.findById(unit.grcId).select('grcNumber grcDate').lean().catch(() => null)

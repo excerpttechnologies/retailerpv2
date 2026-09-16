@@ -43,6 +43,7 @@
 import path from 'path';
 import { existsSync } from 'fs';
 import mongoose from 'mongoose';
+import { contactCollection } from '../lib/contactStorage.js';
 import XLSX from 'xlsx';
 
 const APPLY = process.argv.includes('--apply');
@@ -187,13 +188,14 @@ const sheetName = wb.SheetNames[0];
 const rows = XLSX.utils.sheet_to_json(wb.Sheets[sheetName], { defval: '', raw: false });
 console.log('Workbook:', EXCEL_PATH, '| sheet:', sheetName, '| rows:', rows.length);
 
-const contact = db.collection('contact');
+/* the customer collection; the before/after counts read each kind from its own */
+const contact = db.collection(contactCollection('Customer'));
 
 console.log('\n=== BEFORE ===');
 const before = {
-  Customer: await contact.countDocuments({ contactKind: 'Customer' }),
-  Supplier: await contact.countDocuments({ contactKind: 'Supplier' }),
-  Agent: await contact.countDocuments({ contactKind: 'Agent' }),
+  Customer: await db.collection(contactCollection('Customer')).countDocuments({ contactKind: 'Customer' }),
+  Supplier: await db.collection(contactCollection('Supplier')).countDocuments({ contactKind: 'Supplier' }),
+  Agent: await db.collection(contactCollection('Agent')).countDocuments({ contactKind: 'Agent' }),
 };
 console.log('contact collection by contactKind:', JSON.stringify(before));
 
@@ -271,9 +273,9 @@ console.log('total inserted:', inserted);
 
 console.log('\n=== AFTER ===');
 const after = {
-  Customer: await contact.countDocuments({ contactKind: 'Customer' }),
-  Supplier: await contact.countDocuments({ contactKind: 'Supplier' }),
-  Agent: await contact.countDocuments({ contactKind: 'Agent' }),
+  Customer: await db.collection(contactCollection('Customer')).countDocuments({ contactKind: 'Customer' }),
+  Supplier: await db.collection(contactCollection('Supplier')).countDocuments({ contactKind: 'Supplier' }),
+  Agent: await db.collection(contactCollection('Agent')).countDocuments({ contactKind: 'Agent' }),
 };
 console.log('contact collection by contactKind:', JSON.stringify(after));
 
