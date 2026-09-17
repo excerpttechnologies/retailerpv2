@@ -4,7 +4,8 @@ import { useRouter, useSearchParams } from 'next/navigation';
 import Icon from './Icon';
 import ProductImage from './ProductImage';
 import { useScope } from './ScopeContext';
-import { useScanner, useScanSound } from './useScanner';
+import { useScanner, useScanSound, useBarcodeLookup } from './useScanner';
+import { sameBarcode } from '@/lib/barcodeValue';
 
 /* ==========================================================================
    Customer return and refund.
@@ -49,6 +50,22 @@ export default function PosReturnForm() {
   const [saving, setSaving] = useState(false);
   const [done, setDone] = useState(null);
   const beep = useScanSound();
+  const { lookup } = useBarcodeLookup({ business, location, intent: 'LOOKUP' });
+
+  /* The line of a sale a scanned code means. A line holds the unit's own
+     number (and its composed value, from the lookup route); a label may
+     encode either spelling of that value, or carry an old vendor number no
+     line holds - for that, the server says which unit the code is and the
+     line is found by the unit's number. */
+  const lineFor = useCallback(async (lines, code) => {
+    const local = (lines || []).find((l) => l.barcodeNo && (
+      l.barcodeNo === code || sameBarcode(l.barcodeNo, code) || sameBarcode(l.barcodeGenerated, code)));
+    if (local) return local;
+    const res = await lookup(code);
+    if (!res.ok || !res.unit) return null;
+    return (lines || []).find((l) => l.barcodeNo && (
+      (l.barcodeId && String(l.barcodeId) === String(res.unit._id)) || sameBarcode(l.barcodeNo, res.unit.barcodeNo))) || null;
+  }, [lookup]);
 
   /* --------------------------------------------------------- find sale -- */
   const find = useCallback(async (text, byBarcode = false) => {
@@ -63,8 +80,11 @@ export default function PosReturnForm() {
       const d = await r.json();
       if (!r.ok) { setFlash({ type: 'err', msg: d.error }); beep('err'); return; }
 
+      /* the scanned piece is ticked by its line's own number, whichever
+         spelling the label carried */
+      const line = byBarcode ? await lineFor(d.lines, term) : null;
       setSale(d);
-      setPicked(byBarcode ? d.lines.filter((l) => l.barcodeNo === term && l.returnable).map((l) => l.barcodeNo) : []);
+      setPicked(line && line.returnable ? [line.barcodeNo] : []);
       setRefundAmount('');
       beep('ok');
     } catch {
@@ -73,15 +93,15 @@ export default function PosReturnForm() {
     } finally {
       setLoading(false);
     }
-  }, [business, location, beep]);
+  }, [business, location, beep, lineFor]);
 
   /* A scan either finds the sale (nothing loaded yet) or ticks a line on the
      sale already open - which is exactly how an operator works through a bag
      of returned goods. */
-  const onScan = useCallback((codeText) => {
+  const onScan = useCallback(async (codeText) => {
     if (!sale) return find(codeText, true);
 
-    const line = sale.lines.find((l) => l.barcodeNo === codeText);
+    const line = await lineFor(sale.lines, codeText);
     if (!line) {
       setFlash({ type: 'err', msg: 'Barcode ' + codeText + ' is not on invoice ' + sale.invoice.invoiceNo + '.' });
       beep('err');
@@ -92,11 +112,13 @@ export default function PosReturnForm() {
       beep('err');
       return undefined;
     }
-    setPicked((p) => (p.includes(codeText) ? p : [...p, codeText]));
+    /* the selection holds the line's own number - what the return sends */
+    const no = line.barcodeNo;
+    setPicked((p) => (p.includes(no) ? p : [...p, no]));
     setFlash({ type: 'ok', msg: line.itemName + ' selected' });
     beep('ok');
     return undefined;
-  }, [sale, find, beep]);
+  }, [sale, find, beep, lineFor]);
 
   useScanner(onScan, { enabled: !saving });
 

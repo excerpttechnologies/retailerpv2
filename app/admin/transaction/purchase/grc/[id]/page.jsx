@@ -37,6 +37,7 @@ import Field from '@/components/Field';
 import { FORM } from '../form';
 import { useScope } from '@/components/ScopeContext';
 import PurchaseInvoicePrintView from '@/components/PurchaseInvoicePrintView';
+import { encodedBarcodeValue } from '@/lib/barcodeValue';
 
 const fields = FORM.cards.flatMap((card) => card.fields || []);
 const number = (value) => Number(value) || 0;
@@ -208,7 +209,7 @@ export default function EditTransactionPurchaseGrcPage() {
                     : 'No barcode items yet.'}
                 </td></tr>
               )}
-              {rows.map((row) => <tr key={row._id}><td>{cell(row.itemCode)}</td><td>{cell(row.batchUnique)}</td><td>{cell(row.billSlNo)}</td><td>{cell(row.supplierDescription)}</td><td>{cell(row.qty)}</td><td>{cell(row.uom)}</td><td>{cell(row.hsn)}</td><td>{cell(row.purRate)}</td><td>{cell(row.finalNet)}</td><td>{cell(row.gst)}</td><td>{cell(row.retailPrice)}</td><td>{cell(row.offerPrice)}</td><td>{cell(row.barcodeGenerated)}</td><td><button type="button" className="text-brand-link underline" onClick={openBarcode}>Edit</button></td></tr>)}
+              {rows.map((row) => <tr key={row._id}><td>{cell(row.itemCode)}</td><td>{cell(row.batchUnique)}</td><td>{cell(row.billSlNo)}</td><td>{cell(row.supplierDescription)}</td><td>{cell(row.qty)}</td><td>{cell(row.uom)}</td><td>{cell(row.hsn)}</td><td>{cell(row.purRate)}</td><td>{cell(row.finalNet)}</td><td>{cell(row.gst)}</td><td>{cell(row.retailPrice)}</td><td>{cell(row.offerPrice)}</td><td>{/* what its label encodes and prints */}{cell(encodedBarcodeValue(row))}</td><td><button type="button" className="text-brand-link underline" onClick={openBarcode}>Edit</button></td></tr>)}
             </tbody></table>
           ) : (
             <table className="dt min-w-[900px]">

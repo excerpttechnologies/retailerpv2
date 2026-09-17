@@ -41,6 +41,33 @@ function RowsTable({ spec, rows, onChange, locked }) {
   const setCell = (i, k, v) => onChange(rows.map((r, ri) => (ri === i ? { ...r, [k]: v } : r)));
   const drop = (i) => onChange(rows.filter((_, ri) => ri !== i));
 
+  /* A SAVED REFERENCE THE OPTION LIST DOES NOT CONTAIN.
+
+     The row holds an id - a tax's ObjectId - and the list is fetched for the
+     business currently selected in the top bar. When the two do not meet (the
+     tax was deleted, or it belongs to another business), MultiSelect falls
+     back to showing the raw id, which reads as a corrupted record rather than
+     as what it is. Saying so keeps the operator from picking another tax "to
+     fix it" and overwriting a reference that was right all along.
+
+     Only once the list has actually arrived: while it is loading, or if the
+     request failed, nothing is known about the value yet. */
+  const unresolved = (value) => Boolean(value)
+    && !loading && !error && options.length > 0
+    && !options.some((o) => String(o.value) === String(value));
+
+  /* WHY THERE ARE NO ROWS.
+
+     "No rows" alone reads as a page that failed to load its data, which is
+     exactly how an HSN saved without tax slabs was being read. On edit the
+     table is locked - slabs can only be added while a record is being created
+     - so an empty one is not something the operator can act on here, and the
+     table says that rather than leaving them looking for the missing rows. */
+  const emptyText = locked
+    ? 'No ' + spec.title.toLowerCase() + ' were recorded when this record was created. They can only be'
+      + ' added while creating a record, so there is nothing to edit here.'
+    : 'No rows yet - use Add Row below.';
+
   return (
     <div className="form-section">
       <div className="form-section-title">{spec.title}</div>
@@ -62,22 +89,35 @@ function RowsTable({ spec, rows, onChange, locked }) {
           </tr>
         </thead>
         <tbody>
-          {rows.length === 0 && <tr><td colSpan={spec.cols.length + 1} className="dt-empty">No rows</td></tr>}
+          {rows.length === 0 && <tr><td colSpan={spec.cols.length + 1} className="dt-empty">{emptyText}</td></tr>}
           {rows.map((r, i) => (
             <tr key={i}>
               {spec.cols.map((c) => (
                 <td key={c.k}>
                   {c.type === 'ref' ? (
-                    <MultiSelect
-                      mode="single"
-                      options={options}
-                      loading={loading}
-                      error={error ? 'Unable to load options' : ''}
-                      value={r[c.k] || ''}
-                      placeholder="Select..."
-                      emptyText="No options available"
-                      onChange={(v) => setCell(i, c.k, v)}
-                    />
+                    <>
+                      {/* The saved id is handed straight to the control and
+                          matched against the option list by value, so the tax
+                          stored on the row is the one shown as selected - the
+                          label is never what is compared or stored. */}
+                      <MultiSelect
+                        mode="single"
+                        options={options}
+                        loading={loading}
+                        error={error ? 'Unable to load options' : ''}
+                        value={r[c.k] || ''}
+                        placeholder="Select..."
+                        emptyText="No options available"
+                        onChange={(v) => setCell(i, c.k, v)}
+                      />
+                      {unresolved(r[c.k]) && (
+                        <div className="f-err">
+                          The saved {c.label} is not in this list - it was deleted, or it belongs to
+                          another business than the one selected. Leave it as it is to keep the
+                          stored value.
+                        </div>
+                      )}
+                    </>
                   ) : (
                     <input
                       type={c.type === 'number' ? 'number' : 'text'}
@@ -252,7 +292,6 @@ export default function FormView({ cfg, id, slug }) {
           <RowsTable
             spec={cfg.rowsTable}
             rows={data[cfg.rowsTable.key] || []}
-            locked={isEdit}
             onChange={(rows) => set(cfg.rowsTable.key, rows)}
           />
         )}

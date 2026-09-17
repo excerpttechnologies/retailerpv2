@@ -19,6 +19,7 @@
 import path from 'path';
 import { existsSync, writeFileSync, mkdirSync } from 'fs';
 import mongoose from 'mongoose';
+import { contactCollection } from '../lib/contactStorage.js';
 import XLSX from 'xlsx';
 
 const APPLY = process.argv.includes('--apply');
@@ -430,7 +431,7 @@ async function main() {
   console.log('\n🔌 Connecting to MongoDB...');
   await mongoose.connect(URI);
   const db = mongoose.connection.db;
-  const contacts = db.collection('contact');
+  const contacts = db.collection(contactCollection('Supplier'));
   
   // Check existing
   const existing = await contacts.countDocuments({ contactKind: 'Supplier' });

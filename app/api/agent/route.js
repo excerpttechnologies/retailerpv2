@@ -1,6 +1,6 @@
 import { isValidObjectId } from 'mongoose';
 import dbConnect from '@/lib/db';
-import Contact from '@/models/Contact';
+import { Agent } from '@/lib/contacts';
 import { requireSession } from '@/lib/session';
 import { resolveRefLabels } from '@/lib/refLabels';
 import { validate, escapeRegex } from '@/lib/validate';
@@ -40,8 +40,8 @@ export async function GET(req) {
     filter.$or = [{ gstNo: rx }, { businessName: rx }, { shortName: rx }, { firstName: rx }, { middleName: rx }, { lastName: rx }, { userName: rx }, { billingAddressLine1: rx }];
   }
 
-  const total = await Contact.countDocuments(filter);
-  const rows = await Contact.find(filter)
+  const total = await Agent.countDocuments(filter);
+  const rows = await Agent.find(filter)
     .sort({ createdAt: -1 })
     .skip((page - 1) * perPage)
     .limit(perPage)
@@ -70,8 +70,8 @@ export async function POST(req) {
 
   /* stamped here, never taken from the client */
   doc.contactKind = 'Agent';
-  doc.contactId = await nextContactId(Contact, ContactType, doc.typeId);
+  doc.contactId = await nextContactId(ContactType, doc.typeId);
 
-  const created = await Contact.create(doc);
+  const created = await Agent.create(doc);
   return json({ ok: true, id: String(created._id) });
 }

@@ -83,9 +83,12 @@
 
 'use client';
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { useParams } from 'next/navigation';
 import BatchLabelCountDialog from '@/components/BatchLabelCountDialog';
-import GrcBarcodeLabelSheet, { labelFor } from '@/components/GrcBarcodeLabel';
+import GrcBarcodeLabelSheet from '@/components/GrcBarcodeLabel';
+import useBarcodeLabelFormat from '@/components/useBarcodeLabelFormat';
+import { parseSize, labelsPerRow, stockPageCss, labelPageRule } from '@/lib/barcodeLabelGeometry';
 import {
   LABEL_MODE,
   resolveLabelMode,
@@ -96,9 +99,18 @@ import {
   toLabelData,
 } from '@/lib/barcodeLabelPrint';
 
-/* Label rendering (BarcodeSvg, Label, labelFor, GrcBarcodeLabelSheet) now
-   lives in components/GrcBarcodeLabel.jsx — the single source of truth shared
-   with the Barcode Generation preview so both always show the same sticker. */
+/* Label rendering (BarcodeSvg, Label, labelFor, GrcBarcodeLabelSheet) lives
+   in components/GrcBarcodeLabel.jsx - the single source of truth shared with
+   the Barcode Generation print picker, so both screens draw the same sticker
+   from the same rows at the same physical size.
+
+   The STOCK those labels are laid out on comes from
+   components/useBarcodeLabelFormat.js, the same catalog the picker's own
+   format list is built from: the seeded barcode label rows narrowed by
+   Settings -> Barcode Label Settings. This page used to read no geometry at
+   all, so its labels were laid out at whatever width the page happened to
+   give them - about 135mm for a 50mm sticker - while the picker previewed
+   the same barcodes at their real size. */
 
 /* =====================================================================================
    PAGE
@@ -119,23 +131,35 @@ export default function GrcBarcodePrintPage() {
   const [prompt, setPrompt] = useState(null);
   const [notice, setNotice] = useState('');
 
-  /* PRINTING HAPPENS EXACTLY ONCE PER USER ACTION.
+  /* The sticker stock, and the paper it is printed on. A4 is the default
+     because that is what a desktop printer and "Microsoft Print to PDF" are
+     loaded with; the stock option makes the page one physical sheet of
+     labels, which is what a label printer feeds. */
+  const { formats, format, formatName, setFormatName } = useBarcodeLabelFormat(true);
+  const [paper, setPaper] = useState('a4');
+
+  /* PRINTING HAPPENS EXACTLY ONCE PER USER ACTION, AND ONLY WHEN THE SHEET IS
+     REALLY THERE.
+
      window.print() photographs the DOM as it stands at the instant it is
-     called. Called straight from a click or confirm handler, it would run
-     before React had committed the counts that handler just set, so the paper
-     would miss the batch labels the admin had only just asked for. The handler
-     therefore only bumps printRequest; the effect below prints after the
-     commit.
+     called. Called straight from a click or confirm handler it would run
+     before React had committed the counts that handler just set - so the
+     paper would miss the batch labels the admin had only just asked for -
+     and before JsBarcode had drawn a single bar.
+
+     The run is therefore staged, exactly as the Barcode Generation picker
+     stages it: `printing` mounts the print surface, and the effect below
+     waits for the fonts and two frames, counts the barcodes that actually
+     drew, and only then opens the dialog.
+
      printInFlightRef refuses a second request while one is pending, so a
-     double Enter in the dialog, or a double click that lands before the
-     print, cannot queue a second print dialog (for the second click of a
-     double click that lands after it, see startPrint). printedRef remembers
-     which request has been printed, so an effect that runs twice for the same
-     request (StrictMode, or a re-run after a cancelled frame) still prints
-     once. */
-  const [printRequest, setPrintRequest] = useState(0);
+     double Enter in the batch dialog, or a double click that lands before the
+     print, cannot queue a second print dialog. */
+  const [printing, setPrinting] = useState(false);
   const printInFlightRef = useRef(false);
-  const printedRef = useRef(0);
+  const printRootRef = useRef(null);
+  /* how many labels this run was asked for, frozen at the click */
+  const wantedRef = useRef(0);
 
   useEffect(() => {
     if (!id) return;
@@ -148,50 +172,23 @@ export default function GrcBarcodePrintPage() {
       .catch((e) => setError(e.message || 'Failed to load'));
   }, [id]);
 
-  /* Two frames: the first lets the commit that carries the updated sheet
-     reach the screen, the second lets the browser lay out the SVG bars
-     JsBarcode drew in that commit's effects. Only then is the page printed.
-     The claim on printedRef is taken inside the frame, at the moment of
-     printing - taken earlier, a cleanup that cancelled the frame would leave
-     the request marked done and nothing would ever print. */
-  useEffect(() => {
-    if (!printRequest) return undefined;
-    let frame = requestAnimationFrame(() => {
-      frame = requestAnimationFrame(() => {
-        frame = 0;
-        if (printedRef.current === printRequest) return;
-        printedRef.current = printRequest;
-        try {
-          window.print();
-        } finally {
-          printInFlightRef.current = false;
-        }
-      });
-    });
-    return () => {
-      if (frame) cancelAnimationFrame(frame);
-    };
-  }, [printRequest]);
-
   /* Rows without any barcode number are skipped: there is nothing to encode.
      labelKey is the same key batchCounts is kept under. */
   const printable = useMemo(() => (data?.rows || []).filter((row) => labelKey(row)), [data]);
 
   /* Every printable row with its sticker count (`copies`) from the shared
-     rule - MTR 2, UNIQUE 1, BATCH the admin's validated answer or 0. */
+     rule - MTR 2, UNIQUE 1, BATCH the admin's validated answer or 0.
+
+     THE SHEET is rendered from this one list, on screen and on paper, so it
+     holds exactly the copies that will print. Every copy of a row is built
+     from that row's own barcode record: a second metre sticker or a twentieth
+     batch sticker is a print copy of the same record, never a new barcode,
+     and nothing here writes or reserves anything. A BATCH row with no valid
+     count yet has copies 0 and is simply not on the sheet until it has one. */
   const counted = useMemo(() => withLabelCounts(printable, batchCounts), [printable, batchCounts]);
 
-  /* THE SHEET - both the on-screen preview and the paper, so it holds
-     exactly the copies that will print. Each copy is the same label data: a
-     second metre sticker or a twentieth batch sticker is a print copy of the
-     same barcode number, never a new barcode, and nothing here writes or
-     reserves anything. A BATCH row with no valid count yet has copies 0 and
-     so is simply not on the sheet until the admin gives it one. */
-  const sheet = useMemo(
-    () => counted.flatMap((row) => {
-      const label = labelFor(row);
-      return Array.from({ length: row.copies }, (_, copy) => ({ key: row._id + '-' + copy, label }));
-    }),
+  const totalLabels = useMemo(
+    () => counted.reduce((sum, row) => sum + (row.copies || 0), 0),
     [counted]
   );
 
@@ -199,6 +196,106 @@ export default function GrcBarcodePrintPage() {
     () => counted.filter((row) => resolveLabelMode(row).mode === LABEL_MODE.BATCH),
     [counted]
   );
+
+  /* The page the sheet is printed on, and the gutter between stickers: a cut
+     line's worth on A4 that somebody has to guillotine, none on die-cut stock
+     where the sheet IS the page and the extra millimetre would push the last
+     column off the paper. Both from the shared geometry module, so this page
+     and the picker cannot disagree about either. */
+  const geometry = parseSize(format?.labelSize);
+  const perRow = labelsPerRow(format);
+  const onStock = paper === 'stock';
+  const gapMm = onStock ? 0 : 1;
+  const stockSize = stockPageCss(format, geometry.w, geometry.h, perRow, gapMm);
+  const pageRule = labelPageRule(format, { onStock, gapMm });
+  const gap = gapMm + 'mm';
+
+  /* THE PRINT RUN. The body class is what arms the label print rules in
+     globals.css: everything that is not the print surface leaves the BOX TREE
+     - not merely hidden - so the admin shell cannot paginate blank sheets,
+     and the sheet stays in normal flow so it fragments across as many pages
+     as it needs. Removed in the cleanup below, so there is no state to unwind
+     by hand. */
+  useEffect(() => {
+    if (!printing) return undefined;
+    let cancelled = false;
+
+    document.body.classList.add('printing-labels');
+    const done = () => setPrinting(false);
+    window.addEventListener('afterprint', done);
+
+    (async () => {
+      try {
+        /* Fonts first. The number, the price and the description are text;
+           print before the face has loaded and they are measured with
+           fallback metrics and re-flow inside a fixed-size sticker. */
+        if (document.fonts && document.fonts.ready) {
+          try { await document.fonts.ready; } catch { /* unsupported - the frames below still gate on layout */ }
+        }
+        if (cancelled) return;
+
+        /* Two frames: the first lets React's commit reach the screen, the
+           second lets the browser lay out the SVG bars JsBarcode drew during
+           that commit. */
+        await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+        if (cancelled) return;
+
+        const root = printRootRef.current;
+        const drawn = root ? Array.from(root.querySelectorAll('svg[data-barcode]')) : [];
+        const blank = drawn.filter((svg) => {
+          const box = svg.getBoundingClientRect();
+          return !svg.firstChild || box.width < 1 || box.height < 1;
+        });
+
+        const wanted = wantedRef.current;
+        if (!root || drawn.length !== wanted || blank.length) {
+          /* Refusing to open the dialog is the point. A run that is short a
+             label, or carries an empty box where a barcode should be,
+             produces stickers that cannot be scanned and goods that cannot be
+             found - and the operator would have no way of knowing until the
+             till. */
+          setNotice(
+            'Printing stopped: ' + drawn.length + ' of ' + wanted +
+            ' barcodes were drawn' + (blank.length ? ', ' + blank.length + ' of them empty' : '') +
+            '. Nothing was sent to the printer.'
+          );
+          setPrinting(false);
+          return;
+        }
+
+        setNotice('');
+        window.print();
+
+        /* afterprint is the signal that the dialog is finished with, and in
+           every current browser print() has already blocked until then. The
+           frame below is the belt to that braces: it hands control back once
+           more so a browser whose print() returns EARLY still has its
+           afterprint delivered first, and the sheet is never pulled out from
+           under a dialog that is still reading it. */
+        await new Promise((resolve) => requestAnimationFrame(resolve));
+        if (!cancelled) setPrinting(false);
+      } catch (failure) {
+        /* Without this the run could end with `printing` stuck true - which
+           leaves printing-labels welded to <body>, and every LATER print
+           anywhere in the application comes out blank. */
+        console.error('Barcode label print failed', failure);
+        setNotice('Printing stopped: the label sheet could not be prepared. Nothing was sent to the printer.');
+        setPrinting(false);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+      window.removeEventListener('afterprint', done);
+      document.body.classList.remove('printing-labels');
+    };
+  }, [printing]);
+
+  /* the run is over - printed, refused or abandoned - so the next click may
+     start one */
+  useEffect(() => {
+    if (!printing) printInFlightRef.current = false;
+  }, [printing]);
 
   /* The BATCH rows Print Labels has to ask about. pendingBatchRows already
      leaves out a batch barcode with no quantity recorded - no count can ever
@@ -212,7 +309,7 @@ export default function GrcBarcodePrintPage() {
     setPrompt({ key: labelKey(row), continueToPrint });
   }
 
-  /* Counted from the counts about to be committed rather than from `sheet`,
+  /* Counted from the counts about to be committed rather than from `counted`,
      which still holds the previous render's copies at this point. */
   function requestPrint(counts) {
     if (printInFlightRef.current) return;
@@ -223,7 +320,8 @@ export default function GrcBarcodePrintPage() {
     }
     printInFlightRef.current = true;
     setNotice('');
-    setPrintRequest((n) => n + 1);
+    wantedRef.current = total;
+    setPrinting(true);
   }
 
   /* event.detail counts the clicks of one gesture, so the second click of a
@@ -281,7 +379,7 @@ export default function GrcBarcodePrintPage() {
   const promptRow = prompt ? printable.find((row) => labelKey(row) === prompt.key) : null;
 
   return (
-    <div className="max-w-5xl mx-auto p-6 print:p-0">
+    <div className="mx-auto max-w-5xl p-6">
       <style jsx global>{`
         @media print {
           .no-print { display: none !important; }
@@ -292,20 +390,53 @@ export default function GrcBarcodePrintPage() {
       {/* Not printed, so the GRC number may stay here as a reminder of which
           GRC is on screen. The supplier code is gone: it has no place on this
           page now that no label carries it. */}
-      <div className="no-print flex justify-between items-center mb-4">
+      <div className="no-print mb-4 flex flex-wrap items-center justify-between gap-3">
         <span className="text-xs text-slate-500">
-          {sheet.length} label(s) &middot; GRC {data.grc?.grcNumber}
+          {totalLabels} label(s) &middot; GRC {data.grc?.grcNumber}
           {pendingCount > 0
             ? ` · ${pendingCount} batch barcode${pendingCount === 1 ? '' : 's'} awaiting a label count`
             : ''}
         </span>
-        <button
-          type="button"
-          onClick={startPrint}
-          className="bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-semibold px-4 py-2 rounded shadow-sm"
-        >
-          Print Labels
-        </button>
+
+        <div className="flex flex-wrap items-center gap-2">
+          {/* The same two choices the Barcode Generation picker offers, read
+              from the same catalog, so one GRC prints the same physical label
+              from either screen. */}
+          <label className="flex items-center gap-1 text-xs text-slate-600">
+            Label
+            <select
+              value={formatName}
+              onChange={(event) => setFormatName(event.target.value)}
+              className="rounded border border-slate-300 px-2 py-1 text-xs"
+            >
+              {formats.length === 0 && <option value="">Default 50 x 40 mm</option>}
+              {formats.map((f) => <option key={f.name} value={f.name}>{f.name}</option>)}
+            </select>
+          </label>
+
+          <label className="flex items-center gap-1 text-xs text-slate-600">
+            Paper
+            <select
+              value={paper}
+              onChange={(event) => setPaper(event.target.value)}
+              className="rounded border border-slate-300 px-2 py-1 text-xs"
+            >
+              <option value="a4">A4 sheet</option>
+              <option value="stock" disabled={!stockSize}>
+                {stockSize ? 'Label stock ' + format.pageSize : 'Label stock (no size set)'}
+              </option>
+            </select>
+          </label>
+
+          <button
+            type="button"
+            disabled={printing}
+            onClick={startPrint}
+            className="rounded bg-indigo-600 px-4 py-2 text-xs font-semibold text-white shadow-sm hover:bg-indigo-700 disabled:opacity-60"
+          >
+            {printing ? 'Preparing...' : 'Print Labels'}
+          </button>
+        </div>
       </div>
 
       {notice && (
@@ -322,11 +453,11 @@ export default function GrcBarcodePrintPage() {
           <div className="mb-2 text-xs font-semibold text-slate-700">Batch barcodes</div>
           <ul className="divide-y divide-slate-200">
             {batchRows.map((row) => {
-              const key = labelKey(row);
               const noQuantity = batchAvailableQty(row) === 0;
               return (
                 <li key={row._id} className="flex items-center gap-3 py-1.5 text-xs">
-                  <span className="font-mono font-semibold normal-case">{key}</span>
+                  {/* the value exactly as the label encodes and prints it */}
+                  <span className="font-mono font-semibold normal-case">{toLabelData(row).barcode}</span>
                   <span className="min-w-0 flex-1 truncate text-slate-600">{toLabelData(row).description}</span>
                   {noQuantity ? (
                     <span className="text-red-700">No quantity recorded - cannot print</span>
@@ -355,29 +486,52 @@ export default function GrcBarcodePrintPage() {
         <p className="no-print text-sm text-slate-400">
           No barcodes have been generated for this GRC yet.
         </p>
-      ) : sheet.length === 0 ? (
+      ) : totalLabels === 0 ? (
         <p className="no-print text-sm text-slate-400">
           {pendingCount > 0
             ? 'No labels on the sheet yet - set a label quantity for the batch barcodes above.'
             : 'Nothing to print for this GRC.'}
         </p>
       ) : (
-        /* GrcBarcodeLabelSheet renders the same 2-column grid + Label cells as
-           before, now from the shared component so print and preview are
-           always in sync. print-doc + content-start live inside the sheet so
-           globals.css keeps the labels visible at print time. */
-        <GrcBarcodeLabelSheet rows={counted} />
+        /* WHAT IS ON SCREEN IS WHAT IS PRINTED: the same component, the same
+           rows, the same format and the same gutter as the print surface
+           below. The box scrolls because a sheet of 50mm stickers is wider
+           than a narrow window; nothing about the labels themselves changes
+           with the viewport. */
+        <div className="overflow-auto rounded border border-slate-200 bg-white p-3">
+          <GrcBarcodeLabelSheet rows={counted} format={format} gap={gap} />
+        </div>
       )}
 
       <BatchLabelCountDialog
         open={Boolean(promptRow)}
-        barcode={prompt?.key || ''}
+        barcode={promptRow ? toLabelData(promptRow).barcode : ''}
         description={promptRow ? toLabelData(promptRow).description : ''}
         available={promptRow ? batchAvailableQty(promptRow) : 0}
         initialValue={prompt ? batchCounts[prompt.key] ?? '' : ''}
         onCancel={cancelPrompt}
         onConfirm={confirmPrompt}
       />
+
+      {/* THE PRINT SURFACE.
+
+          Portaled to <body> so it is a sibling of the application rather than
+          a descendant of this page - the same arrangement the Barcode
+          Generation picker prints through, and for the same reason: at <body>
+          level the sheet is ordinary in-flow content that fragments across as
+          many pages as it needs, while the @media print rules in globals.css
+          take the rest of the application out of the box tree so not one
+          sheet of paper is spent on it.
+
+          Mounted only for the duration of a run, so nothing is duplicated on
+          screen or on paper at any other time. */}
+      {printing && typeof document !== 'undefined' && createPortal(
+        <div id="barcode-print-root" ref={printRootRef}>
+          <style>{pageRule}</style>
+          <GrcBarcodeLabelSheet rows={counted} format={format} gap={gap} />
+        </div>,
+        document.body
+      )}
     </div>
   );
 }

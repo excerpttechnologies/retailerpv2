@@ -27,6 +27,7 @@
    is written. */
 
 import mongoose from 'mongoose';
+import { contactCollection } from '../lib/contactStorage.js';
 import crypto from 'crypto';
 import { sourceLabel } from '../lib/sourceLabel.js';
 const BASE=process.env.E2E_BASE||'http://127.0.0.1:3111';
@@ -47,7 +48,7 @@ const cookie=(lg.headers.get('set-cookie')||'').split(';')[0];
 const api=(p)=>fetch(BASE+p,{headers:{Cookie:cookie}}).then(async r=>({ok:r.ok,body:await r.json().catch(()=>null)}));
 
 const lr=await db.collection('delivery').findOne({transactionNo:'LR/26/011'});
-const sup=await db.collection('contact').findOne({_id:lr.supplierId});
+const sup=await db.collection(contactCollection('Supplier')).findOne({_id:lr.supplierId});
 const q=`business=${lr.businessId}&location=${lr.locationId}&finYear=${lr.finYear}`;
 
 console.log('--- 1. API joins the vendor ---');

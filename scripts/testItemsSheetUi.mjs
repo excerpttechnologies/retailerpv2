@@ -22,7 +22,13 @@
      - the real GRC page (read-only) renders its rows in the sheet
 
    Rows are identified by their bill serial (Sl No as seeded), not by their
-   barcode numbers - the save route composes those.
+   barcode numbers - the save route gives those.
+
+   Each barcode has TWO values, checked separately: barcodeNo, the unit's own
+   counter number (never a composed value), and barcodeGenerated, the
+   composed SUPPLIER_CODE * GRC_NUMBER * BILL_SL_NO * SERIAL_NO, whose serial
+   restarts at 1 on every bill line. A label prints barcodeNo on the left and
+   the composed value, compact, on the right.
 
    HOW TO RUN
      npm run dev                          (any running server; E2E_BASE points at it)
@@ -34,12 +40,18 @@
    creates is removed at the end, pass or fail. The real GRC is only viewed. */
 
 import mongoose from 'mongoose';
+import { contactCollection } from '../lib/contactStorage.js';
 import crypto from 'crypto';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { spawn } from 'child_process';
 import XLSX from 'xlsx';
+/* by path, not "@/": the module imports nothing, and this test runs without
+   the alias hook */
+import {
+  canonicalBarcodeValue, sameBarcode, barcodeKey, isComposedBarcodeValue, serialNoOfUnit,
+} from '../lib/barcodeValue.js';
 
 const BASE = process.env.E2E_BASE || 'http://localhost:3000';
 const REAL_GRC = process.env.REAL_GRC || '6aa3879b22af3e76c3ba4fdb';
@@ -69,8 +81,15 @@ const finYear = '2026-2027';
 const grcId = new ObjectId();
 const supplierId = new ObjectId();
 const supplierCode = 'GUI' + crypto.randomBytes(2).toString('hex').toUpperCase();
-/* the value the save route must give: SUPPLIER_CODE * GRC_NUMBER * SEQ * QTY */
-const uiValue = (seq, qty) => `${supplierCode} * 90518 * ${seq} * ${qty}`;
+/* the value the save route must give: SUPPLIER_CODE * GRC_NUMBER *
+   BILL_SL_NO * SERIAL_NO. The sheet puts every row on its own bill line
+   (1, 2, 3 ...), and the serial restarts at 1 on each line, so every row here
+   is serial 1 of its line - not its position in the GRC, and not the
+   quantity, which used to be the third part. */
+const uiValue = (billSlNo, serialNo = 1) => `${supplierCode} * 90518 * ${billSlNo} * ${serialNo}`;
+/* a value as a LABEL prints it and the bars encode it - the canonical
+   compact spelling */
+const printed = (value) => canonicalBarcodeValue(value);
 const email = 'items-sheet-ui@example.invalid';
 const workDir = fs.mkdtempSync(path.join(process.env.E2E_WORK_DIR || os.tmpdir(), 'items-sheet-'));
 const downloads = path.join(workDir, 'downloads');
@@ -85,7 +104,7 @@ async function cleanup() {
     db.collection('barcodeLabel').deleteMany({ $or: [{ grcId: String(grcId) }, { businessId: String(business) }] }),
     db.collection('stockmovement').deleteMany({ $or: [{ refId: grcId }, { businessId: business }] }),
     db.collection('grc').deleteOne({ _id: grcId }),
-    db.collection('contact').deleteOne({ _id: supplierId }),
+    db.collection(contactCollection('Supplier')).deleteOne({ _id: supplierId }),
     db.collection('counter').deleteMany({ key: { $regex: String(business) } }),
     db.collection('user').deleteOne({ email }),
   ]);
@@ -255,7 +274,7 @@ try {
   const cookie = (login.headers.get('set-cookie') || '').split(';')[0];
   const api = (p, o = {}) => fetch(BASE + p, { ...o, headers: { 'Content-Type': 'application/json', Cookie: cookie } }).then(async (r) => ({ ok: r.ok, status: r.status, body: await r.json().catch(() => null) }));
 
-  await db.collection('contact').insertOne({
+  await db.collection(contactCollection('Supplier')).insertOne({
     _id: supplierId, contactId: supplierCode, businessName: 'E2E UI SUPPLIER', contactKind: 'Supplier',
     businessId: business, createdAt: new Date(), updatedAt: new Date(),
   });
@@ -358,8 +377,17 @@ try {
   console.log('\n--- 2. rows, identifier, lock ---');
   ok('Sl No starts at 1', await cellText(0, 0) === '1');
   const shown0 = await shownValues();
-  ok('each saved barcode shows its exact value: SEQ 1-40 with its own quantity',
-    shown0.length === 40 && shown0[0] === uiValue(1, 20) && shown0[7] === uiValue(8, 30) && shown0[39] === uiValue(40, 20), shown0.slice(0, 2).join(' | '));
+  /* the tab may show either spelling of the value; it must be the value */
+  ok('each saved barcode shows its exact value: bill lines 1-40, each serial 1 of its own line',
+    shown0.length === 40 && sameBarcode(shown0[0], uiValue(1)) && sameBarcode(shown0[7], uiValue(8)) && sameBarcode(shown0[39], uiValue(40)),
+    shown0.slice(0, 2).join(' | ') + ' ... ' + shown0[39]);
+  ok('each seeded row stored its own number in barcodeNo and the value in barcodeGenerated',
+    before.length === 40 && before.every((u) => u.barcodeNo && !isComposedBarcodeValue(u.barcodeNo)
+      && !sameBarcode(u.barcodeNo, u.barcodeGenerated) && sameBarcode(u.barcodeGenerated, uiValue(u.billSlNo))),
+    before.slice(0, 2).map((u) => u.barcodeNo + ' / ' + u.barcodeGenerated).join(' | '));
+  ok('serials restart per bill line: the 40th barcode is serial 1 of bill line 40, not serial 40',
+    serialNoOfUnit(bySl(before, 40)) === '1' && String(bySl(before, 40)?.serialNo) === '1',
+    JSON.stringify({ value: bySl(before, 40)?.barcodeGenerated, serialNo: bySl(before, 40)?.serialNo, seq: bySl(before, 40)?.seq }));
   ok('the sold row is marked Locked', await evaluate(`${GRID}.querySelector('td[data-r="2"]').closest('tr').textContent.includes('Locked')`));
 
   console.log('\n--- 3. scrolling, sticky header, own scroll box ---');
@@ -391,7 +419,9 @@ try {
   const taxAfter = await total('Total Taxable');
   ok('Total Taxable follows at once (+15 x 70.30)', Math.abs((taxAfter - taxBefore) - 15 * 70.3) < 0.01, `${taxBefore} -> ${taxAfter}`);
   const shown4 = await shownValues();
-  ok('before saving, the value shown is the one the save will give: ' + uiValue(1, 35), shown4[0] === uiValue(1, 35), shown4[0]);
+  /* the quantity was just changed to 35 and the value did not move: it
+     carries the bill line, not the quantity */
+  ok('before saving, the value shown is the one the save will give: ' + uiValue(1), sameBarcode(shown4[0], uiValue(1)), shown4[0]);
 
   console.log('\n--- 5. Tab, Shift+Tab, arrows, Esc, F2, double-click ---');
   await clickCell(1, C.qty);
@@ -534,26 +564,54 @@ try {
   ok('the filled GST% is saved', bySl(after, 6)?.gst === '5' && bySl(after, 7)?.gst === '5');
   ok('the deleted row is gone from the database', !after.some((u) => String(u._id) === String(bySl(before, 8)._id)));
   const added = after.filter((u) => !before.some((b) => String(b._id) === String(u._id)));
-  ok('the three new rows are saved once each, as SEQ 41-43 with their own quantities',
-    added.length === 3 && JSON.stringify(added.map((u) => u.barcodeNo).sort()) === JSON.stringify([uiValue(41, 12), uiValue(42, 20), uiValue(43, 30)].sort()),
-    added.map((u) => u.billSlNo + ':' + u.itemCode + ':' + u.qty + ':' + u.barcodeNo).join(', '));
-  ok('the edited line keeps its SEQ; its value follows its new quantity', bySl(after, 1)?.barcodeNo === uiValue(1, 35), bySl(after, 1)?.barcodeNo);
-  ok('every other row kept its _id and barcode value',
-    before.filter((b) => !['1', '8'].includes(b.billSlNo)).every((b) => after.some((u) => String(u._id) === String(b._id) && u.barcodeNo === b.barcodeNo)));
+  /* each new row is on a bill line of its own, so each is serial 1 of it */
+  ok('the three new rows are saved once each, on bill lines 41-43, each serial 1 of its line',
+    added.length === 3 && JSON.stringify(added.map((u) => barcodeKey(u.barcodeGenerated)).sort())
+      === JSON.stringify([uiValue(41), uiValue(42), uiValue(43)].map(barcodeKey).sort()),
+    added.map((u) => u.billSlNo + ':' + u.itemCode + ':' + u.qty + ':' + u.barcodeNo + ':' + u.barcodeGenerated).join(', '));
+  ok('...each with a number of its own in barcodeNo - not the value, and not one already issued',
+    added.every((u) => u.barcodeNo && !isComposedBarcodeValue(u.barcodeNo) && !sameBarcode(u.barcodeNo, u.barcodeGenerated)
+      && !before.some((b) => b.barcodeNo === u.barcodeNo)),
+    added.map((u) => u.barcodeNo).join(', '));
+  ok('the edited line keeps its number AND its value - a corrected quantity is not in the value',
+    bySl(after, 1)?.barcodeGenerated === bySl(before, 1).barcodeGenerated && sameBarcode(bySl(after, 1)?.barcodeGenerated, uiValue(1))
+      && bySl(after, 1)?.barcodeNo === bySl(before, 1).barcodeNo && bySl(after, 1)?.qty === '35',
+    bySl(after, 1)?.barcodeNo + ' / ' + bySl(after, 1)?.barcodeGenerated);
+  ok('every other row kept its _id, its number and its value',
+    before.filter((b) => !['1', '8'].includes(b.billSlNo)).every((b) => after.some((u) => String(u._id) === String(b._id)
+      && u.barcodeNo === b.barcodeNo && u.barcodeGenerated === b.barcodeGenerated)));
   ok('the sold row was not touched', bySl(after, 3)?.status === 'SOLD' && new Date(bySl(after, 3).updatedAt).getTime() === new Date(bySl(before, 3).updatedAt).getTime());
   const grcAfter = await db.collection('grc').findOne({ _id: grcId });
   ok('the GRC totals are the rows\' totals', grcAfter.totalQuantity === after.reduce((s, u) => s + (parseFloat(u.qty) || 0), 0), grcAfter.totalQuantity);
   ok('the grid re-read the database: 42 rows, nothing marked edited', await lastSl() === 42 && !(await evaluate(`${GRID}.parentElement.textContent.includes('edited - Submit')`)));
-  ok('no two barcodes of the GRC share a value', new Set(after.map((u) => u.barcodeNo)).size === after.length);
+  ok('no two barcodes of the GRC share a number', new Set(after.map((u) => u.barcodeNo)).size === after.length);
+  ok('no two barcodes of the GRC share a value, in any spelling', new Set(after.map((u) => barcodeKey(u.barcodeGenerated))).size === after.length);
+  ok('no stored barcodeNo is a composed value, or equal to its own value',
+    after.every((u) => !isComposedBarcodeValue(u.barcodeNo) && !sameBarcode(u.barcodeNo, u.barcodeGenerated)),
+    after.filter((u) => isComposedBarcodeValue(u.barcodeNo) || sameBarcode(u.barcodeNo, u.barcodeGenerated)).map((u) => u.barcodeNo).join(', '));
+  ok('every serialNo is its value\'s fourth part - serials restart per bill line',
+    after.every((u) => serialNoOfUnit(u) === '1' && String(u.serialNo) === '1'),
+    after.filter((u) => serialNoOfUnit(u) !== '1' || String(u.serialNo) !== '1').map((u) => u.billSlNo + ':' + u.serialNo + ':' + u.barcodeGenerated).join(', '));
 
   console.log('\n--- 12b. the Barcode Print page prints exactly the stored values ---');
   await cdp.send('Page.navigate', { url: `${BASE}/admin/transaction/purchase/barcode-print/${grcId}` });
   const drawn = await waitFor(`(() => { const n = document.querySelectorAll('svg[data-barcode]'); return n.length && [...n].every((s) => s.childNodes.length) ? n.length : 0; })()`, 60000);
   ok('the labels draw their bars', Boolean(drawn), String(drawn));
-  const labelTexts = await evaluate(`[...document.querySelectorAll('span.font-mono')].map((s) => s.textContent.trim()).filter(Boolean)`);
-  const storedValues = new Set(after.map((u) => u.barcodeNo));
-  ok('every label shows a stored value, exactly', labelTexts.length > 0 && labelTexts.every((t) => storedValues.has(t)), labelTexts.slice(0, 3).join(' | '));
-  ok(`...including ${uiValue(1, 35)} and ${uiValue(43, 30)}`, labelTexts.includes(uiValue(1, 35)) && labelTexts.includes(uiValue(43, 30)));
+  /* the identifier row of every sticker - the second band of the label grid,
+     [left, right] per sticker: barcodeNo on the left, the composed value in
+     its compact spelling on the right (components/GrcBarcodeLabel.jsx) */
+  const labelPairs = await evaluate(`[...document.querySelectorAll('[data-label] > div:nth-child(2)')].map((row) => [...row.querySelectorAll(':scope > span')].map((s) => s.textContent.trim()))`);
+  const rightFor = new Map(after.map((u) => [u.barcodeNo, printed(u.barcodeGenerated)]));
+  const pairOk = ([left, right] = []) => rightFor.has(left) && right === rightFor.get(left);
+  ok('every label shows a stored unit exactly: its barcodeNo on the left, its value compact on the right',
+    labelPairs.length > 0 && labelPairs.every(pairOk),
+    labelPairs.filter((p) => !pairOk(p)).concat(labelPairs).slice(0, 3).map((p) => p.join(' || ')).join(' | '));
+  ok('no label prints the value on the left, or the stored spelling on the right',
+    labelPairs.every(([left, right]) => !isComposedBarcodeValue(left) && !String(right).includes(' ')));
+  const labelOf = (u) => labelPairs.find(([left]) => left === u?.barcodeNo);
+  ok(`...including ${printed(uiValue(1))} and ${printed(uiValue(43))}`,
+    labelOf(bySl(after, 1))?.[1] === printed(uiValue(1)) && labelOf(bySl(after, 43))?.[1] === printed(uiValue(43)),
+    JSON.stringify([labelOf(bySl(after, 1)), labelOf(bySl(after, 43))]));
   ok('no "GRC ... · Supplier ..." text beside the value', !(await evaluate(`/·\\s*supplier/i.test(document.body.textContent)`)));
   await cdp.send('Page.navigate', { url: `${BASE}/admin/transaction/purchase/grc/${grcId}/barcode-generation` });
   await waitFor(`!!${GRID} && ${GRID}.querySelectorAll('tbody tr[data-row]').length > 0`, 60000);

@@ -2,7 +2,8 @@ import { isValidObjectId } from 'mongoose';
 import dbConnect from '@/lib/db';
 import StockTransfer, { TRANSFER_STATUS } from '@/models/StockTransfer';
 import StockMovement from '@/models/StockMovement';
-import Contact from '@/models/Contact';
+import { BarcodeLabel } from '@/lib/barcodeLabel';
+import { Supplier } from '@/lib/contacts';
 import { handler, json } from '@/lib/apiError';
 import { requirePermission, PERMISSIONS, canUseLocation } from '@/lib/rbac';
 import { AuthzError } from '@/lib/rbac';
@@ -42,7 +43,7 @@ export const GET = handler(async (req, { params }) => {
     (doc.lines || []).map((l) => l.supplierId).filter((s) => s && isValidObjectId(String(s))).map(String)
   )];
   const suppliers = supplierIds.length
-    ? await Contact.find({ _id: { $in: supplierIds } })
+    ? await Supplier.find({ _id: { $in: supplierIds } })
       .select('businessName firstName lastName contactId').lean()
     : [];
   const supplierNames = Object.fromEntries(suppliers.map((s) => [
@@ -51,8 +52,34 @@ export const GET = handler(async (req, { params }) => {
       s.contactId ? '[' + s.contactId + ']' : ''].filter(Boolean).join(' ').trim(),
   ]));
 
+  /* Each line's composed value, so a scan of a label that encodes it ticks
+     the line without asking the server again. A line stores only the unit's
+     own number and id; one query over the ids (or, for a line without one,
+     the number) fills it in. */
+  const lines = doc.lines || [];
+  const lineIds = lines.map((l) => l.barcodeId).filter(Boolean);
+  const unplacedNos = lines.filter((l) => !l.barcodeId && l.barcodeNo).map((l) => l.barcodeNo);
+  const or = [
+    ...(lineIds.length ? [{ _id: { $in: lineIds } }] : []),
+    ...(unplacedNos.length
+      ? [{ barcodeNo: { $in: unplacedNos }, ...(doc.businessId ? { businessId: String(doc.businessId) } : {}) }]
+      : []),
+  ];
+  const units = or.length
+    ? await BarcodeLabel.find(or.length === 1 ? or[0] : { $or: or }).select('barcodeNo barcodeGenerated').lean()
+    : [];
+  const generatedById = new Map(units.map((u) => [String(u._id), u.barcodeGenerated || '']));
+  const generatedByNo = new Map(units.map((u) => [u.barcodeNo, u.barcodeGenerated || '']));
+  const generatedOf = (l) => (l.barcodeId
+    ? generatedById.get(String(l.barcodeId)) || ''
+    : generatedByNo.get(l.barcodeNo) || '');
+
   return json({
-    doc: { ...doc, _id: String(doc._id) },
+    doc: {
+      ...doc,
+      _id: String(doc._id),
+      lines: lines.map((l) => ({ ...l, barcodeGenerated: generatedOf(l) })),
+    },
     supplierNames,
     history: history.map((h) => ({
       _id: String(h._id),

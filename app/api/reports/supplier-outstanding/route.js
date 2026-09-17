@@ -3,7 +3,7 @@ import dbConnect from '@/lib/db';
 import { requireSession } from '@/lib/session';
 import PurchaseInvoice from '@/models/PurchaseInvoice';
 import DebitNote from '@/models/DebitNote';
-import Contact from '@/models/Contact';
+import { Supplier } from '@/lib/contacts';
 import {
   json, num, r2, scopeOf, scopeFilter, dateRange, pageOf, paged,
 } from '@/lib/reports';
@@ -63,7 +63,7 @@ export async function GET(req) {
     [...invoices, ...notes].map((d) => d.supplierId).filter(Boolean).map(String)
   )];
   const suppliers = supplierIds.length
-    ? await Contact.find({ _id: { $in: supplierIds } })
+    ? await Supplier.find({ _id: { $in: supplierIds } })
       .select('businessName firstName lastName billingCity').lean()
     : [];
   const supplierById = new Map(suppliers.map((s) => [String(s._id), s]));

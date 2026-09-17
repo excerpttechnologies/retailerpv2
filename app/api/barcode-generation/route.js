@@ -1,8 +1,8 @@
-import { isValidObjectId } from 'mongoose';
+import mongoose, { isValidObjectId } from 'mongoose';
 import dbConnect from '@/lib/db';
 import Grc from '@/models/Grc';
 import Item from '@/models/Item';
-import Contact from '@/models/Contact';
+import { Supplier } from '@/lib/contacts';
 import { handler, json } from '@/lib/apiError';
 import { requirePermission, PERMISSIONS } from '@/lib/rbac';
 import { escapeRegex } from '@/lib/validate';
@@ -11,7 +11,12 @@ import { BarcodeLabel, BARCODE_STATUS } from '@/lib/barcodeLabel';
 import { reserveBarcodeNumbers, loadFormat, uomTypeOf, batchTypeOf } from '@/lib/barcodeEngine';
 import { withTransaction, receiveIntoStock, restateReceipt, voidUnits, InventoryError } from '@/lib/inventory';
 import { matchRowsToUnits, editedFields, toGridRow, rowBarcode, unitBarcode, clientIdOf } from '@/lib/barcodeRowSync';
-import { composeBarcodeValue, barcodeValueProblem, nextSeqStart, highestSeq, hasComposedBarcode } from '@/lib/barcodeValue';
+import {
+  BARCODE_SEPARATOR, composeBarcodeValue, barcodeValueProblem, billSlNoProblem, billSlNoForBarcode,
+  grcNumberForBarcode, nextSeqStart, highestSeq, hasComposedBarcode, highestSerialNo, serialFloorOf,
+  serialFloorKey, legacySerialFloor, composedValueOf, parseBarcodeValue, isComposedBarcodeValue,
+  barcodeKey, barcodeSpellings, barcodeSearchPattern,
+} from '@/lib/barcodeValue';
 import { purchasePriceError, normalisePurchasePrice } from '@/lib/purchasePrice';
 import { saveBatchTypeOf } from '@/lib/barcodeUnits';
 
@@ -62,7 +67,10 @@ export const GET = handler(async (req) => {
   const andClauses = [];
   if (code) {
     const rx = { $regex: escapeRegex(code), $options: 'i' };
-    andClauses.push({ $or: [{ itemCode: rx }, { oldBarcode: rx }, { barcodeGenerated: rx }, { barcodeNo: rx }] });
+    /* a barcode is found by either spelling of its value - the label prints
+       "G1319*05182*1*6", the record stores "G1319 * 05182 * 1 * 6" */
+    const barcodeRx = { $regex: barcodeSearchPattern(code), $options: 'i' };
+    andClauses.push({ $or: [{ itemCode: rx }, { oldBarcode: barcodeRx }, { barcodeGenerated: barcodeRx }, { barcodeNo: barcodeRx }] });
   }
   if (name) {
     const rx = { $regex: escapeRegex(name), $options: 'i' };
@@ -94,7 +102,7 @@ export const GET = handler(async (req) => {
 
   const [suppliers, grcs] = await Promise.all([
     supplierIds.length
-      ? Contact.find({ _id: { $in: supplierIds } }).select('businessName firstName lastName contactId').lean()
+      ? Supplier.find({ _id: { $in: supplierIds } }).select('businessName firstName lastName contactId').lean()
       : [],
     grcIds.length
       ? Grc.find({ _id: { $in: grcIds } }).select('grcNumber').lean()
@@ -190,17 +198,20 @@ export const POST = handler(async (req) => {
     rows.map((r) => String(r.oldBarcode || '').trim()).filter(Boolean)
   )];
   if (suppliedOldBarcodes.length) {
+    /* either spelling of a composed value - a scanned label reads back
+       "G1319*05182*1*6", the record holds "G1319 * 05182 * 1 * 6" */
+    const spellings = [...new Set(suppliedOldBarcodes.flatMap(barcodeSpellings))];
     const found = await BarcodeLabel.find({
       $or: [
-        { barcodeNo: { $in: suppliedOldBarcodes } },
-        { barcodeGenerated: { $in: suppliedOldBarcodes } },
-        { oldBarcode: { $in: suppliedOldBarcodes } },
+        { barcodeNo: { $in: spellings } },
+        { barcodeGenerated: { $in: spellings } },
+        { oldBarcode: { $in: spellings } },
       ],
       ...(business ? { businessId: String(business) } : {}),
     }).select('barcodeNo barcodeGenerated oldBarcode').lean();
 
-    const known = new Set(found.flatMap((u) => [u.barcodeNo, u.barcodeGenerated, u.oldBarcode].filter(Boolean).map(String)));
-    const missing = suppliedOldBarcodes.filter((c) => !known.has(c));
+    const known = new Set(found.flatMap((u) => [u.barcodeNo, u.barcodeGenerated, u.oldBarcode].filter(Boolean).map(barcodeKey)));
+    const missing = suppliedOldBarcodes.filter((c) => !known.has(barcodeKey(c)));
     if (missing.length) {
       return json({
         error: 'Barcode not found. Please enter or scan a valid barcode.',
@@ -312,15 +323,36 @@ export const POST = handler(async (req) => {
       }
 
       const docScope = {
-        business, location, finYear, grcId: String(grcId),
+        /* the GRC's own business when the request does not name one: the
+           barcode counter is keyed by business, and reserving from an unscoped
+           series could hand out numbers this business has already printed */
+        business: business || String(existing.businessId || ''),
+        location, finYear, grcId: String(grcId),
         supplierId: body.supplierId || String(existing.supplierId || ''),
         grcNo: existing.grcNumber, itemByCode,
       };
 
       /* The supplier's code, once for the whole save: every barcode value on
-         this GRC is SUPPLIER_CODE * GRC_NUMBER * SEQ * QTY (lib/barcodeValue.js). */
+         this GRC is SUPPLIER_CODE * GRC_NUMBER * BILL_SL_NO * SERIAL_NO
+         (lib/barcodeValue.js). */
       docScope.supplierCode = await supplierCodeOf(docScope.supplierId);
       const valueParts = { supplierCode: docScope.supplierCode, grcNumber: existing.grcNumber };
+
+      /* The serial floors, read raw: lastSerialByBill has to come back as
+         stored - absent on a GRC that has never numbered serials per line,
+         which is what tells serialFloorOf to fall back to its SEQs. */
+      const grcFloors = await Grc.collection.findOne(
+        { _id: existing._id },
+        { projection: { lastSerialByBill: 1, serialFloorBase: 1, lastBarcodeSeq: 1 }, ...(dbSession ? { session: dbSession } : {}) }
+      );
+      /* A GRC saved before serials were numbered per line gets its map now,
+         with the floor its SEQs leave - counted without the barcodes this
+         save deletes, whose values then count as given out. */
+      const floorsInit = grcFloors?.lastSerialByBill && typeof grcFloors.lastSerialByBill === 'object'
+        ? null
+        : legacySerialFloor(kept, grcFloors?.lastBarcodeSeq);
+      /* the highest serial this save gives on each Bill Sl No. */
+      const savedFloors = new Map();
 
       /* What the operator changed on each matched row: the row as submitted
          against the same row as the screen shows it untouched, both through
@@ -330,32 +362,50 @@ export const POST = handler(async (req) => {
          the request leaves out is left as it is, not blanked. */
       const updates = [];
       const locked = [];
-      /* every value the GRC's barcodes hold, so no two ever share one */
-      const takenValues = new Set(kept.map(unitBarcode).filter(Boolean));
+      /* Every COMPOSED value this GRC's barcodes hold - including the ones
+         being deleted, whose labels may still be on the goods - by its
+         canonical key, so no two barcodes ever share one in either
+         spelling. buildDocs adds the values already on goods elsewhere in
+         the business under the same supplier code and GRC number. */
+      const takenValues = new Set(current.map((u) => barcodeKey(composedValueOf(u))).filter(Boolean));
       matched.forEach(({ row, unit }) => {
         const untouched = untouchedRow(unit);
         const set = editedFields(
           buildDoc({ ...untouched, ...row }, docScope),
           buildDoc(untouched, docScope),
         );
-        /* A barcode value carries its own line's quantity. When that quantity
-           is corrected the value follows - same SEQ, new QTY - so the bars, the
-           text under them and the grid never disagree. Only for a value this
-           route composed; an older number stays as it was printed. */
-        if ('qty' in set && hasComposedBarcode(unit, valueParts)) {
-          const before = unitBarcode(unit);
-          const value = composeBarcodeValue({ ...valueParts, seq: unit.seq, qty: set.qty });
-          if (value && value !== before) {
-            if (takenValues.has(value)) {
-              throw new InventoryError('DUPLICATE_BARCODE',
-                'Barcode ' + value + ' is already on this GRC. Nothing was saved.', { status: 409, skipped: [value] });
-            }
-            takenValues.delete(before);
-            takenValues.add(value);
-            set.barcodeNo = value;
-            set.barcodeGenerated = value;
-            if (unit.batchNo && unit.batchNo === before) set.batchNo = value;
+        /* A barcode value carries the Bill Sl No. of the line it was received
+           on. When that is corrected the value follows - new BILL SL NO, and
+           the same SERIAL_NO when that is free on the new line, otherwise the
+           line's next one - so the bars, the text beside them, the grid and
+           the Item Summary never disagree. Only for a value composed from this
+           GRC's own supplier code, number and Bill Sl No.; a counter number
+           stays exactly as it was printed (hasComposedBarcode).
+
+           The quantity does not move the value: it is not in it. Correcting
+           a received quantity therefore leaves every sticker already on those
+           goods valid. */
+        if ('billSlNo' in set && hasComposedBarcode(unit, valueParts)) {
+          const newBill = billSlNoForBarcode(set.billSlNo);
+          const valueAt = (serial) => composeBarcodeValue({ ...valueParts, billSlNo: newBill, serialNo: serial });
+          let serial = Number(parseBarcodeValue(composedValueOf(unit))?.serialNo) || 0;
+          if (!newBill || !serial) {
+            throw new InventoryError('BARCODE_VALUE', billSlNoProblem({ ...unit, billSlNo: newBill }), { status: 400 });
           }
+          if (takenValues.has(barcodeKey(valueAt(serial)))) {
+            serial = Math.max(savedFloors.get(newBill) || 0, highestSerialNo(current, newBill), serialFloorOf(grcFloors, newBill, current)) + 1;
+            while (takenValues.has(barcodeKey(valueAt(serial)))) serial += 1;
+          }
+          /* The value it had stays taken: its label may be on the goods. */
+          takenValues.add(barcodeKey(valueAt(serial)));
+          savedFloors.set(newBill, Math.max(savedFloors.get(newBill) || 0, serial));
+          /* ONLY the printed reference moves. The unit's own number, the
+             batch key and everything the ledger and the till resolve a piece
+             of goods by stay exactly as they were issued - correcting which
+             bill line an item came in on must not renumber goods that are
+             already on a shelf with a sticker. */
+          set.barcodeGenerated = valueAt(serial);
+          set.serialNo = String(serial);
         }
         if (!Object.keys(set).length) return;
         if (hasMoved(unit)) locked.push(unit);
@@ -431,12 +481,13 @@ export const POST = handler(async (req) => {
 
       let created = [];
       if (fresh.length) {
-        /* SEQ carries on after every barcode this GRC has ever given -
-           lastBarcodeSeq remembers the ones since deleted - so a value once
-           printed is never given out again */
+        /* SERIAL_NO carries on after every serial the line has ever been
+           given (serialFloorOf), and SEQ after every SEQ the GRC has given -
+           so a value once printed is never given out again */
         const docs = await buildDocs({
           rows: fresh, ...docScope, takenValues,
-          startSeq: nextSeqStart(current, Number(existing.get?.('lastBarcodeSeq') ?? existing.lastBarcodeSeq) || 0),
+          units: current, grcFloors, floors: savedFloors, session: dbSession,
+          startSeq: nextSeqStart(current, Number(grcFloors?.lastBarcodeSeq) || 0),
         });
         created = await BarcodeLabel.insertMany(docs, dbSession ? { session: dbSession, ordered: true } : { ordered: true });
 
@@ -456,6 +507,7 @@ export const POST = handler(async (req) => {
         { ...grcTotals(all), $max: { lastBarcodeSeq: highestSeq(all) } },
         dbSession ? { session: dbSession } : {}
       );
+      await raiseSerialFloors(existing._id, savedFloors, { base: floorsInit, session: dbSession });
 
       return {
         grcId: String(grcId), grcNumber: existing.grcNumber, count: all.length,
@@ -463,7 +515,7 @@ export const POST = handler(async (req) => {
         deleted: deleting.length,
         /* the stored values - the screen shows and prints these, never its own */
         rows: savedRowsOf(all),
-        createdRows: created.map((doc, i) => ({ id: clientIdOf(fresh[i]), _id: String(doc._id), barcodeNo: doc.barcodeNo, seq: doc.seq })),
+        createdRows: created.map((doc, i) => ({ id: clientIdOf(fresh[i]), ...savedRowOf(doc) })),
       };
     }
 
@@ -496,10 +548,13 @@ export const POST = handler(async (req) => {
 
     const [grc] = await Grc.create([grcPayload], dbSession ? { session: dbSession } : {});
 
+    /* a new GRC numbers every line's serials from 1 - it has no history */
+    const floors = new Map();
     const docs = await buildDocs({
       rows, business, location, finYear, grcId: String(grc._id),
       supplierId, supplierCode, grcNo: grcPayload.grcNumber, itemByCode,
       startSeq: 1, takenValues: new Set(),
+      units: [], grcFloors: { lastSerialByBill: {} }, floors, session: dbSession,
     });
 
     const created = await BarcodeLabel.insertMany(docs, dbSession ? { session: dbSession, ordered: true } : { ordered: true });
@@ -513,11 +568,12 @@ export const POST = handler(async (req) => {
     });
 
     await Grc.updateOne({ _id: grc._id }, { $max: { lastBarcodeSeq: highestSeq(created) } }, dbSession ? { session: dbSession } : {});
+    await raiseSerialFloors(grc._id, floors, { base: 0, session: dbSession });
 
     return {
       grcId: String(grc._id), grcNumber: grcPayload.grcNumber, count: created.length,
       rows: savedRowsOf(created),
-      createdRows: created.map((doc, i) => ({ id: clientIdOf(rows[i]), _id: String(doc._id), barcodeNo: doc.barcodeNo, seq: doc.seq })),
+      createdRows: created.map((doc, i) => ({ id: clientIdOf(rows[i]), ...savedRowOf(doc) })),
     };
   });
 
@@ -592,44 +648,175 @@ export const DELETE = handler(async (req) => {
 
 /* ------------------------------------------------------------- internals -- */
 
-/* Turns the screen's NEW rows into barcode documents, each with the value it
-   will carry everywhere - the bars, the text under them, the grid, the till:
+/* Turns the screen's NEW rows into barcode documents, each COMPLETE: its own
+   unit number and the value it will carry everywhere - the bars, the text
+   beside them, the grid, the till:
 
-     SUPPLIER_CODE * GRC_NUMBER * SEQ * QTY          e.g. "G1318 * 05178 * 1 * 16"
+      SUPPLIER_CODE * GRC_NUMBER * BILL_SL_NO * SERIAL_NO   e.g. "G512 * 05173 * 5 * 1"
 
-   (lib/barcodeValue.js). SEQ is the GRC's own running number, from startSeq
-   on, one per barcode in the order the rows arrive; QTY is that same row's
-   quantity - never the GRC's total. A value the GRC already holds (an older
-   barcode that happens to compose the same text) is skipped to the next SEQ,
-   so no two barcodes of a GRC share one. Whatever number a row arrives with
-   is ignored: the value is made here, and only here. */
-async function buildDocs({ rows, startSeq = 1, takenValues = new Set(), ...scope }) {
+   (lib/barcodeValue.js). BILL_SL_NO is that row's own Bill Sl No. - the bill
+   line the item was received on, as the GRC's Item Summary shows it against
+   that item - taken from the row being saved and from nothing else. SERIAL_NO
+   is the barcode's own running number within its Bill Sl No. - 1, 2, 3 ... -
+   given when the barcode is created and never given out again on that line.
+
+   The third part is NOT the quantity, a row number or a counter. Two barcodes
+   of the same bill line are told apart by their SERIAL_NO.
+
+   `units` are the GRC's barcodes as this save read them, `grcFloors` its raw
+   serial floors (serialFloorOf) and `floors` the highest serial this save has
+   given per line so far - raised here and written back by raiseSerialFloors.
+   `takenValues` holds canonical keys (barcodeKey). */
+async function buildDocs({ rows, startSeq = 1, takenValues = new Set(), units = [], grcFloors = null, floors = new Map(), session = null, ...scope }) {
   const supplierCode = scope.supplierCode ?? await supplierCodeOf(scope.supplierId);
   const problem = barcodeValueProblem({ supplierCode, grcNumber: scope.grcNo });
   if (problem) throw new InventoryError('BARCODE_VALUE', problem, { status: 400 });
 
+  /* Every row has to name its bill line BEFORE a number is reserved: a
+     refused save must not spend numbers from the series. Nothing stands in
+     for a missing one - not the quantity, not the row's position. */
+  rows.forEach((r) => {
+    if (!billSlNoForBarcode(r.billSlNo)) {
+      throw new InventoryError('BARCODE_VALUE', billSlNoProblem(r), { status: 400 });
+    }
+  });
+
+  /* Values already on goods ANYWHERE in the business under this supplier
+     code and GRC number. A GRC number can come round again (each financial
+     year restarts the series), and two labels with one value would scan as
+     either piece. An anchored, case-sensitive prefix - index-bounded on both
+     fields, never a collection scan. */
+  const stem = '^' + escapeRegex(String(supplierCode).trim() + BARCODE_SEPARATOR + grcNumberForBarcode(scope.grcNo) + BARCODE_SEPARATOR);
+  const elsewhere = await BarcodeLabel.find({
+    ...(scope.business ? { businessId: String(scope.business) } : {}),
+    $or: [{ barcodeGenerated: { $regex: stem } }, { barcodeNo: { $regex: stem } }],
+  }).select('barcodeNo barcodeGenerated').session(session || null).lean();
+  elsewhere.forEach((u) => {
+    const key = barcodeKey(composedValueOf(u));
+    if (key) takenValues.add(key);
+  });
+
+  /* EVERY NEW BARCODE GETS ITS OWN NUMBER.
+
+     Two different things go on a sticker and they are not interchangeable:
+
+       barcodeNo         "9A1143" - the unit's own number, from the Barcode
+                         Setting period in force and the atomic counter
+                         (lib/barcodeEngine.js). Printed on the LEFT of the
+                         label; what a POS invoice line and the stock ledger
+                         name a piece of goods by.
+       barcodeGenerated  "G1319 * 05182 * 1 * 6" - the composed value. The bars
+                         encode it, in its canonical spelling "G1319*05182*1*6",
+                         and the same string is printed on the RIGHT.
+
+     This route once wrote the composed value into both, and before that the
+     number into both. Either way the label hid its right-hand side (the two
+     fields held one string), and a record had no number of its own or no
+     value of its own. assertCompleteBarcode below refuses both shapes.
+
+     Reserved here, once per save, for the rows being INSERTED only: matched
+     rows never reach buildDocs (matchRowsToUnits claims them by _id or by the
+     screen's own row id first), so re-submitting a grid cannot burn numbers
+     or renumber a barcode that is already on goods.
+
+     Deliberately NOT inside the transaction - the same choice nextDocNumber
+     makes for the GRC number above. A rolled-back save then leaves a gap in
+     the series, which is harmless; sharing one hot counter document across
+     concurrent transactions would trade that for write conflicts, and a
+     reissued number is a duplicate on physical goods that no later correction
+     can undo. */
+  const unitNumbers = await reserveBarcodeNumbers(rows.length, {
+    businessId: scope.business,
+    finYear: scope.finYear,
+  });
+
+  const valueParts = { supplierCode, grcNumber: scope.grcNo };
   let seq = startSeq;
-  return rows.map((r) => {
-    const valueAt = (n) => composeBarcodeValue({ supplierCode, grcNumber: scope.grcNo, seq: n, qty: r.qty });
-    if (!valueAt(seq)) {
+  return rows.map((r, index) => {
+    const billSlNo = billSlNoForBarcode(r.billSlNo);
+    const valueAt = (serial) => composeBarcodeValue({ ...valueParts, billSlNo, serialNo: serial });
+
+    /* after every serial the line carries, after every serial the GRC ever
+       gave on it, and after the ones this save has already given */
+    let serial = Math.max(
+      floors.get(billSlNo) || 0,
+      highestSerialNo(units, billSlNo),
+      serialFloorOf(grcFloors, billSlNo, units),
+    ) + 1;
+    /* The Add Item form sends the Serial No. the operator may have typed as
+       the entry's starting serial. It can move the line ON - never back onto
+       a serial already given, whose label may be on the goods - so a lower
+       one (or the same suggestion sent by a second entry not yet saved)
+       simply starts from the next free serial. */
+    const requested = /^\d+$/.test(String(r.serialNo ?? '').trim()) ? Number(r.serialNo) : 0;
+    if (requested > serial) serial = requested;
+    while (takenValues.has(barcodeKey(valueAt(serial)))) serial += 1;
+    const barcodeGenerated = valueAt(serial);
+    takenValues.add(barcodeKey(barcodeGenerated));
+    floors.set(billSlNo, serial);
+
+    /* The reservation is one block for the whole save, so row i takes the i-th
+       number. A row with no number left (the counter could not be read) is
+       refused rather than stored with no number of its own. */
+    const unitNo = unitNumbers[index];
+    if (!unitNo) {
       throw new InventoryError('BARCODE_VALUE',
-        (r.itemCode || r.itemName || 'A row') + ' has no quantity, so its barcode value (SUPPLIER CODE * GRC NUMBER * SEQ * QTY) cannot be made. Nothing was saved.',
+        (r.itemCode || r.itemName || 'A row')
+        + ' could not be given a barcode number of its own. Check the Barcode Setting master for this business'
+        + ' (prefix, start number and the period covering today) and try again. Nothing was saved.',
         { status: 400 });
     }
-    while (takenValues.has(valueAt(seq))) seq += 1;
-    const barcodeNo = valueAt(seq);
-    takenValues.add(barcodeNo);
-    const doc = buildDoc(r, { ...scope, barcodeNo, seq: String(seq) });
+
+    const doc = buildDoc(r, { ...scope, barcodeNo: unitNo, barcodeGenerated, seq: String(seq), serialNo: String(serial) });
+    assertCompleteBarcode(doc, valueParts);
     seq += 1;
     return doc;
   });
 }
 
+/* A new barcode record is saved COMPLETE or not at all: a supplier code, a
+   GRC number, a Bill Sl No., a Serial No., the composed value those four make,
+   and a number of its own that is not that value. Anything less is the
+   half-written record that prints a label with no reference beside the bars,
+   or a reference with bars too dense to print. */
+function assertCompleteBarcode(doc, { supplierCode, grcNumber }) {
+  const item = doc.itemCode || doc.itemName || 'A row';
+  const refuse = (why) => {
+    throw new InventoryError('BARCODE_VALUE', item + ': ' + why + ' Nothing was saved.', { status: 400 });
+  };
+  if (!String(supplierCode ?? '').trim()) refuse('the supplier has no supplier code.');
+  if (!grcNumberForBarcode(grcNumber)) refuse('the GRC has no GRC number.');
+  if (!billSlNoForBarcode(doc.billSlNo)) refuse('Bill Sl No is required for barcode generation.');
+  if (!/^\d+$/.test(String(doc.serialNo ?? '')) || Number(doc.serialNo) < 1) refuse('the barcode has no Serial No.');
+  const expected = composeBarcodeValue({ supplierCode, grcNumber, billSlNo: doc.billSlNo, serialNo: doc.serialNo });
+  if (!doc.barcodeGenerated || doc.barcodeGenerated !== expected) refuse('the barcode value could not be generated.');
+  if (!String(doc.barcodeNo ?? '').trim() || isComposedBarcodeValue(doc.barcodeNo) || barcodeKey(doc.barcodeNo) === barcodeKey(doc.barcodeGenerated)) {
+    refuse('the barcode has no number of its own.');
+  }
+}
+
+/* Raises the GRC's per-line serial floors (serialFloorOf) to the highest
+   serial a save gave on each line. Written through the driver: the GRC model
+   a long-running server holds may predate these fields, and mongoose would
+   drop them without a word. `base` initialises the floor of a GRC that is
+   getting its map for the first time (null leaves it alone). */
+async function raiseSerialFloors(grcId, floors, { base = null, session = null } = {}) {
+  if (!floors || !floors.size) return;
+  const max = {};
+  floors.forEach((serial, billSlNo) => { max['lastSerialByBill.' + serialFloorKey(billSlNo)] = serial; });
+  if (base !== null) max.serialFloorBase = Number(base) || 0;
+  await Grc.collection.updateOne(
+    { _id: new mongoose.Types.ObjectId(String(grcId)) },
+    { $max: max },
+    session ? { session } : {}
+  );
+}
+
 /* One screen row as the document it is stored as. Pure: the barcode value
-   and its SEQ are decided by buildDocs. The edit path also runs an untouched
+   and its SEQ/SERIAL_NO are decided by buildDocs. The edit path also runs an untouched
    copy of a stored row through here to see what the operator changed - the
-   value and SEQ are not editable fields, so they play no part there. */
-function buildDoc(r, { business, location, finYear, grcId, supplierId, grcNo, barcodeNo = '', seq = '', itemByCode }) {
+   value and SEQ/SERIAL_NO are not editable fields, so they play no part there. */
+function buildDoc(r, { business, location, finYear, grcId, supplierId, grcNo, barcodeNo = '', barcodeGenerated = '', seq = '', serialNo = '', itemByCode }) {
   const uomType = uomTypeOf(r.uom);
   /* the same expression as always, now shared with the label printer
      (lib/barcodeUnits.js), so a row prints under the type it is stored with */
@@ -647,6 +834,10 @@ function buildDoc(r, { business, location, finYear, grcId, supplierId, grcNo, ba
     billSlNo: r.billSlNo || '',
     /* the barcode's running number within its GRC - see buildDocs */
     seq,
+    /* the barcode's running number within its Bill Sl No. - see buildDocs.
+       Never the Bill Sl No.: that fallback is how every barcode saved before
+       2026-09-17 came to carry its bill line here. */
+    serialNo: serialNo || String(r.serialNo || ''),
     /* the screen's own id for this row, so a repeated Submit finds the unit
        it already made (see matchRowsToUnits) */
     clientRowId: clientIdOf(r),
@@ -691,10 +882,11 @@ function buildDoc(r, { business, location, finYear, grcId, supplierId, grcNo, ba
     fma: r.fma || '',
     silkMark: r.silkMark || '',
 
-    /* canonical + legacy, kept in step so nothing that still reads
-       barcodeGenerated breaks */
+    /* TWO DIFFERENT THINGS, and no longer one string written twice.
+       barcodeNo is the unit's own number (the bars, the till, the ledger);
+       barcodeGenerated is the composed reference printed beside it. */
     barcodeNo,
-    barcodeGenerated: barcodeNo,
+    barcodeGenerated,
 
     /* ---- lifecycle ---- */
     itemId: item?._id || null,
@@ -707,7 +899,6 @@ function buildDoc(r, { business, location, finYear, grcId, supplierId, grcNo, ba
     batchType,
     qtyNum: Number(r.qty) || 1,
     batchNo: batchType === 'batch' ? String(r.batchNo || barcodeNo) : '',
-    serialNo: String(r.serialNo || r.billSlNo || ''),
     status: BARCODE_STATUS.IN_STOCK,
     currentLocationId: isValidObjectId(location) ? location : null,
     currentBusinessId: isValidObjectId(business) ? business : null,
@@ -731,16 +922,31 @@ function untouchedRow(unit) {
    barcode value. '' when the GRC has no supplier or the supplier no code. */
 async function supplierCodeOf(supplierId) {
   if (!supplierId || !isValidObjectId(String(supplierId))) return '';
-  const contact = await Contact.findById(supplierId).select('contactId').lean();
+  const contact = await Supplier.findById(supplierId).select('contactId').lean();
   return String(contact?.contactId || '').trim();
 }
 
 /* What the screen gets back about every barcode of the GRC after a save: the
-   stored value to show and print, never one the browser made up. */
+   stored values to show and print, never ones the browser made up.
+
+   BOTH barcode fields, as they are stored. A label prints the unit's own
+   number on the left and the composed value on the right, off the SAME
+   record - so a print taken straight after a Submit has to be given both.
+   With only barcodeNo here the screen had nothing to put on the right of the
+   sticker and copied the number into it, which printed the left-hand value
+   twice for any barcode whose two fields differ. */
 function savedRowsOf(units) {
-  return (units || []).map((u) => ({
-    _id: String(u._id), clientRowId: u.clientRowId || '', barcodeNo: unitBarcode(u), seq: u.seq || '', qty: u.qty || '',
-  }));
+  return (units || []).map((u) => ({ ...savedRowOf(u), clientRowId: u.clientRowId || '', qty: u.qty || '' }));
+}
+
+/* One stored barcode as the screen merges it back - the identity fields and
+   the parts its value was made from, so a row shown or printed straight after
+   Submit carries the same Bill Sl No. and Serial No. as its value. */
+function savedRowOf(u) {
+  return {
+    _id: String(u._id), barcodeNo: unitBarcode(u), barcodeGenerated: u.barcodeGenerated || '',
+    seq: u.seq || '', billSlNo: u.billSlNo || '', serialNo: u.serialNo || '',
+  };
 }
 
 /* The stored fields the stock reports add the ledger up by. */

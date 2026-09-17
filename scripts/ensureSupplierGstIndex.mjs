@@ -67,7 +67,12 @@ mongoose.set('autoCreate', false);
 /* Loaded AFTER the switches, not with the static imports above - those are
    hoisted and would compile the model first. Mongoose 8 happens to read the
    switches only when the connection opens, but this does not depend on it. */
-const { SUPPLIER_GST_INDEX } = await import('../models/Contact.js');
+/* The spec of the collection suppliers live in right now: models/Contact.js
+   (partial on contactKind) while they share `contact`, models/Supplier.js once
+   they have a collection of their own - see lib/contactStorage.js. */
+const { contactCollection, isSplitContactStorage } = await import('../lib/contactStorage.js');
+const SUPPLIER_COLLECTION = contactCollection('Supplier');
+const { SUPPLIER_GST_INDEX } = await import(isSplitContactStorage() ? '../models/Supplier.js' : '../models/Contact.js');
 
 const SPEC = SUPPLIER_GST_INDEX;
 const INDEX_NAME = SPEC.options.name;
@@ -78,13 +83,13 @@ async function main() {
     : '=== DRY RUN (pass --apply to create the index) ===');
 
   await mongoose.connect(URI, { autoIndex: false, autoCreate: false });
-  const contacts = mongoose.connection.db.collection('contact');
+  const contacts = mongoose.connection.db.collection(SUPPLIER_COLLECTION);
 
-  console.log(`collection : contact`);
+  console.log(`collection : ${SUPPLIER_COLLECTION}`);
   console.log(`index spec : ${INDEX_NAME}  ${JSON.stringify(SPEC.key)}`);
 
   const before = await indexesOf(contacts);
-  console.log(`\nindexes on contact now (${before.length}):`);
+  console.log(`\nindexes on ${SUPPLIER_COLLECTION} now (${before.length}):`);
   printIndexes(before);
 
   /* ------------------------------------------------------ analysis ------ */
@@ -228,7 +233,7 @@ async function main() {
   /* ------------------------------------------------------ build -------- */
   const { name, ...options } = SPEC.options;
   if (!APPLY) {
-    console.log('\nNo duplicates. With --apply this would be created on contact:');
+    console.log('\nNo duplicates. With --apply this would be created on ' + SUPPLIER_COLLECTION + ':');
     console.log(`  name    : ${name}`);
     console.log(`  key     : ${JSON.stringify(SPEC.key)}`);
     console.log(`  options : ${JSON.stringify(options)}`);

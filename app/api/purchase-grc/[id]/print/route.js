@@ -88,7 +88,7 @@
 import dbConnect from '@/lib/db';
 import Grc from '@/models/Grc';
 import Business from '@/models/Business';
-import Contact from '@/models/Contact';
+import { Supplier } from '@/lib/contacts';
 import { requireSession } from '@/lib/session';
 
 /* /api/purchase-grc/<id>/print
@@ -109,7 +109,7 @@ export async function GET(req, { params }) {
 
   const [business, supplier] = await Promise.all([
     grc.businessId ? Business.findById(grc.businessId).lean() : null,
-    grc.supplierId ? Contact.findById(grc.supplierId).lean() : null,
+    grc.supplierId ? Supplier.findById(grc.supplierId).lean() : null,
   ]);
 
   const line = (r, i) => {

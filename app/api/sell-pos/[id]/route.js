@@ -2,7 +2,7 @@ import dbConnect from '@/lib/db';
 import PosInvoice from '@/models/PosInvoice';
 import Business from '@/models/Business';
 import CompanyLocation from '@/models/CompanyLocation';
-import Contact from '@/models/Contact';
+import { Customer } from '@/lib/contacts';
 import PosCounter from '@/models/PosCounter';
 import { requireSession } from '@/lib/session';
 import { validate } from '@/lib/validate';
@@ -24,7 +24,7 @@ export async function GET(req, { params }) {
   const [business, location, customer, counter] = await Promise.all([
     doc.businessId ? Business.findById(doc.businessId).lean() : null,
     doc.locationId ? CompanyLocation.findById(doc.locationId).lean() : null,
-    doc.customerId ? Contact.findById(doc.customerId).lean() : null,
+    doc.customerId ? Customer.findById(doc.customerId).lean() : null,
     doc.counterId ? PosCounter.findById(doc.counterId).lean() : null,
   ]);
   const customerData = customer || doc.customerSnapshot || null;

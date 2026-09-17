@@ -3,6 +3,7 @@ import dbConnect from '@/lib/db';
 import { requireSession } from '@/lib/session';
 import { escapeRegex } from '@/lib/validate';
 import { BarcodeLabel } from '@/lib/barcodeLabel';
+import { canonicalBarcodeValue } from '@/lib/barcodeValue';
 import Grc from '@/models/Grc';
 import { json, num, r2, scopeOf, pageOf, paged } from '@/lib/reports';
 
@@ -50,7 +51,9 @@ export async function GET(req) {
 
   const mapped = rows.map((r) => ({
     _id: String(r._id),
-    barcodeGenerated: r.barcodeGenerated || '',
+    /* shown - and exported - in the spelling the label prints and the bars
+       encode ("G1318*05178*1*1"); the stored value is not touched */
+    barcodeGenerated: canonicalBarcodeValue(r.barcodeGenerated),
     itemCode: r.itemCode || '',
     description: r.printDescription || r.supplierDescription || '',
     qty: num(r.qty),

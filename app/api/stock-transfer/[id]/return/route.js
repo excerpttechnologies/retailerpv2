@@ -4,7 +4,9 @@ import StockTransfer, { TRANSFER_STATUS, RETURN_REASONS } from '@/models/StockTr
 import { handler, json } from '@/lib/apiError';
 import { requirePermission, PERMISSIONS } from '@/lib/rbac';
 import { withLocationPairLock } from '@/lib/locks';
-import { withTransaction, loadUnits, returnToSource, InventoryError } from '@/lib/inventory';
+import {
+  withTransaction, loadUnits, returnToSource, barcodeCandidates, linesAnswering, InventoryError,
+} from '@/lib/inventory';
 
 /* POST /api/stock-transfer/<id>/return
    { barcodes: [...], reason, notes }
@@ -57,7 +59,11 @@ export const POST = handler(async (req, { params }) => {
     return json({ errors: { barcodes: 'Select or scan the items being returned.' } }, 422);
   }
 
-  const unknown = asked.filter((c) => !(doc.lines || []).some((l) => l.barcodeNo === c));
+  /* An asked code may be a line's own number or any other spelling its unit
+     answers to (composed value, old barcode) - see linesAnswering. */
+  const candidates = await barcodeCandidates(asked, { businessId: doc.businessId, lines: doc.lines });
+
+  const unknown = asked.filter((c) => !linesAnswering(doc.lines, c, candidates).length);
   if (unknown.length) {
     return json({
       error: 'These barcodes are not on transfer ' + doc.transferNo + ': ' + unknown.slice(0, 10).join(', '),
@@ -65,7 +71,7 @@ export const POST = handler(async (req, { params }) => {
     }, 422);
   }
 
-  const already = asked.filter((c) => (doc.lines || []).some((l) => l.barcodeNo === c && l.returned));
+  const already = asked.filter((c) => linesAnswering(doc.lines, c, candidates).some((l) => l.returned));
   if (already.length) {
     /* Prevents the duplicate return the requirement calls out: the same unit
        cannot be sent back twice and reduce the bill twice. */
@@ -83,9 +89,11 @@ export const POST = handler(async (req, { params }) => {
     async () => withTransaction(async (dbSession) => {
       const fresh = await StockTransfer.findById(id).session(dbSession || null);
 
-      const target = asked.filter((c) =>
-        (fresh.lines || []).some((l) => l.barcodeNo === c && !l.returned)
-      );
+      /* the lines' own numbers, not the asked text: that is what each unit
+         is loaded by and what the moved units are matched back on */
+      const target = [...new Set(asked.flatMap((c) =>
+        linesAnswering(fresh.lines, c, candidates).filter((l) => !l.returned).map((l) => l.barcodeNo)
+      ))];
       if (!target.length) {
         throw new InventoryError('ALREADY_RETURNED',
           'Those items were returned by someone else a moment ago.', { status: 409 });

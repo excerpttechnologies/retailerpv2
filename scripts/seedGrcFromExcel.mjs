@@ -43,7 +43,7 @@
    excels"). See "folder mode" near the end of this file.
 
      npm run seed:grc:folder                         dry run
-     npm run seed:grc:folder:apply -- --file 05074   write one file
+     npm run seed:grc:folder:apply -- --grc 05074    write one GRC
 
    Paths come from GRC_EXCEL_PATH / GRC_EXCEL_DIR / GRC_BARCODE_IMAGE_DIR,
    defaulting to the repository-relative locations - no absolute personal
@@ -56,22 +56,49 @@ import mongoose from 'mongoose';
 import XLSX from 'xlsx';
 /* the ERP's own purchase-price rule, not a copy of it */
 import { purchasePriceError } from '../lib/purchasePrice.js';
+/* the ERP's one rule for a GRC barcode's display value - never composed here */
+import { composeBarcodeValue, barcodeValueProblem, grcNumberForBarcode } from '../lib/barcodeValue.js';
+/* where suppliers are read from - `contact` today, `supplier` once contacts
+   are split (CONTACT_STORAGE, see lib/contactStorage.js) */
+import { contactCollection } from '../lib/contactStorage.js';
 
 const APPLY = process.argv.includes('--apply');
 const NO_STOCK = process.argv.includes('--no-stock');
-/* "--flag value" -> value; "--flag" alone -> ''; absent -> null */
-function argValue(flag) {
-  const i = process.argv.indexOf(flag);
-  if (i === -1) return null;
-  const next = process.argv[i + 1];
-  return next && !next.startsWith('--') ? next : '';
+/* "--flag value" -> value; "--flag" alone -> ''; absent -> null. The flag may
+   appear more than once - `npm run seed:grc:folder -- --dir X` passes the
+   script's own bare --dir first - so the first occurrence that carries a value
+   wins, and repeated values are joined with commas. */
+function argValues(flag) {
+  const values = [];
+  let seen = false;
+  process.argv.forEach((arg, i) => {
+    if (arg !== flag) return;
+    seen = true;
+    const next = process.argv[i + 1];
+    if (next && !next.startsWith('--')) values.push(next);
+  });
+  return seen ? values : null;
 }
-/* --dir [folder]: folder mode. --file <text>: only the file(s) whose name
-   contains it. --force: fill a GRC even when its totals or supplier do not
-   agree with the file - for a human who has checked, never a default. */
-const DIR_ARG = argValue('--dir');
+function argValue(flag) {
+  const values = argValues(flag);
+  return values === null ? null : values.join(',');
+}
+/* "a, b,c" -> ['a', 'b', 'c'] */
+const listArg = (value) => String(value || '').split(',').map((s) => s.trim()).filter(Boolean);
+/* --dir [folder]: folder mode. --file <text[,text]>: only files whose name
+   contains any of them. --grc <no[,no]>: only files that resolve to those
+   GRCs. --report <file>: where the folder report is written. --force: fill a
+   GRC even when its totals or supplier name do not agree with the file - for
+   a human who has checked, never a default. */
+/* a folder or file path may contain a comma, so those take one value as given */
+const DIR_ARG = argValues('--dir') === null ? null : (argValues('--dir')[0] || '');
 const FILE_FILTER = argValue('--file');
+const GRC_FILTER = argValue('--grc');
+const REPORT_ARG = (argValues('--report') || [])[0] || '';
 const FORCE = process.argv.includes('--force');
+/* --refresh: on a folder re-import, reset existing rows' fields from the file
+   rather than only filling in what they lack (see folder mode) */
+const REFRESH = process.argv.includes('--refresh');
 /* --repair: fix the CHILDREN of GRCs that already exist, and create no
    headers. For when a later export finally carries the item detail that an
    earlier one was missing - the headers are already right, only the barcode
@@ -109,7 +136,11 @@ const C = {
 const report = {
   startedAt: new Date().toISOString(), mode: APPLY ? 'apply' : 'dry-run',
   sheets: {}, grc: { processed: 0, inserted: 0, updated: 0, skipped: 0 },
-  barcodes: { processed: 0, inserted: 0, updated: 0, skipped: 0 },
+  /* skipped: rows with no Code (group headers the scrape left in).
+     locked:  existing units left alone because they have moved. */
+  barcodes: { processed: 0, inserted: 0, updated: 0, skipped: 0, locked: 0 },
+  /* GRCs not imported because a Code is already another GRC's unit */
+  conflicts: [],
   images: { onDisk: 0, matched: 0, missing: 0, missingList: [], unused: 0 },
   vendors: { matched: 0, unmatched: 0, unmatchedList: [] },
   duplicates: { grcNumbers: [], barcodes: [] },
@@ -186,6 +217,75 @@ function gstPercent(cell) {
    has them. Nothing is stripped: leading zeroes, letters and separators are
    all meaningful in a barcode. */
 const normBarcode = (v) => text(v).toUpperCase();
+
+/* The same rule for the database: a MongoDB query with this collation compares
+   barcodes without regard to case, so "zqb-001" finds the stored "ZQB-001".
+   barcodeLabel has no unique index and no collation of its own, so without it
+   a case variant of an existing Code would be inserted as a second unit. */
+const CASE_INSENSITIVE = { locale: 'en', strength: 2 };
+
+/* Held inside every import transaction (a write to one shared counter
+   document) so two imports cannot interleave: the second one's write
+   conflicts, the driver retries it on a fresh snapshot, and its re-check
+   then sees the rows the first one committed. See importFolderGrc. */
+const IMPORT_LOCK_KEY = 'lock|seedGrcFromExcel|barcode-import';
+
+/* A unit whose stock state now belongs to the documents it moved on - sold,
+   transferred, returned, written off, or no longer where it was received. An
+   import never touches it again. A row this script wrote with --no-stock is
+   VOID without ever having been stock, so it is not a moved unit. */
+const hasMoved = (u) => {
+  if (u.status === 'VOID' && u.importedWithoutStock === true) return false;
+  return Boolean((u.status && u.status !== 'IN_STOCK')
+    || (u.currentLocationId && u.locationId && String(u.currentLocationId) !== String(u.locationId)));
+};
+
+/* The two barcode fields of an imported row are different things:
+
+     barcodeNo         the unit's own number - the workbook's Code (8A4086).
+                       What scans, what the stock ledger names, what the
+                       barcode engine counts on from. Also this script's key
+                       for finding a row it has already written.
+     barcodeGenerated  the display value every GRC barcode carries,
+                       SUPPLIER_CODE * GRC_NUMBER * BILL_SL_NO * SERIAL_NO
+                       ("G833 * 05151 * 37 * 16"), made by lib/barcodeValue.js
+                       - with the row's SEQ as its SERIAL_NO.
+
+   They used to be written as one copy of the Code. serialNo is the value's
+   fourth part - that same SEQ - and never a copy of the Bill Sl No., which is
+   what it used to be given. A row that composes no value (no Bill Sl No.)
+   never has an existing value blanked by an update. */
+
+/* SEQ for each workbook row of one GRC, keyed by barcodeNo, in file order.
+   A barcode that already carries a SEQ keeps it. One without takes its row
+   position (1, 2, 3 ...) when that number is free - the same number
+   restateGrcBarcodes.mjs gives it, because imported rows are created in file
+   order. Otherwise, and always for a brand-new barcode whose position the GRC
+   has already given out (lastBarcodeSeq), the next number after the highest
+   the GRC holds - a SEQ is never reused. Barcodes are matched without regard
+   to case, like everywhere else in this script; the result is keyed by the
+   code exactly as passed in. */
+function seqsForRows(codes, existingUnits, lastBarcodeSeq = 0) {
+  const seqOf = (v) => (/^\d+$/.test(text(v)) ? Number(v) : 0);
+  const floor = Number(lastBarcodeSeq) || 0;
+  const kept = new Map(existingUnits.map((u) => [normBarcode(u.barcodeNo), seqOf(u.seq)]));
+  const used = new Set([...kept.values()].filter(Boolean));
+  let next = Math.max(floor, 0, ...used) + 1;
+  const out = new Map();
+  codes.forEach((code, i) => {
+    const own = kept.get(normBarcode(code));
+    if (own) { out.set(code, own); return; }
+    let seq = i + 1;
+    const isNew = !kept.has(normBarcode(code));
+    if (used.has(seq) || (isNew && seq <= floor)) {
+      while (used.has(next)) next += 1;
+      seq = next;
+    }
+    used.add(seq);
+    out.set(code, seq);
+  });
+  return out;
+}
 
 /* 'PC' | 'MTR', by the same matcher the barcode engine uses, so a unit
    imported here means the same thing everywhere else. */
@@ -536,7 +636,7 @@ async function resolveScope(db) {
 }
 
 async function buildVendorIndex(db, businessId) {
-  const rows = await db.collection('contact')
+  const rows = await db.collection(contactCollection('Supplier'))
     .find({ contactKind: 'Supplier', businessId })
     .project({ contactId: 1, businessName: 1, firstName: 1, lastName: 1 }).toArray();
 
@@ -582,6 +682,26 @@ async function importAll(db, planned, scope) {
        updates the same header instead of creating a second one. */
     const key = { businessId: scope.businessId, finYear: h.finYear, grcNumber: h.grcNumber };
     const existing = await grcColl.findOne(key);
+
+    /* A Code that is already a unit of ANOTHER GRC - or of no GRC, or of a
+       deleted one, in any letter case - is never received a second time.
+       The whole GRC is refused before anything of it is written, header
+       included, the same way folder mode refuses a conflicting file. */
+    const codes = items.map((it) => text(it.code)).filter(Boolean);
+    const heldElsewhere = codes.length
+      ? await bcColl.find(
+        { ...(existing ? { grcId: { $ne: String(existing._id) } } : {}), $or: [{ barcodeNo: { $in: codes } }, { barcodeGenerated: { $in: codes } }] },
+        { collation: CASE_INSENSITIVE, projection: { barcodeNo: 1, grcNo: 1 } },
+      ).limit(20).toArray()
+      : [];
+    if (heldElsewhere.length) {
+      const held = heldElsewhere.map((u) => `${u.barcodeNo} (GRC ${u.grcNo || 'none'})`);
+      report.conflicts.push({ grc: h.grcNumber, barcodes: held });
+      report.grc.skipped += 1;
+      err({ sheet: 'Item With Barcode', row: '', grc: h.grcNumber, barcode: held[0], field: 'Code',
+        reason: `already a unit of another GRC or of no GRC: ${held.join(', ')} - GRC ${h.grcNumber} not imported` });
+      continue;
+    }
 
     const doc = {
       ...key,
@@ -643,23 +763,46 @@ async function importAll(db, planned, scope) {
     if (REPAIR && items.length === 0) continue;
 
     /* ---- barcode rows -------------------------------------------------
-       Key: grcId + barcodeNo, so a re-run updates each unit in place. */
+       Key: grcId + barcodeNo, so a re-run updates each unit in place.
+       barcodeGenerated needs the supplier's code; without one the GRC's rows
+       are not written at all rather than written with half a value. */
+    const supplierCode = text(vendor?.contactId);
+    const valueProblem = barcodeValueProblem({ supplierCode, grcNumber: h.grcNumber });
+    if (valueProblem && items.length) {
+      report.warnings.push(`GRC ${h.grcNumber}: barcode rows skipped - ${valueProblem}`);
+      continue;
+    }
+    const existingUnits = await bcColl.find({ grcId: String(grcId) }).project({ barcodeNo: 1, seq: 1 }).toArray();
+    const header = await grcColl.findOne({ _id: grcId }, { projection: { lastBarcodeSeq: 1 } });
+    const seqs = seqsForRows(items.map((it) => text(it.code)), existingUnits, header?.lastBarcodeSeq);
+
     for (const it of items) {
-      const barcodeNo = it.code;
-      const found = await bcColl.findOne({ grcId: String(grcId), barcodeNo });
+      const found = await bcColl.findOne({ grcId: String(grcId), barcodeNo: it.code }, { collation: CASE_INSENSITIVE });
+      /* a unit that has moved is the documents' business now, not the
+         workbook's - it is left exactly as it is */
+      if (found && hasMoved(found)) { report.barcodes.locked += 1; continue; }
+      /* an existing unit keeps the number it is stored and printed under -
+         and the item code that is that number, in the same case */
+      const barcodeNo = found ? found.barcodeNo : it.code;
+      const seq = seqs.get(text(it.code));
+      /* '' when the row has no Bill Sl No. - see the update below */
+      const value = composeBarcodeValue({ supplierCode, grcNumber: h.grcNumber, serialNo: seq, billSlNo: it.slNo });
 
       const row = {
         grcId: String(grcId),
         grcNo: h.grcNumber,
         supplierId: vendor ? String(vendor._id) : '',
         barcodeNo,
-        barcodeGenerated: barcodeNo,
-        itemCode: it.code,
+        barcodeGenerated: value,
+        seq: String(seq),
+        /* in this workbook the item code IS the barcode code */
+        itemCode: barcodeNo,
         itemName: it.name,
         printDescription: it.name,
         supplierDescription: it.name,
         billSlNo: it.slNo,
-        serialNo: it.slNo,
+        /* the value's fourth part, never a copy of the Bill Sl No. */
+        serialNo: value ? String(seq) : '',
         hsn: it.hsn,
         gst: String(it.gstPct),
         uom: it.uom,
@@ -686,19 +829,40 @@ async function importAll(db, planned, scope) {
         },
         businessId: String(scope.businessId),
         locationId: String(scope.locationId),
-        currentBusinessId: scope.businessId,
-        currentLocationId: scope.locationId,
         finYear: h.finYear,
-        status: NO_STOCK ? 'VOID' : 'IN_STOCK',
         importedFrom: 'grc_full_scrape',
         updatedAt: new Date(),
       };
 
       if (found) {
-        await bcColl.updateOne({ _id: found._id }, { $set: row });
+        /* stock state and position are never re-written - a re-run used to
+           set every unit back to IN_STOCK at the warehouse, sold or not. A
+           row that composes no value keeps the value (and serial) it has:
+           an update never writes barcodeGenerated: '' over it. */
+        const { barcodeGenerated: _value, serialNo: _serialNo, ...withoutValue } = row;
+        await bcColl.updateOne({ _id: found._id }, { $set: value ? row : withoutValue });
         report.barcodes.updated += 1;
       } else {
-        const res = await bcColl.insertOne({ ...row, createdAt: h.grcDate || new Date() });
+        /* checked again at the moment of inserting, so a Code another import
+           received since the GRC was checked is still never received twice */
+        const clash = await bcColl.findOne(
+          { grcId: { $ne: String(grcId) }, $or: [{ barcodeNo: it.code }, { barcodeGenerated: it.code }] },
+          { collation: CASE_INSENSITIVE, projection: { barcodeNo: 1, grcNo: 1 } },
+        );
+        if (clash) {
+          report.conflicts.push({ grc: h.grcNumber, barcodes: [`${clash.barcodeNo} (GRC ${clash.grcNo || 'none'})`] });
+          err({ sheet: 'Item With Barcode', row: it.excelRow || '', grc: h.grcNumber, barcode: it.code, field: 'Code',
+            reason: `became a unit of GRC ${clash.grcNo || 'none'} during the import - not received again` });
+          continue;
+        }
+        const res = await bcColl.insertOne({
+          ...row,
+          currentBusinessId: scope.businessId,
+          currentLocationId: scope.locationId,
+          status: NO_STOCK ? 'VOID' : 'IN_STOCK',
+          ...(NO_STOCK ? { importedWithoutStock: true } : {}),
+          createdAt: h.grcDate || new Date(),
+        });
         report.barcodes.inserted += 1;
 
         /* Goods received is a stock movement. Written here so the ledger and
@@ -721,6 +885,12 @@ async function importAll(db, planned, scope) {
           });
         }
       }
+    }
+
+    /* the highest SEQ this GRC has given, so the Barcode Generation screen
+       counts on from it (lib/barcodeValue.js nextSeqStart) */
+    if (seqs.size) {
+      await grcColl.updateOne({ _id: grcId }, { $max: { lastBarcodeSeq: Math.max(...seqs.values()) } });
     }
   }
 }
@@ -793,8 +963,9 @@ function printReport() {
 function printCounts() {
   const R = report;
   console.log('\n=================== IMPORT COMPLETED ==================');
-  console.log(`GRC headers   : ${R.grc.inserted} inserted, ${R.grc.updated} updated`);
-  console.log(`Barcode items : ${R.barcodes.inserted} inserted, ${R.barcodes.updated} updated`);
+  console.log(`GRC headers   : ${R.grc.inserted} inserted, ${R.grc.updated} updated, ${R.conflicts.length ? new Set(R.conflicts.map((c) => c.grc)).size + ' refused (barcode already another GRC\'s)' : '0 refused'}`);
+  console.log(`Barcode items : ${R.barcodes.inserted} inserted, ${R.barcodes.updated} updated, ${R.barcodes.locked} left alone (moved)`);
+  R.conflicts.slice(0, 10).forEach((c) => console.log(`  REFUSED GRC ${c.grc}: ${c.barcodes.slice(0, 3).join(', ')}${c.barcodes.length > 3 ? ', ...' : ''}`));
   console.log(`Images linked : ${R.images.matched} of ${R.barcodes.processed}`);
   console.log(`Stock created : ${NO_STOCK ? 'NO (--no-stock)' : R.barcodes.inserted + ' units, with ledger entries'}`);
   console.log('=======================================================');
@@ -811,53 +982,100 @@ function writeReport() {
 
    THE "purchase excels" EXPORTS - one workbook per GRC.
 
-   Each file carries ONE GRC's item detail, and nothing inside it names the
-   GRC: "Sri KRUPA Silks(05074)9(5).xlsx" is GRC 05074 from Sri KRUPA Silks,
-   and that file name is the only place the number appears. The sheet NAME
-   varies from file to file - Inventory Report, Purchase Invoice Details,
-   Itemized Report, GRC Report, Item Details ... - so a sheet is recognised
-   by its HEADER, never by its name. Inside it:
+   The item table's sheet name varies from file to file - Inventory Report,
+   Purchase Invoice Details, Itemized Report, GRC Report, Item Details ... - so
+   a sheet is recognised by its HEADER, never by its name. Inside it:
 
      rows 1-2        a two-row header ("Item" over "Code", "Discount" over
-                     "%", ...). Two exports label a few columns differently
-                     ("Quantity"/"QTY/MTR", "Rate"/"Purchase Rate"), so each
-                     field below lists every spelling seen.
-     item rows       Sl No, Code (the BARCODE), Name (the item code), HSN,
-                     GST Slab, UOM, QTY/MTR, No. of Cuts, Purchase Rate,
-                     Discount (an AMOUNT, despite its "%" sub-header - 725 on
-                     a 7,250 rate), R.Off, Final Rate, Before Tax, IGST,
-                     CGST, SGST, Net Amount, RSP, WSP, DP
+                     "%", ...). Exports label a few columns differently
+                     ("Quantity"/"QTY/MTR"), so each field lists every
+                     spelling seen.
+     item rows       Sl No, Code (the unit's BARCODE NUMBER), Name (the item
+                     code), HSN, GST Slab, UOM, QTY/MTR, No. of Cuts, Purchase
+                     Rate, Discount, R.Off, Final Rate, Before Tax, IGST, CGST,
+                     SGST, Net Amount, RSP, WSP, DP
      "Total"         the item table's own total
-     "Item Summary"  a second small table - Bill Sl No, Item Name, QTY,
-                     Before GST, GST, Net - with its own Total. One export
-                     also carries it as a separate sheet.
+     "Item Summary"  a second small table with its own Total, embedded or on
+                     a separate sheet.
 
-   WHAT IT WRITES. These GRCs' HEADERS were imported on 2 Sept from
-   grc_full_scrape with no item rows ("headers only"), so this mode does what
-   --repair does: it fills in the CHILDREN of GRCs that already exist -
-   barcodeLabel rows, and their GRC_IN ledger entries as the workbook flow
-   writes them - and never creates, changes or invents a header. A file whose
-   GRC has no header is reported, not imported: the file carries no date,
-   vendor or totals to build one from.
+   WHAT IT WRITES. The GRC HEADERS already exist (imported from
+   grc_full_scrape with no item rows). This mode fills in their CHILDREN -
+   barcodeLabel rows and a GRC_IN ledger entry for each new unit - and never
+   creates, changes or invents a header. The Item Summary is NOT written: the
+   GRC screen derives it from the barcode rows, so the file's copy is only
+   used to cross-check.
 
-   Item Summary is NOT written, for the reason given at the top of this file:
-   the GRC screen derives it from the barcode rows. The file's own Item
-   Summary table is parsed only to cross-check that derivation.
+   EACH ROW'S TWO BARCODE FIELDS (see seqsForRows near the top):
+     barcodeNo         the workbook's Code - the unit's own number, what scans
+     barcodeGenerated  SUPPLIER_CODE * GRC_NUMBER * BILL_SL_NO * SERIAL_NO, the display
+                       value, with the row's SEQ as its SERIAL_NO - which is
+                       also what serialNo is given
 
-   THE HEADER IS THE CHECK. A file's item totals must reconcile with the GRC
-   header its name points at, and the header's supplier must be the one the
-   file name says - that is what a mislabelled export looks like, and one is
-   in the folder today (05092's file is a copy of 05097's). A file that fails
-   either check, or has any invalid row, is refused WHOLE rather than
-   imported in part, and each GRC's rows are written in one transaction, so a
-   GRC is never left half-filled.
+   HOW A FILE FINDS ITS GRC. Every 4-6 digit number in the file name is a
+   candidate - "Supplier(05087).xlsx", "KUNJ Sarees, 05066.xlsx",
+   "S_S_T_Handloom__G1132___GRC_no__05103.xlsx", "PS_Fabrics_GRC05159.xlsx" -
+   and the one that is a GRC in the database is the file's GRC. Supplier codes
+   (G1132) and version/copy markers are never numbers. A name with no GRC
+   number is not guessed at: the report names the empty GRC whose totals and
+   supplier agree with the file, and the file has to be renamed.
 
-     npm run seed:grc:folder                          dry run, every file
-     npm run seed:grc:folder -- --file 05074          dry run, one file
-     npm run seed:grc:folder:apply -- --file 05074    write one file
-     npm run seed:grc:folder:apply                    write every file
-       --no-stock   write the rows without creating stock
-       --force      import a GRC even when its totals or supplier disagree */
+   A FILE IS WRITTEN ONLY WHEN ALL OF THESE HOLD, checked in this order - the
+   first that fails is its status:
+
+     no-number          the file name carries no GRC number
+     no-header          no GRC in the database has that number
+     ambiguous          more than one GRC has it, or the name names two GRCs
+     invalid            a row is invalid (bad price, no quantity, a duplicate
+                        code, columns out of place)
+     no-supplier-code   the GRC's supplier has no code, so barcodeGenerated
+                        cannot be made. --force does not change this.
+     supplier-mismatch  the name's supplier is not the GRC's        (--force)
+     mismatch           the file's totals are not the GRC's totals   (--force)
+     conflict           a Code is already a barcode of another GRC - or of
+                        no GRC, or a deleted one - or is in another file
+                        being imported. Never forced: it would put one unit
+                        in stock twice.
+     has-other-rows     the GRC already holds barcodes this file does not
+                        list - rows made on the Barcode Generation screen, or
+                        from another export. Filling it would mix them.
+     duplicate-file     several files point at this GRC; name one with --file
+     ready              written. A GRC whose rows are exactly this file's is a
+                        RE-IMPORT: rows are matched by barcodeNo, never
+                        duplicated, and any the GRC is missing are created.
+
+   A RE-IMPORT LEAVES EXISTING ROWS AS THEY ARE, apart from what they lack: a
+   missing SEQ, and a barcodeGenerated that is blank or only a copy of
+   barcodeNo (made from the row's own SEQ and its own stored Bill Sl No., with
+   serialNo set to match). Prices, names and quantities may have been
+   corrected on the Barcode Generation screen since the import, and a file
+   must not silently undo that. Pass --refresh to reset existing rows' fields
+   from the file instead - except a value the file cannot make (no Bill Sl
+   No.): a row's existing barcodeGenerated is never reset to blank.
+
+   Neither ever touches a unit that has MOVED (sold, transferred, returned,
+   written off, or no longer at the GRC's location): its stock state and its
+   fields belong to the documents it moved on, and it is counted as locked.
+   Stock position fields are only ever written when a unit is created.
+
+   A file whose name points at no GRC, or whose supplier or totals disagree
+   with the GRC it names, is checked against every GRC: one whose supplier and
+   totals DO agree is named in the report - as a GRC to rename the file for,
+   or as the GRC the file was already imported into.
+
+   Each GRC's rows are written in one transaction, so a GRC is never left
+   half filled.
+
+     npm run seed:grc:folder                                  dry run, every file
+     npm run seed:grc:folder -- --grc 05074                   dry run, one GRC
+     npm run seed:grc:folder:apply -- --grc 05074,05075       write those GRCs
+     npm run seed:grc:folder:apply -- --file "MK_SILK_Creations_LLP_BANGALORE"
+       --file <text[,text]>  only files whose name contains any of them
+       --grc <no[,no]>       only files that resolve to these GRCs
+       --dir <folder>        another folder than "purchase excels"
+       --report <file>       write the JSON report somewhere else
+       --no-stock            write the rows without creating stock
+       --refresh             on a re-import, reset existing rows' fields from the file
+       --force               import despite a supplier-name or totals mismatch */
 
 const colNorm = (h) => text(h).toLowerCase().replace(/[^a-z0-9%]/g, '');
 
@@ -927,13 +1145,72 @@ function parseSummaryBlock(grid, hIdx) {
   return rows;
 }
 
-/* One workbook -> { grcNumber, supplierName, sheet, items, summary, ... }.
-   Reads only; judges nothing - validation is a separate step. */
+const round4 = (v) => Math.round((Number(v) || 0) * 10000) / 10000;
+const words = (s) => text(s).toLowerCase().replace(/[^a-z0-9]+/g, ' ').split(' ').filter(Boolean);
+
+/* ---------------------------------------------------------- the file name */
+
+/* Every GRC number the name could mean, the bracketed form first. A number
+   glued to letters is not one - G1132 is a supplier code, v3 a version - but
+   "GRC05159" is, so that prefix is split off first. */
+function grcNumbersInName(file) {
+  const base = file.replace(/\.xlsx?$/i, '').replace(/GRC(?=\d)/gi, 'GRC ');
+  const bracketed = [...base.matchAll(/\((\d{4,6})\)/g)].map((m) => m[1]);
+  const loose = [...base.matchAll(/(?<![A-Za-z0-9])(\d{4,6})(?!\d)/g)].map((m) => m[1]);
+  return [...new Set([...bracketed, ...loose])];
+}
+
+/* words an export adds to a file name that are not part of the supplier */
+const NAME_NOISE = new Set(['grc', 'no', 'with', 'below', 'item', 'items', 'summary', 'complete', 'updated',
+  'update', 'corrected', 'perfect', 'final', 'formatted', 'copy', 'report', 'data', 'new']);
+
+/* The supplier the name speaks for: everything before a bracket, less the
+   GRC number, supplier codes, version markers and export words. */
+function supplierNameFromFile(file) {
+  const base = file.replace(/\.xlsx?$/i, '').replace(/\s*\(.*$/, '').replace(/GRC(?=\d)/gi, 'GRC ');
+  return words(base)
+    .filter((w) => !/^\d+$/.test(w) && !/^g\d+$/.test(w) && !/^v\d+$/.test(w) && !NAME_NOISE.has(w))
+    .join(' ');
+}
+
+/* The name's supplier is the GRC's supplier only when the name carries the
+   supplier's LEADING word - the part that tells suppliers apart - and nothing
+   the supplier's name does not:
+
+     every word of the name is a word of the supplier's name, and the first
+     word of the supplier's name is among them
+         "KUNJ Sarees"               KUNJ Sarees, VARANASI
+         "jaipur SWARNROOP"          SWARNROOP Fashion, JAIPUR
+     or, with the spaces taken out, the name spells the supplier's name from
+     its first word up to the end of some whole word
+         "MJ Fabrics"                M J Fabrics, MUMBAI
+         "PS Fabrics SALEM"          P S Fabrics, SALEM
+
+   A fragment never matches: "Silk", "Aha" or "Lakshmi Silks" are not
+   "Mahalakshmi Silks, SALEM", and "Sarees SALEM" is not "AS Sarees, SALEM". */
+function supplierAgrees(fileSupplier, supplierName) {
+  const fileWords = words(fileSupplier);
+  const theirs = words(supplierName);
+  if (!fileWords.length || !theirs.length) return false;
+  if (fileWords.includes(theirs[0]) && fileWords.every((w) => theirs.includes(w))) return true;
+  const joined = fileWords.join('');
+  let prefix = '';
+  for (const word of theirs) {
+    prefix += word;
+    if (prefix === joined) return true;
+    if (prefix.length >= joined.length) return false;
+  }
+  return false;
+}
+
+/* One workbook -> { candidates, supplierName, sheet, items, summary, ... }.
+   Reads only; judges nothing - validation and matching are separate steps. */
 function parseFolderWorkbook(dir, file) {
   const out = {
     file,
-    grcNumber: (file.match(/\((\d{4,6})\)/) || [])[1] || '',
-    supplierName: text(file.replace(/\(.*$/, '')),
+    grcCandidates: grcNumbersInName(file),
+    grcNumber: '',
+    supplierName: supplierNameFromFile(file),
     sheet: '', recognised: false, items: [], summary: [], summarySheet: '',
     otherSheets: [], unrecognisedRows: [],
   };
@@ -990,14 +1267,28 @@ function parseFolderWorkbook(dir, file) {
   }
 
   /* the embedded Item Summary follows the item table's Total; it wins over
-     a separate Item Summary sheet, which only one export carries */
+     a separate Item Summary sheet */
   const hIdx = grid.findIndex((row, i) => i >= r && isSummaryHeader(row));
   if (hIdx !== -1) { out.summary = parseSummaryBlock(grid, hIdx); out.summarySheet = itemSheet.name; }
   return out;
 }
 
-const round4 = (v) => Math.round((Number(v) || 0) * 10000) / 10000;
-const words = (s) => text(s).toLowerCase().replace(/[^a-z0-9]+/g, ' ').split(' ').filter(Boolean);
+/* ------------------------------------------------------------- the rows */
+
+/* the Final Rate a row states, allowing R.Off to have been added or taken */
+const fitsFinalRate = (it, base) => Math.min(Math.abs(base + it.roundOff - it.finalRate),
+  Math.abs(base - it.roundOff - it.finalRate)) <= 0.5;
+
+/* The Discount column means different things in different exports: an amount
+   (725 on a 7,250 rate), a percentage written as 7, or a true Excel percentage
+   whose cell value for 7% is 0.07. Each reading says how the discounted rate
+   follows from it and how to state it as the percentage a barcode row stores.
+   A zero discount reads the same every way; the first reading wins a tie. */
+const DISC_READINGS = [
+  { name: 'percentage', base: (it) => it.purchaseRate * (1 - it.discountAmount / 100), pct: (it) => round4(it.discountAmount) },
+  { name: 'Excel percentage', base: (it) => it.purchaseRate * (1 - it.discountAmount), pct: (it) => round4(it.discountAmount * 100) },
+  { name: 'amount', base: (it) => it.purchaseRate - it.discountAmount, pct: (it) => round4((it.discountAmount / it.purchaseRate) * 100) },
+];
 
 /* Every row checked; each problem reported with file / sheet / row / GRC /
    item / field / value / reason. Returns true when the whole file is clean. */
@@ -1008,9 +1299,9 @@ function validateFolderWorkbook(w, F) {
   };
   let ok = true;
   const seen = new Map();
-  let arithChecked = 0; let arithAgreed = 0; let discChecked = 0; let discAgreed = 0;
+  let arithChecked = 0; let arithAgreed = 0; let discChecked = 0;
+  const discAgreed = DISC_READINGS.map(() => 0);
 
-  if (!w.grcNumber) { fail(null, 'File name', w.file, 'no GRC number in brackets, e.g. "Supplier(05074).xlsx"'); ok = false; }
   if (!w.items.length) { fail(null, 'Item rows', 0, 'the item table has no rows'); ok = false; }
   w.unrecognisedRows.forEach((u) => { fail({ excelRow: u.excelRow, code: '', name: '' }, 'Code', JSON.stringify(u.row), 'row without a barcode in the item table'); ok = false; });
 
@@ -1026,29 +1317,32 @@ function validateFolderWorkbook(w, F) {
     if (!Number.isFinite(it.finalRate) || it.finalRate < 0) { fail(it, 'Final Rate', it.finalRate, 'not a valid amount'); it.invalid = true; }
     if (!Number.isFinite(it.gstPct)) { fail(it, 'GST Slab', it.gstPct, 'not a valid percentage'); it.invalid = true; }
 
-    /* layout guards, as in the workbook flow: if the columns were ever read
-       from the wrong places these stop agreeing */
+    /* layout guards: if the columns were ever read from the wrong places these
+       stop agreeing */
     if (it.beforeTax > 0 && it.qty > 0) {
       arithChecked += 1;
       if (Math.abs(it.finalRate * it.qty - it.beforeTax) <= Math.max(0.5, it.beforeTax * 0.001)) arithAgreed += 1;
     }
     if (it.purchaseRate > 0) {
       discChecked += 1;
-      const base = it.purchaseRate - it.discountAmount;
-      if (Math.min(Math.abs(base + it.roundOff - it.finalRate), Math.abs(base - it.roundOff - it.finalRate)) <= 0.5) discAgreed += 1;
+      DISC_READINGS.forEach((reading, i) => { if (fitsFinalRate(it, reading.base(it))) discAgreed[i] += 1; });
     }
-    /* the Discount column holds an AMOUNT; the barcode row's `disc` is a
-       PERCENTAGE everywhere else in the app (rate x disc / 100) */
-    it.discPct = it.purchaseRate > 0 ? round4((it.discountAmount / it.purchaseRate) * 100) : 0;
     if (it.invalid) ok = false;
   }
+
+  /* the barcode row's `disc` is a PERCENTAGE everywhere else in the app, so
+     whichever reading the file agreed with is stated as one */
+  const discBest = Math.max(...discAgreed);
+  const reading = DISC_READINGS[discAgreed.indexOf(discBest)];
+  w.discountReading = reading.name;
+  w.items.forEach((it) => { it.discPct = it.purchaseRate > 0 ? reading.pct(it) : 0; });
 
   if (arithChecked && arithAgreed / arithChecked < 0.9) {
     fail(null, 'Layout', `${arithAgreed}/${arithChecked}`, 'Final Rate x QTY does not give Before Tax - the columns are not where this importer expects');
     ok = false;
   }
-  if (discChecked && discAgreed / discChecked < 0.9) {
-    fail(null, 'Layout', `${discAgreed}/${discChecked}`, 'Purchase Rate - Discount does not give Final Rate - the Discount column is not an amount here');
+  if (discChecked && discBest / discChecked < 0.9) {
+    fail(null, 'Layout', `${discBest}/${discChecked}`, 'Purchase Rate and Discount do not give Final Rate, read as an amount, a percentage or an Excel percentage - the Discount column is not where this importer expects');
     ok = false;
   }
   return ok;
@@ -1063,18 +1357,29 @@ function derivedTotals(items) {
   }, { qty: 0, before: 0, gst: 0, net: 0 });
 }
 
+const totalsAgree = (got, qty, taxable) => Math.abs(got.qty - qty) <= Math.max(0.01, qty * 0.005)
+  && Math.abs(got.before - taxable) <= Math.max(1, taxable * 0.01);
+
+/* status -> the report bucket it is counted in */
+const BUCKETS = {
+  'no-number': 'noNumber', 'no-header': 'noHeader', ambiguous: 'ambiguous', invalid: 'invalid',
+  'no-supplier-code': 'noSupplierCode', 'supplier-mismatch': 'supplierMismatch', mismatch: 'mismatched',
+  conflict: 'conflicts', 'has-other-rows': 'hasOtherRows', 'duplicate-file': 'duplicateFiles',
+};
+
 async function runFolder() {
   const F = {
     startedAt: new Date().toISOString(), mode: APPLY ? 'apply' : 'dry-run', dir: DIR,
-    fileFilter: FILE_FILTER || '', noStock: NO_STOCK, force: FORCE,
-    files: { scanned: 0, recognised: 0, notGrcItemFiles: [], filtered: 0 },
-    grc: { ready: 0, imported: 0, unchanged: 0, noHeader: [], ambiguousHeader: [], mismatched: [],
-      supplierMismatch: [], invalid: [], conflicts: [], failed: [] },
-    items: { detected: 0, created: 0, updated: 0, unchanged: 0, failed: 0 },
+    fileFilter: FILE_FILTER || '', grcFilter: GRC_FILTER || '', noStock: NO_STOCK, force: FORCE,
+    files: { scanned: 0, filtered: 0, recognised: 0, notGrcItemFiles: [] },
+    grc: { ready: 0, reimport: 0, imported: 0, unchanged: 0, failed: [],
+      ...Object.fromEntries(Object.values(BUCKETS).map((b) => [b, []])) },
+    items: { detected: 0, created: 0, updated: 0, unchanged: 0, locked: 0, failed: 0 },
     summary: { compared: 0, agreed: 0, mismatched: [] },
     suppliers: { matched: 0, unmatched: 0 },
     itemMaster: { matchedNames: [], unmatchedNames: [] },
     duplicates: { withinFiles: 0, acrossFiles: [], alreadyOnAnotherGrc: [] },
+    suggestions: [],
     invalidPrices: 0,
     images: { matched: 0, missing: 0 },
     perGrc: [],
@@ -1088,9 +1393,16 @@ async function runFolder() {
   /* ---- 1. discover and parse -------------------------------------------- */
   const all = readdirSync(DIR).filter((f) => /\.xlsx?$/i.test(f) && !f.startsWith('~$')).sort();
   F.files.scanned = all.length;
-  const files = FILE_FILTER ? all.filter((f) => f.toLowerCase().includes(FILE_FILTER.toLowerCase())) : all;
+  /* Real file names contain commas ("KUNJ Sarees, 05066.xlsx"), so the whole
+     value is tried first: if some file's name contains it, it is ONE filter.
+     Only a value no file name contains is split on commas into several. */
+  const wholeFilter = text(FILE_FILTER).toLowerCase();
+  const fileWanted = wholeFilter && all.some((f) => f.toLowerCase().includes(wholeFilter))
+    ? [wholeFilter]
+    : listArg(FILE_FILTER).map((s) => s.toLowerCase());
+  const files = fileWanted.length ? all.filter((f) => fileWanted.some((s) => f.toLowerCase().includes(s))) : all;
   F.files.filtered = files.length;
-  if (FILE_FILTER) console.log(`filter   : "${FILE_FILTER}" -> ${files.length} of ${all.length} file(s)`);
+  if (fileWanted.length) console.log(`filter   : --file "${FILE_FILTER}" -> ${files.length} of ${all.length} file(s)`);
 
   const books = [];
   for (const file of files) {
@@ -1099,40 +1411,59 @@ async function runFolder() {
       F.errors.push({ file, sheet: '', row: '', grc: '', item: '', field: 'Workbook', value: '', reason: 'cannot be read: ' + e.message });
       continue;
     }
-    if (!w.recognised) {
-      F.files.notGrcItemFiles.push({ file, sheets: w.otherSheets });
-      continue;
-    }
+    if (!w.recognised) { F.files.notGrcItemFiles.push({ file, sheets: w.otherSheets }); continue; }
     F.files.recognised += 1;
-    F.items.detected += w.items.length;
     books.push(w);
   }
 
-  /* ---- 2. validate ------------------------------------------------------ */
-  for (const w of books) {
-    w.valid = validateFolderWorkbook(w, F);
-    F.invalidPrices += w.items.filter((it) => purchasePriceError(it.rawPurchaseRate)).length;
-    F.duplicates.withinFiles += w.items.length - new Set(w.items.map((it) => normBarcode(it.code))).size;
-  }
-
-  /* ---- 3. the database: headers, suppliers, existing barcodes, items ---- */
+  /* ---- 2. the database: headers, suppliers, rows ------------------------ */
   await mongoose.connect(URI);
   const db = mongoose.connection.db;
   const grcColl = db.collection('grc');
   const bcColl = db.collection('barcodeLabel');
 
-  const numbers = [...new Set(books.map((w) => w.grcNumber).filter(Boolean))];
-  const headers = await grcColl.find({ grcNumber: { $in: numbers } }).toArray();
-  const supplierIds = [...new Set(headers.map((h) => h.supplierId).filter(Boolean).map(String))];
-  const suppliers = await db.collection('contact')
-    .find({ _id: { $in: supplierIds.map((id) => new mongoose.Types.ObjectId(id)) } })
+  /* every GRC header - a small collection, and the no-number suggestions
+     need the empty ones too */
+  const allHeaders = await grcColl.find({}).project({ items: 0, voucherRows: 0 }).toArray();
+  const headersOf = (number) => allHeaders.filter((h) => grcNumberForBarcode(h.grcNumber) === number);
+
+  /* each file's GRC: the candidate that is a GRC here */
+  const grcWanted = listArg(GRC_FILTER).map(grcNumberForBarcode);
+  for (const w of books) {
+    const known = w.grcCandidates.filter((n) => headersOf(n).length);
+    w.grcNumber = known[0] || w.grcCandidates[0] || '';
+    w.namesSeveralGrcs = known.length > 1 ? known : null;
+  }
+  const inScope = grcWanted.length ? books.filter((w) => grcWanted.includes(w.grcNumber)) : books;
+  if (grcWanted.length) console.log(`filter   : --grc ${grcWanted.join(', ')} -> ${inScope.length} of ${books.length} file(s)`);
+
+  for (const w of inScope) {
+    w.valid = validateFolderWorkbook(w, F);
+    F.items.detected += w.items.length;
+    F.invalidPrices += w.items.filter((it) => purchasePriceError(it.rawPurchaseRate)).length;
+    F.duplicates.withinFiles += w.items.length - new Set(w.items.map((it) => normBarcode(it.code))).size;
+  }
+
+  const supplierIds = [...new Set(allHeaders.map((h) => h.supplierId).filter(Boolean).map(String))];
+  const suppliers = await db.collection(contactCollection('Supplier'))
+    .find({ _id: { $in: supplierIds.filter((id) => mongoose.Types.ObjectId.isValid(id)).map((id) => new mongoose.Types.ObjectId(id)) } })
     .project({ contactId: 1, businessName: 1, firstName: 1, lastName: 1 }).toArray();
   const supplierById = new Map(suppliers.map((s) => [String(s._id), s]));
+  const supplierNameOf = (s) => (s ? text(s.businessName) || [s.firstName, s.lastName].filter(Boolean).join(' ') : '');
 
-  const allCodes = books.flatMap((w) => w.items.map((it) => it.code));
-  const existingRows = allCodes.length
-    ? await bcColl.find({ $or: [{ barcodeNo: { $in: allCodes } }, { barcodeGenerated: { $in: allCodes } }] })
-      .project({ barcodeNo: 1, barcodeGenerated: 1, grcId: 1, grcNo: 1, businessId: 1 }).toArray()
+  /* how many rows each GRC holds, and what they are */
+  const rowsByGrc = new Map();
+  (await bcColl.aggregate([
+    { $match: { grcId: { $in: allHeaders.map((h) => String(h._id)) } } },
+    { $group: { _id: '$grcId', codes: { $push: '$barcodeNo' } } },
+  ]).toArray()).forEach((g) => rowsByGrc.set(String(g._id), g.codes.map(normBarcode)));
+
+  /* a Code already used as a barcode anywhere else */
+  const allCodes = inScope.flatMap((w) => w.items.map((it) => it.code));
+  const codeHolders = allCodes.length
+    ? await bcColl.find({ $or: [{ barcodeNo: { $in: allCodes } }, { barcodeGenerated: { $in: allCodes } }] },
+      { collation: CASE_INSENSITIVE })
+      .project({ barcodeNo: 1, barcodeGenerated: 1, grcId: 1, grcNo: 1 }).toArray()
     : [];
 
   /* Item master: the workbook's Name is an item CODE (15-SA-PURE, SRB) -
@@ -1140,69 +1471,113 @@ async function runFolder() {
   const itemMaster = await db.collection('item').find({ itemCode: { $nin: ['', null] } })
     .project({ itemCode: 1, name: 1, businessId: 1 }).toArray();
   const itemByCode = new Map(itemMaster.map((i) => [text(i.itemCode).toUpperCase(), i]));
-  const names = [...new Set(books.flatMap((w) => w.items.map((it) => it.name)).filter(Boolean))];
+  const names = [...new Set(inScope.flatMap((w) => w.items.map((it) => it.name)).filter(Boolean))];
   F.itemMaster.matchedNames = names.filter((n) => itemByCode.has(n.toUpperCase()));
   F.itemMaster.unmatchedNames = names.filter((n) => !itemByCode.has(n.toUpperCase()));
-
   const imageIndex = buildImageIndex();
 
-  /* ---- 4. decide, per GRC ------------------------------------------------ */
-  const plans = [];
-  for (const w of books) {
-    const plan = { w, status: 'ready', reasons: [] };
-    const hs = headers.filter((h) => h.grcNumber === w.grcNumber);
-    if (!w.valid) { plan.status = 'invalid'; plan.reasons.push('the file has invalid rows (see errors)'); }
-    if (!hs.length) { plan.status = 'no-header'; plan.reasons.push(`GRC ${w.grcNumber} has no header in the database`); }
-    else if (hs.length > 1) { plan.status = 'ambiguous'; plan.reasons.push(`GRC ${w.grcNumber} has ${hs.length} headers (different years or businesses)`); }
-    plan.header = hs.length === 1 ? hs[0] : null;
+  /* The GRCs a file's supplier and totals actually agree with, other than
+     `except`. Never acted on - named in the report, so a person renames the
+     file. A GRC that already holds exactly this file's barcodes is where the
+     file was imported before. */
+  const namePlan = (plan, got, except) => {
+    const { w } = plan;
+    const mine = new Set(w.items.map((it) => normBarcode(it.code)));
+    allHeaders
+      .filter((h) => String(h._id) !== String(except || '')
+        && totalsAgree(got, Number(h.totalQuantity) || 0, Number(h.taxable) || 0)
+        && supplierAgrees(w.supplierName, supplierNameOf(supplierById.get(String(h.supplierId)))))
+      .forEach((h) => {
+        const s = supplierById.get(String(h.supplierId));
+        const held = rowsByGrc.get(String(h._id)) || [];
+        const already = held.length > 0 && held.length === mine.size && held.every((code) => mine.has(code));
+        const kind = already ? 'already-imported' : held.length ? 'holds-other-rows' : 'empty';
+        F.suggestions.push({ file: w.file, grc: h.grcNumber, supplier: `${text(s?.contactId)} ${supplierNameOf(s)}`.trim(), kind });
+        const no = grcNumberForBarcode(h.grcNumber);
+        plan.reasons.push(kind === 'already-imported'
+          ? `already imported as GRC ${no}: that GRC's supplier and totals agree and it holds exactly this file's ${held.length} barcode(s)`
+          : kind === 'empty'
+            ? `looks like GRC ${no}: its supplier and totals agree and it has no barcodes yet - rename the file with (${no})`
+            : `GRC ${no}'s supplier and totals agree, but it already holds ${held.length} other barcode(s)`);
+      });
+  };
 
-    if (plan.header) {
-      const h = plan.header;
-      /* supplier: the header's own, checked against the file name */
-      const s = h.supplierId ? supplierById.get(String(h.supplierId)) : null;
-      const sName = s ? (text(s.businessName) || [s.firstName, s.lastName].filter(Boolean).join(' ')) : '';
-      plan.supplier = s ? `${s.contactId} ${sName}` : '';
-      const fileWords = words(w.supplierName);
-      const supplierWords = new Set(words(sName));
-      const agrees = s && fileWords.length && fileWords.every((x) => supplierWords.has(x));
-      if (agrees) F.suppliers.matched += 1;
-      else {
-        F.suppliers.unmatched += 1;
-        plan.reasons.push(`file supplier "${w.supplierName}" is not the GRC's supplier "${sName || '(none)'}"`);
-        if (!FORCE && plan.status === 'ready') plan.status = 'supplier-mismatch';
-      }
+  /* ---- 3. decide, per file - the first check that fails is the status -- */
+  const plans = inScope.map((w) => {
+    const plan = { w, status: 'ready', reasons: [], header: null, supplier: '', supplierCode: '', totals: null, existing: 0 };
+    const set = (status, reason) => { plan.reasons.push(reason); if (plan.status === 'ready') plan.status = status; };
+    const valid = w.items.filter((it) => !it.invalid);
+    const got = derivedTotals(valid);
 
-      /* totals: the file must be THIS GRC's item detail */
-      const valid = w.items.filter((it) => !it.invalid);
-      const got = derivedTotals(valid);
-      const hq = Number(h.totalQuantity) || 0;
-      const ht = Number(h.taxable) || 0;
-      plan.totals = { header: { qty: hq, taxable: ht }, file: { qty: r2(got.qty), before: r2(got.before), gst: r2(got.gst), net: r2(got.net) } };
-      const qtyOk = Math.abs(got.qty - hq) <= Math.max(0.01, hq * 0.005);
-      const taxOk = Math.abs(got.before - ht) <= Math.max(1, ht * 0.01);
-      if (!(qtyOk && taxOk)) {
-        plan.reasons.push(`file totals qty ${r2(got.qty)} / before-GST ${r2(got.before)} do not reconcile with GRC header qty ${hq} / taxable ${ht}`);
-        if (!FORCE && plan.status === 'ready') plan.status = 'mismatch';
-      } else if (Math.abs(got.before - ht) > 1) {
-        F.warnings.push(`GRC ${w.grcNumber}: before-GST ${r2(got.before)} vs header taxable ${ht} (within tolerance)`);
-      }
+    if (!w.grcNumber) {
+      set('no-number', 'the file name carries no GRC number, e.g. "Supplier(05074).xlsx"');
+      namePlan(plan, got, null);
+      return plan;
+    }
+    const hs = headersOf(w.grcNumber);
+    if (!hs.length) {
+      set('no-header', `GRC ${w.grcNumber} has no header in the database`);
+      namePlan(plan, got, null);
+      return plan;
+    }
+    if (hs.length > 1) { set('ambiguous', `GRC ${w.grcNumber} has ${hs.length} headers (different years or businesses)`); return plan; }
+    if (w.namesSeveralGrcs) { set('ambiguous', `the file name names several GRCs that exist: ${w.namesSeveralGrcs.join(', ')}`); }
+    const h = hs[0];
+    plan.header = h;
 
-      /* barcodes already on ANOTHER GRC - never moved or duplicated */
-      const mine = new Set(w.items.map((it) => normBarcode(it.code)));
-      const elsewhere = existingRows.filter((e) => (mine.has(normBarcode(e.barcodeNo)) || mine.has(normBarcode(e.barcodeGenerated)))
-        && String(e.grcId || '') !== String(h._id));
-      if (elsewhere.length) {
-        F.duplicates.alreadyOnAnotherGrc.push({ grc: w.grcNumber, barcodes: elsewhere.map((e) => `${e.barcodeNo} (GRC ${e.grcNo || e.grcId || 'none'})`) });
-        plan.reasons.push(`${elsewhere.length} barcode(s) already belong to another GRC or to no GRC`);
-        if (plan.status === 'ready') plan.status = 'conflict';
-      }
+    if (!w.valid) set('invalid', 'the file has invalid rows (see errors)');
+
+    const s = h.supplierId ? supplierById.get(String(h.supplierId)) : null;
+    const sName = supplierNameOf(s);
+    plan.supplier = s ? `${text(s.contactId)} ${sName}` : '';
+    plan.supplierCode = text(s?.contactId);
+    const valueProblem = barcodeValueProblem({ supplierCode: plan.supplierCode, grcNumber: h.grcNumber });
+    if (valueProblem) set('no-supplier-code', valueProblem);
+
+    if (supplierAgrees(w.supplierName, sName)) F.suppliers.matched += 1;
+    else {
+      F.suppliers.unmatched += 1;
+      const reason = `file supplier "${w.supplierName || '(none)'}" is not the GRC's supplier "${sName || '(none)'}"`;
+      if (FORCE) plan.reasons.push(reason + ' (forced)'); else set('supplier-mismatch', reason);
+    }
+
+    const hq = Number(h.totalQuantity) || 0;
+    const ht = Number(h.taxable) || 0;
+    plan.totals = { header: { qty: hq, taxable: ht }, file: { qty: r2(got.qty), before: r2(got.before), gst: r2(got.gst), net: r2(got.net) } };
+    if (!totalsAgree(got, hq, ht)) {
+      const reason = `file totals qty ${r2(got.qty)} / before-GST ${r2(got.before)} do not reconcile with GRC header qty ${hq} / taxable ${ht}`;
+      if (FORCE) plan.reasons.push(reason + ' (forced)'); else set('mismatch', reason);
+    } else if (Math.abs(got.before - ht) > 1) {
+      F.warnings.push(`GRC ${w.grcNumber}: before-GST ${r2(got.before)} vs header taxable ${ht} (within tolerance)`);
+    }
+    /* named for the wrong GRC? say which one the file really is */
+    if (!totalsAgree(got, hq, ht) || !supplierAgrees(w.supplierName, sName)) namePlan(plan, got, h._id);
+
+    /* a Code that is already another GRC's barcode - or no GRC's */
+    const mine = new Set(w.items.map((it) => normBarcode(it.code)));
+    const elsewhere = codeHolders.filter((e) => (mine.has(normBarcode(e.barcodeNo)) || mine.has(normBarcode(e.barcodeGenerated)))
+      && String(e.grcId || '') !== String(h._id));
+    if (elsewhere.length) {
+      F.duplicates.alreadyOnAnotherGrc.push({ grc: w.grcNumber, barcodes: elsewhere.map((e) => `${e.barcodeNo} (GRC ${e.grcNo || e.grcId || 'none'})`) });
+      set('conflict', `${elsewhere.length} barcode(s) already belong to another GRC, a deleted GRC or no GRC`);
+    }
+
+    /* what the GRC already holds */
+    const held = rowsByGrc.get(String(h._id)) || [];
+    plan.existing = held.length;
+    const foreign = held.filter((code) => !mine.has(code));
+    if (foreign.length) {
+      set('has-other-rows', `GRC ${w.grcNumber} already holds ${held.length} barcode(s), ${foreign.length} of them not in this file (e.g. ${foreign.slice(0, 3).join(', ')}) - filling it would mix them`);
+    } else if (held.length) {
+      plan.reasons.push(REFRESH
+        ? `re-import (--refresh): the ${held.length} barcode(s) this GRC already holds are this file's and are reset from it`
+        : `re-import: the ${held.length} barcode(s) this GRC already holds are this file's - kept as they are, only a missing SEQ or display value is filled`);
     }
 
     /* the file's own Item Summary vs what the screen will derive */
     if (w.summary.length) {
       F.summary.compared += 1;
-      const want = w.summary.reduce((a, s) => ({ qty: a.qty + s.qty, before: a.before + s.before, net: a.net + s.net }), { qty: 0, before: 0, net: 0 });
-      const got = derivedTotals(w.items.filter((it) => !it.invalid));
+      const want = w.summary.reduce((a, x) => ({ qty: a.qty + x.qty, before: a.before + x.before, net: a.net + x.net }), { qty: 0, before: 0, net: 0 });
       const off = (a, b) => Math.abs(a - b) > Math.max(1, Math.abs(b) * 0.001);
       if (off(got.qty, want.qty) || off(got.before, want.before) || off(got.net, want.net)) {
         F.summary.mismatched.push({ grc: w.grcNumber, file: w.file,
@@ -1210,10 +1585,25 @@ async function runFolder() {
           items: { qty: r2(got.qty), before: r2(got.before), net: r2(got.net) } });
       } else F.summary.agreed += 1;
     }
-    plans.push(plan);
-  }
+    return plan;
+  });
 
-  /* the same barcode in two files that are both about to be imported */
+  /* several files for one GRC - a copy or a re-export; neither is chosen */
+  const byHeader = new Map();
+  plans.filter((p) => p.status === 'ready').forEach((p) => {
+    const k = String(p.header._id);
+    if (!byHeader.has(k)) byHeader.set(k, []);
+    byHeader.get(k).push(p);
+  });
+  byHeader.forEach((list) => {
+    if (list.length < 2) return;
+    list.forEach((p) => {
+      p.status = 'duplicate-file';
+      p.reasons.push(`GRC ${p.w.grcNumber} has ${list.length} files here: ${list.map((x) => `${x.w.file} (${x.w.items.length} items)`).join('; ')} - name one with --file`);
+    });
+  });
+
+  /* the same Code in two files about to be imported for different GRCs */
   const owner = new Map();
   plans.filter((p) => p.status === 'ready').forEach((p) => p.w.items.forEach((it) => {
     const k = normBarcode(it.code);
@@ -1223,17 +1613,18 @@ async function runFolder() {
   owner.forEach((set, code) => {
     if (set.size < 2) return;
     F.duplicates.acrossFiles.push({ barcode: code, files: [...set].map((p) => p.w.file) });
-    set.forEach((p) => { p.status = 'conflict'; p.reasons.push(`barcode ${code} is also in another file`); });
+    set.forEach((p) => { if (p.status === 'ready') p.status = 'conflict'; p.reasons.push(`barcode ${code} is also in another file`); });
   });
 
   plans.forEach((p) => {
-    const bucket = { 'no-header': 'noHeader', ambiguous: 'ambiguousHeader', mismatch: 'mismatched',
-      'supplier-mismatch': 'supplierMismatch', invalid: 'invalid', conflict: 'conflicts' }[p.status];
-    if (p.status === 'ready') F.grc.ready += 1;
-    else F.grc[bucket].push({ grc: p.w.grcNumber, file: p.w.file, reasons: p.reasons });
+    if (p.status === 'ready') {
+      F.grc.ready += 1;
+      if (p.existing) F.grc.reimport += 1;
+    } else F.grc[BUCKETS[p.status]].push({ grc: p.w.grcNumber, file: p.w.file, reasons: p.reasons });
     F.perGrc.push({
       grc: p.w.grcNumber, file: p.w.file, sheet: p.w.sheet, status: p.status, items: p.w.items.length,
-      supplier: p.supplier || '', totals: p.totals || null, reasons: p.reasons,
+      existingRows: p.existing, supplier: p.supplier, discountReading: p.w.discountReading || '',
+      totals: p.totals, reasons: p.reasons,
     });
   });
 
@@ -1246,7 +1637,7 @@ async function runFolder() {
     return;
   }
 
-  /* ---- 5. write, one transaction per GRC --------------------------------- */
+  /* ---- 4. write, one transaction per GRC --------------------------------- */
   const client = mongoose.connection.getClient();
   for (const p of plans.filter((x) => x.status === 'ready')) {
     try {
@@ -1254,10 +1645,11 @@ async function runFolder() {
       F.items.created += counts.created;
       F.items.updated += counts.updated;
       F.items.unchanged += counts.unchanged;
+      F.items.locked += counts.locked;
       F.images.matched += counts.images;
-      F.images.missing += counts.created + counts.updated + counts.unchanged - counts.images;
+      F.images.missing += counts.created + counts.updated + counts.unchanged + counts.locked - counts.images;
       if (counts.created || counts.updated) F.grc.imported += 1; else F.grc.unchanged += 1;
-      console.log(`  GRC ${p.w.grcNumber}: ${counts.created} created, ${counts.updated} updated, ${counts.unchanged} unchanged`);
+      console.log(`  GRC ${p.w.grcNumber}: ${counts.created} created, ${counts.updated} updated, ${counts.unchanged} unchanged, ${counts.locked} locked (moved)`);
     } catch (e) {
       F.items.failed += p.w.items.length;
       F.grc.failed.push({ grc: p.w.grcNumber, file: p.w.file, reason: e.message });
@@ -1267,7 +1659,7 @@ async function runFolder() {
 
   console.log('\n=================== FOLDER IMPORT COMPLETED ===================');
   console.log(`GRCs      : ${F.grc.imported} filled, ${F.grc.unchanged} already up to date, ${F.grc.failed.length} failed`);
-  console.log(`Items     : ${F.items.created} created, ${F.items.updated} updated, ${F.items.unchanged} unchanged, ${F.items.failed} failed`);
+  console.log(`Items     : ${F.items.created} created, ${F.items.updated} updated, ${F.items.unchanged} unchanged, ${F.items.locked} locked, ${F.items.failed} failed`);
   console.log(`Images    : ${F.images.matched} linked`);
   console.log(`Stock     : ${NO_STOCK ? 'NO (--no-stock)' : F.items.created + ' new units, with GRC_IN ledger entries'}`);
   writeFolderReport(F);
@@ -1275,9 +1667,9 @@ async function runFolder() {
 }
 
 /* Writes one GRC's barcode rows - and a GRC_IN ledger entry for each NEW
-   one, exactly as the workbook flow does - inside ONE transaction, so a
-   failure leaves the GRC as it was rather than half filled. The callback may
-   be retried by the driver, so the counts are rebuilt on every attempt. */
+   unit - inside ONE transaction, so a failure leaves the GRC as it was rather
+   than half filled. The callback may be retried by the driver, so everything
+   it decides is decided again on every attempt. */
 async function importFolderGrc(db, client, plan, { itemByCode, imageIndex }) {
   const { w, header: h } = plan;
   const bcColl = db.collection('barcodeLabel');
@@ -1287,30 +1679,69 @@ async function importFolderGrc(db, client, plan, { itemByCode, imageIndex }) {
   let counts;
   try {
     await session.withTransaction(async () => {
-      counts = { created: 0, updated: 0, unchanged: 0, images: 0 };
+      counts = { created: 0, updated: 0, unchanged: 0, locked: 0, images: 0 };
+
+      /* The lock first: its write makes a concurrent import of ANY GRC
+         conflict with this one, and the driver retries the loser on a fresh
+         snapshot - which is what lets the re-checks below see rows another
+         import committed a moment ago. Without it, two inserts of the same
+         Code into two different GRCs never conflict at all. */
+      await db.collection('counter').updateOne(
+        { key: IMPORT_LOCK_KEY },
+        { $inc: { seq: 1 }, $set: { updatedAt: new Date() }, $setOnInsert: { createdAt: new Date() } },
+        { upsert: true, session },
+      );
+
+      /* every check that decides what is written is repeated here, against
+         what the database holds at the moment of writing, not at planning */
+      const codes = w.items.map((it) => text(it.code));
+      const heldElsewhere = await bcColl.find(
+        { grcId: { $ne: grcId }, $or: [{ barcodeNo: { $in: codes } }, { barcodeGenerated: { $in: codes } }] },
+        { session, collation: CASE_INSENSITIVE, projection: { barcodeNo: 1, grcNo: 1 } },
+      ).limit(5).toArray();
+      if (heldElsewhere.length) {
+        throw new Error(`barcode ${heldElsewhere.map((u) => `${u.barcodeNo} (GRC ${u.grcNo || 'none'})`).join(', ')} now belongs to another GRC - nothing written`);
+      }
+      const existing = await bcColl.find({ grcId }, { session }).toArray();
+      const mine = new Set(codes.map(normBarcode));
+      const foreign = existing.filter((u) => !mine.has(normBarcode(u.barcodeNo)));
+      if (foreign.length) throw new Error(`GRC ${w.grcNumber} now holds ${foreign.length} barcode(s) this file does not list - nothing written`);
+      const byCode = new Map(existing.map((u) => [normBarcode(u.barcodeNo), u]));
+      const current = await db.collection('grc').findOne({ _id: h._id }, { session, projection: { lastBarcodeSeq: 1 } });
+      const seqs = seqsForRows(w.items.map((it) => text(it.code)), existing, current?.lastBarcodeSeq);
+
       for (const [index, it] of w.items.entries()) {
-        const barcodeNo = it.code;
+        const found = byCode.get(normBarcode(it.code)) || null;
+        /* an existing unit keeps the number it is stored, scanned and printed
+           under, even if the file writes it in another case */
+        const barcodeNo = found ? found.barcodeNo : it.code;
+        const seq = seqs.get(text(it.code));
         const item = itemByCode.get(it.name.toUpperCase()) || null;
-        const image = imageIndex.get(normBarcode(barcodeNo));
+        const image = imageIndex.get(normBarcode(it.code));
         if (image) counts.images += 1;
 
-        /* the same field names the workbook flow writes, so both kinds of
-           import - and rows the app generates - read alike on every screen.
-           itemCode is the workbook's Name, which is the item code, as on a
-           row the Barcode Generation screen writes. */
+        if (found && hasMoved(found)) { counts.locked += 1; continue; }
+
+        /* '' when the row has no Bill Sl No. - never written over a value */
+        const value = composeBarcodeValue({ supplierCode: plan.supplierCode, grcNumber: h.grcNumber, serialNo: seq, billSlNo: it.slNo });
+
+        /* the fields a re-import may correct - the same names the workbook
+           flow and the Barcode Generation screen write */
         const row = {
           grcId,
           grcNo: h.grcNumber,
           supplierId: h.supplierId ? String(h.supplierId) : '',
           barcodeNo,
-          barcodeGenerated: barcodeNo,
+          barcodeGenerated: value,
+          seq: String(seq),
           itemId: item ? item._id : null,
           itemCode: it.name,
           itemName: item ? text(item.name) || it.name : it.name,
           printDescription: it.name,
           supplierDescription: it.name,
           billSlNo: it.slNo,
-          serialNo: it.slNo,
+          /* the value's fourth part, never a copy of the Bill Sl No. */
+          serialNo: value ? String(seq) : '',
           hsn: it.hsn,
           gst: String(it.gstPct),
           uom: it.uom,
@@ -1335,23 +1766,41 @@ async function importFolderGrc(db, client, plan, { itemByCode, imageIndex }) {
           },
           businessId: h.businessId ? String(h.businessId) : '',
           locationId: h.locationId ? String(h.locationId) : '',
-          currentBusinessId: h.businessId || null,
-          currentLocationId: h.locationId || null,
           finYear: h.finYear || '',
           importedFrom: 'purchase_excels',
           /* provenance: where this row came from, to the cell */
           importSource: { file: w.file, sheet: w.sheet, row: it.excelRow },
         };
 
-        const found = await bcColl.findOne({ grcId, barcodeNo }, { session });
         if (found) {
-          /* compare everything but the timestamps - a re-run that changes
-             nothing writes nothing */
-          const same = Object.entries(row).every(([k, v]) => JSON.stringify(found[k] ?? null) === JSON.stringify(v ?? null));
-          if (same) { counts.unchanged += 1; continue; }
-          /* stock state is the inventory engine's once a unit exists - a
-             re-import corrects the commercial fields, never the status */
-          await bcColl.updateOne({ _id: found._id }, { $set: { ...row, updatedAt: new Date() } }, { session });
+          let set;
+          if (REFRESH) {
+            /* reset from the file - only the fields that actually differ. A
+               file row that makes no value leaves the stored value and its
+               serial alone: '' is never written over a barcodeGenerated. */
+            const { barcodeGenerated: _value, serialNo: _serialNo, ...withoutValue } = row;
+            set = Object.fromEntries(Object.entries(value ? row : withoutValue)
+              .filter(([k, v]) => JSON.stringify(found[k] ?? null) !== JSON.stringify(v ?? null)));
+          } else {
+            /* fill only what the row lacks. The display value is made from the
+               row's OWN SEQ and its OWN stored Bill Sl No. - not the
+               file's - so it describes the unit as it is now. */
+            set = {};
+            if (!text(found.seq)) set.seq = String(seq);
+            const display = text(found.barcodeGenerated);
+            if (!display || normBarcode(display) === normBarcode(found.barcodeNo)) {
+              const serialNo = text(found.seq) || String(seq);
+              const filled = composeBarcodeValue({ supplierCode: plan.supplierCode, grcNumber: h.grcNumber, serialNo, billSlNo: found.billSlNo });
+              if (filled) {
+                set.barcodeGenerated = filled;
+                if (text(found.serialNo) !== serialNo) set.serialNo = serialNo;
+              }
+            }
+          }
+          if (!Object.keys(set).length) { counts.unchanged += 1; continue; }
+          /* stock state and position are never in `set`; the filter repeats
+             barcodeNo so the row cannot have been re-numbered underneath us */
+          await bcColl.updateOne({ _id: found._id, barcodeNo: found.barcodeNo }, { $set: { ...set, updatedAt: new Date() } }, { session });
           counts.updated += 1;
           continue;
         }
@@ -1362,7 +1811,11 @@ async function importFolderGrc(db, client, plan, { itemByCode, imageIndex }) {
         const at = new Date((h.grcDate ? new Date(h.grcDate).getTime() : Date.now()) + index);
         const res = await bcColl.insertOne({
           ...row,
+          currentBusinessId: h.businessId || null,
+          currentLocationId: h.locationId || null,
           status: NO_STOCK ? 'VOID' : 'IN_STOCK',
+          /* VOID because it was never stock, not because it left - see hasMoved */
+          ...(NO_STOCK ? { importedWithoutStock: true } : {}),
           createdAt: at,
           updatedAt: new Date(),
         }, { session });
@@ -1384,6 +1837,12 @@ async function importFolderGrc(db, client, plan, { itemByCode, imageIndex }) {
           }, { session });
         }
       }
+
+      /* the highest SEQ this GRC has given, so the Barcode Generation screen
+         counts on from it (lib/barcodeValue.js nextSeqStart) */
+      if (seqs.size) {
+        await db.collection('grc').updateOne({ _id: h._id }, { $max: { lastBarcodeSeq: Math.max(...seqs.values()) } }, { session });
+      }
     });
   } finally {
     await session.endSession();
@@ -1399,27 +1858,32 @@ function printFolderReport(F, plans) {
   console.log(`GRC item files identified: ${F.files.recognised}`);
   if (F.files.notGrcItemFiles.length) console.log(`Not GRC item files       : ${F.files.notGrcItemFiles.map((n) => n.file).join(', ')}`);
   console.log(`Items detected           : ${F.items.detected}`);
-  console.log('\nPER GRC');
+  console.log('\nPER FILE');
   plans.forEach((p) => {
     const t = p.totals;
-    console.log(`  ${p.w.grcNumber}  ${p.status.toUpperCase().padEnd(17)} ${String(p.w.items.length).padStart(4)} items  ${p.w.sheet.padEnd(26)} ${p.w.file}`);
+    const label = p.status === 'ready' && p.existing ? 'READY (RE-IMPORT)' : p.status.toUpperCase();
+    console.log(`  ${(p.w.grcNumber || '-----').padEnd(6)} ${label.padEnd(18)} ${String(p.w.items.length).padStart(4)} items  ${String(p.w.sheet).padEnd(26)} ${p.w.file}`);
     if (t) console.log(`         header qty ${t.header.qty} taxable ${t.header.taxable}  |  file qty ${t.file.qty} before-GST ${t.file.before}  |  supplier ${p.supplier || '(none)'}`);
     p.reasons.forEach((r) => console.log(`         - ${r}`));
   });
   console.log('\nGRC records');
-  console.log(`  ready to fill          : ${F.grc.ready}`);
+  console.log(`  ready to write         : ${F.grc.ready}${F.grc.reimport ? ` (${F.grc.reimport} of them re-imports)` : ''}`);
+  console.log(`  no GRC number in name  : ${F.grc.noNumber.length}${F.suggestions.length ? ` (${F.suggestions.length} with a matching GRC named)` : ''}`);
   console.log(`  no header in database  : ${F.grc.noHeader.length}`);
-  console.log(`  ambiguous header       : ${F.grc.ambiguousHeader.length}`);
-  console.log(`  totals do not reconcile: ${F.grc.mismatched.length}`);
-  console.log(`  supplier mismatch      : ${F.grc.supplierMismatch.length}`);
+  console.log(`  ambiguous              : ${F.grc.ambiguous.length}`);
   console.log(`  invalid rows           : ${F.grc.invalid.length}`);
+  console.log(`  supplier has no code   : ${F.grc.noSupplierCode.length}`);
+  console.log(`  supplier mismatch      : ${F.grc.supplierMismatch.length}`);
+  console.log(`  totals do not reconcile: ${F.grc.mismatched.length}`);
   console.log(`  barcode conflicts      : ${F.grc.conflicts.length}`);
+  console.log(`  GRC holds other rows   : ${F.grc.hasOtherRows.length}`);
+  console.log(`  several files per GRC  : ${F.grc.duplicateFiles.length}`);
   console.log('Supplier matches');
   console.log(`  matched                : ${F.suppliers.matched}`);
   console.log(`  unmatched              : ${F.suppliers.unmatched}`);
   console.log('Item master matches (workbook Name = item code)');
   console.log(`  matched                : ${F.itemMaster.matchedNames.length}`);
-  console.log(`  unmatched              : ${F.itemMaster.unmatchedNames.length}${F.itemMaster.unmatchedNames.length ? '  (' + F.itemMaster.unmatchedNames.join(', ') + ')' : ''}`);
+  console.log(`  unmatched              : ${F.itemMaster.unmatchedNames.length}`);
   console.log('Item Summary (derived by the GRC screen - compared, not imported)');
   console.log(`  compared / agreed      : ${F.summary.compared} / ${F.summary.agreed}`);
   F.summary.mismatched.forEach((m) => console.log(`  MISMATCH ${m.grc}: file summary qty ${m.summary.qty} before ${m.summary.before} | items qty ${m.items.qty} before ${m.items.before}`));
@@ -1432,13 +1896,13 @@ function printFolderReport(F, plans) {
   F.errors.slice(0, 40).forEach((e) => console.log(`  File: ${e.file} | Sheet: ${e.sheet} | Row: ${e.row} | GRC: ${e.grc} | Item: ${e.item} | Field: ${e.field} | Value: ${e.value} | Reason: ${e.reason}`));
   if (F.errors.length > 40) console.log(`  ...and ${F.errors.length - 40} more (see the report file)`);
   console.log(`WARNINGS : ${F.warnings.length}`);
-  F.warnings.slice(0, 10).forEach((w) => console.log(`  ${w}`));
+  F.warnings.slice(0, 10).forEach((m) => console.log(`  ${m}`));
 }
 
 function writeFolderReport(F) {
   F.finishedAt = new Date().toISOString();
   /* its own file - grc-import-report.json is the workbook flow's record */
-  const file = path.join(ROOT, 'grc-excel-folder-report.json');
+  const file = REPORT_ARG ? path.resolve(ROOT, REPORT_ARG) : path.join(ROOT, 'grc-excel-folder-report.json');
   writeFileSync(file, JSON.stringify(F, null, 2));
   console.log(`\nreport written: ${file}`);
 }

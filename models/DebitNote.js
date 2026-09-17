@@ -12,7 +12,7 @@ const DebitNoteSchema = new mongoose.Schema(
     locationId: { type: mongoose.Schema.Types.ObjectId, ref: 'companyLocation', default: null, index: true },
     finYear: { type: String, default: '', index: true },
     vendorGstNo: { type: String, default: '' },
-    agentId: { type: mongoose.Schema.Types.ObjectId, ref: 'contact', default: null },
+    agentId: { type: mongoose.Schema.Types.ObjectId, ref: 'agent', default: null },
     logisticId: { type: mongoose.Schema.Types.ObjectId, ref: 'logistic', default: null },
     vendorInvoiceCopy: { type: String, default: '' },
     vendorWaybill: { type: String, default: '' },

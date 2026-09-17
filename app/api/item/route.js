@@ -5,6 +5,7 @@ import { BarcodeLabel } from '@/lib/barcodeLabel';
 import { requireSession } from '@/lib/session';
 import { resolveRefLabels } from '@/lib/refLabels';
 import { validate, escapeRegex } from '@/lib/validate';
+import { barcodeSearchPattern } from '@/lib/barcodeValue';
 import { FIELDS } from '@/app/admin/inventory/item/fields';
 
 /* /api/item - list + create. */
@@ -29,7 +30,9 @@ export async function GET(req) {
 
   if (search) {
     const rx = { $regex: escapeRegex(search), $options: 'i' };
-    const barcodeRows = await BarcodeLabel.find({ $or: [{ barcodeGenerated: rx }, { oldBarcode: rx }] }).select('itemCode imageUrl').limit(100).lean();
+    /* a barcode may be typed with or without the spaces around '*' */
+    const barcodeRx = { $regex: barcodeSearchPattern(search), $options: 'i' };
+    const barcodeRows = await BarcodeLabel.find({ $or: [{ barcodeGenerated: barcodeRx }, { oldBarcode: barcodeRx }] }).select('itemCode imageUrl').limit(100).lean();
     const barcodeCodes = barcodeRows.map((row) => row.itemCode).filter(Boolean);
     barcodeRows.forEach((row) => { if (row.itemCode && row.imageUrl) barcodeImageByCode[String(row.itemCode)] = row.imageUrl; });
     filter.$or = [{ name: rx }, { prefix: rx }, { itemCode: rx }, { ecommItemCode: rx }, { description: rx }];

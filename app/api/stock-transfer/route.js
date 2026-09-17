@@ -10,6 +10,7 @@ import { withLocationPairLock } from '@/lib/locks';
 import {
   withTransaction, loadUnits, despatchTransfer, InventoryError, shape,
 } from '@/lib/inventory';
+import { barcodeSearchPattern, unitAnswersTo } from '@/lib/barcodeValue';
 
 /* /api/stock-transfer - list + despatch.
 
@@ -62,8 +63,10 @@ export const GET = handler(async (req) => {
   const search = (sp.get('search') || '').trim();
   if (search) {
     const rx = { $regex: escapeRegex(search), $options: 'i' };
+    /* a barcode may be typed with or without the spaces around '*' */
+    const barcodeRx = { $regex: barcodeSearchPattern(search), $options: 'i' };
     filter.$and = [...(filter.$and || []), {
-      $or: [{ transferNo: rx }, { waybill: rx }, { 'lines.barcodeNo': rx }, { billingNo: rx }],
+      $or: [{ transferNo: rx }, { waybill: rx }, { 'lines.barcodeNo': barcodeRx }, { billingNo: rx }],
     }];
   }
 
@@ -131,8 +134,10 @@ export const POST = handler(async (req) => {
          browser holds was assembled scan by scan and may be seconds old. */
       const units = await loadUnits(codes, { businessId: business, session: dbSession });
 
+      /* a code may be any spelling the unit answers to - its own number, its
+         composed value, its old barcode */
       const missing = codes.filter(
-        (c) => !units.some((u) => u.barcodeNo === c || u.barcodeGenerated === c)
+        (c) => !units.some((u) => unitAnswersTo(u, c))
       );
       if (missing.length) {
         throw new InventoryError('BARCODE_NOT_FOUND',

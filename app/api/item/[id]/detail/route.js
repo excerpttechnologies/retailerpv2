@@ -130,9 +130,15 @@ export async function GET(req, { params }) {
       uom: uom ? uom.shortName || uom.name || '' : '',
       rsp: item.rsp ?? null,
       wsp: item.wsp ?? null,
-      markupRSP: item.rspOfferPercent ?? item.markupRSP ?? item.markupRsp ?? null,
-      markupWSP: item.wsp ?? item.markupWSP ?? item.markupWsp ?? null,
-      markupDP: item.offerPriceNetPrice ?? item.markupDP ?? item.markupDp ?? item.markupEcomm ?? item.markupEComm ?? null,
+      /* An item's OWN markup, when it has one; otherwise null and Barcode
+         Generation keeps the supplier's Price Calculation Setup value.
+         These used to fall back first to rspOfferPercent (an offer discount),
+         wsp (a price) and offerPriceNetPrice (a "Yes"/"No" flag - "No" on
+         almost every item), so picking an Item Code replaced the supplier's
+         Markup E-COMM % with a blank. */
+      markupRSP: item.markupRSP ?? item.markupRsp ?? null,
+      markupWSP: item.markupWSP ?? item.markupWsp ?? null,
+      markupDP: item.markupDP ?? item.markupDp ?? item.markupEcomm ?? item.markupEComm ?? null,
       slabs,
     },
   });

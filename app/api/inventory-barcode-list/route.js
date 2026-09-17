@@ -6,6 +6,7 @@ import { BarcodeLabel } from '@/lib/barcodeLabel';
 import { requireSession } from '@/lib/session';
 import { escapeRegex } from '@/lib/validate';
 import { imageUrl } from '@/lib/inventory';
+import { barcodeSearchPattern } from '@/lib/barcodeValue';
 
 /* /api/inventory-barcode-list - read-only list for Inventory > Barcode Item.
    Separate from /api/barcodeitem on purpose (that route/model is left
@@ -82,9 +83,12 @@ export async function GET(req) {
   const search = (sp.get('search') || '').trim();
   if (search) {
     const rx = { $regex: escapeRegex(search), $options: 'i' };
+    /* a barcode may be typed with or without the spaces around '*' */
+    const barcodeRx = { $regex: barcodeSearchPattern(search), $options: 'i' };
     filter.$or = [
-      { barcodeGenerated: rx },
-      { oldBarcode: rx },
+      { barcodeNo: barcodeRx },
+      { barcodeGenerated: barcodeRx },
+      { oldBarcode: barcodeRx },
       { itemCode: rx },
       { printDescription: rx },
       { supplierDescription: rx },

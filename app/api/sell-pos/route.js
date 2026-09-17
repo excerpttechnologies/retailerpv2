@@ -3,7 +3,7 @@ import dbConnect from '@/lib/db';
 import PosInvoice from '@/models/PosInvoice';
 import Business from '@/models/Business';
 import CompanyLocation from '@/models/CompanyLocation';
-import Contact from '@/models/Contact';
+import { Customer } from '@/lib/contacts';
 import PosCounter from '@/models/PosCounter';
 import StockAdjustment from '@/models/StockAdjustment';
 import { requireSession } from '@/lib/session';
@@ -11,8 +11,9 @@ import { resolveRefLabels } from '@/lib/refLabels';
 import { validate, escapeRegex } from '@/lib/validate';
 import { nextDocNumber } from '@/lib/docnumber';
 import {
-  withTransaction, loadUnits, sellUnits, InventoryError, BARCODE_STATUS,
+  withTransaction, loadUnits, sellUnits, unitsByCode, InventoryError, BARCODE_STATUS,
 } from '@/lib/inventory';
+import { barcodeKey, sameBarcode } from '@/lib/barcodeValue';
 import { handler } from '@/lib/apiError';
 import { requirePermission, PERMISSIONS } from '@/lib/rbac';
 const FIELDS = [];
@@ -65,7 +66,7 @@ export async function GET(req) {
   const [businesses, locations, customers, counters] = await Promise.all([
     Business.find({ _id: { $in: rows.map((r) => r.businessId).filter(Boolean) } }).select('_id name businessPrintName').lean(),
     CompanyLocation.find({ _id: { $in: rows.map((r) => r.locationId).filter(Boolean) } }).select('_id name businessPrintName').lean(),
-    Contact.find({ _id: { $in: rows.map((r) => r.customerId).filter(Boolean) } }).select('_id businessName firstName middleName lastName billingMobile').lean(),
+    Customer.find({ _id: { $in: rows.map((r) => r.customerId).filter(Boolean) } }).select('_id businessName firstName middleName lastName billingMobile').lean(),
     PosCounter.find({ _id: { $in: rows.map((r) => r.counterId).filter(Boolean) } }).select('_id counterName').lean(),
   ]);
   const byId = (list) => new Map(list.map((item) => [String(item._id), item]));
@@ -147,12 +148,25 @@ export const POST = handler(async (req) => {
       ? await loadUnits(codes, { businessId: doc.businessId, session: dbSession })
       : [];
 
-    const missing = codes.filter((c) => !units.some((u) => (u.barcodeNo || u.barcodeGenerated) === c));
+    /* a code may be any spelling the unit answers to - its own number, its
+       composed value, its old barcode. Each code needs a unit of its own: a
+       second code for a unit already on the bill (another spelling of it,
+       its old barcode) has none left, and is refused rather than billed twice. */
+    const unitOf = unitsByCode(codes, units);
+    const missing = codes.filter((c, i) =>
+      !unitOf.has(barcodeKey(c)) || codes.findIndex((d) => sameBarcode(d, c)) < i);
     if (missing.length) {
       throw new InventoryError('BARCODE_NOT_FOUND',
         'These barcodes are no longer in the system: ' + missing.slice(0, 8).join(', '),
         { status: 422, skipped: missing });
     }
+
+    /* The line keeps the unit's own number, whatever spelling reached the
+       till - returns and exchanges look the sale up by it. */
+    (doc.items || []).forEach((l) => {
+      const unit = l.barcodeNo ? unitOf.get(barcodeKey(l.barcodeNo)) : null;
+      if (unit) l.barcodeNo = unit.barcodeNo || unit.barcodeGenerated || l.barcodeNo;
+    });
 
     const unavailable = units.filter((u) => u.status && u.status !== BARCODE_STATUS.IN_STOCK);
     if (unavailable.length) {

@@ -145,17 +145,32 @@ const SheetRow = memo(function SheetRow({
         {locked ? (
           <span className="text-[11px] text-gray-400" title={locked}>Locked</span>
         ) : confirming ? (
+          /* Not Tab stops either, for the reason given on the trash button
+             below: a pending confirm left the red Delete as the first thing
+             native Tab reached after the grid. The confirm is a click;
+             Escape (or moving the cursor) cancels it. */
           <span className="inline-flex items-center gap-1">
-            <button type="button" onClick={() => onConfirmRemove(row)} className="rounded bg-red-600 px-1.5 py-0.5 text-[10px] font-semibold text-white hover:bg-red-700">
+            <button type="button" tabIndex={-1} onClick={() => onConfirmRemove(row)} className="rounded bg-red-600 px-1.5 py-0.5 text-[10px] font-semibold text-white hover:bg-red-700">
               Delete
             </button>
-            <button type="button" onClick={onCancelRemove} className="rounded px-1 py-0.5 text-[10px] font-medium text-gray-600 hover:bg-gray-100">
+            <button type="button" tabIndex={-1} onClick={onCancelRemove} className="rounded px-1 py-0.5 text-[10px] font-medium text-gray-600 hover:bg-gray-100">
               Cancel
             </button>
           </span>
         ) : (
           <button
             type="button"
+            /* NOT A TAB STOP. This sits in an Action cell that is not one
+               of `columns`, so the grid's own cell cursor can never reach
+               it - but native Tab could, and did: tabbing out of the last
+               cell of a blank last row (tabFrom returns false and the
+               handler does not preventDefault) dropped focus straight onto
+               a row's delete button. Worse, once focus was on it
+               onGridKeyDown bails, so arrows and Escape stopped working
+               too. Tab now leaves the sheet for the next real control,
+               which is what the tabFrom comment always claimed happened.
+               Deleting a row stays a deliberate click. */
+            tabIndex={-1}
             onClick={() => onRequestRemove(row)}
             title="Delete row"
             aria-label={`Delete row ${r + 1}`}
@@ -343,6 +358,8 @@ export default function ItemsSheet({
     const next = { r: clamp(r, 0, rs.length - 1), c: clamp(c, 0, cols.length - 1) };
     setActive(next);
     if (!extend) setAnchor(next);
+    /* moving on is moving away from a row's pending "Delete?" */
+    setConfirmId(null);
     revealRow(next.r);
   }, [revealRow]);
 

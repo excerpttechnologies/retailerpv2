@@ -3,6 +3,7 @@ import dbConnect from '@/lib/db';
 import PosInvoice from '@/models/PosInvoice';
 import { requireSession } from '@/lib/session';
 import { escapeRegex } from '@/lib/validate';
+import { barcodeCandidates, linesAnswering, lineBarcodeSpellings } from '@/lib/inventory';
 
 /* /api/sell-pos/recent?code=<barcode|item code>&business=&location=
 
@@ -32,11 +33,26 @@ export async function GET(req) {
 
   await dbConnect();
 
-  const exact = { $regex: '^' + escapeRegex(code) + '$', $options: 'i' };
-  const filter = { $or: [{ 'items.barcodeNo': exact }, { 'items.itemCode': exact }] };
+  const b = sp.get('business');
+  const l = sp.get('location');
 
-  const b = sp.get('business'); if (b && isValidObjectId(b)) filter.businessId = b;
-  const l = sp.get('location'); if (l && isValidObjectId(l)) filter.locationId = l;
+  /* The line stores the unit's own number; the label in hand may carry its
+     composed value or its old barcode. So the code is resolved to the units
+     it may mean first, and the lines are matched on every exact spelling of
+     the code and of those units' values - as well as, as before, on the code
+     itself ignoring case. */
+  const candidates = await barcodeCandidates([code], { businessId: b && isValidObjectId(b) ? b : null });
+  const exact = { $regex: '^' + escapeRegex(code) + '$', $options: 'i' };
+  const filter = {
+    $or: [
+      { 'items.barcodeNo': { $in: lineBarcodeSpellings([code], candidates) } },
+      { 'items.barcodeNo': exact },
+      { 'items.itemCode': exact },
+    ],
+  };
+
+  if (b && isValidObjectId(b)) filter.businessId = b;
+  if (l && isValidObjectId(l)) filter.locationId = l;
 
   const invoices = await PosInvoice.find(filter)
     .sort({ date: -1, createdAt: -1 })
@@ -47,10 +63,12 @@ export async function GET(req) {
      and the operator is choosing between SALES of this piece, not browsing
      bills. */
   const rows = invoices.map((inv) => {
-    const line = (inv.items || []).find((l) => (
-      String(l.barcodeNo || '').toLowerCase() === code.toLowerCase()
-      || String(l.itemCode || '').toLowerCase() === code.toLowerCase()
-    )) || {};
+    const items = inv.items || [];
+    const line = linesAnswering(items, code, candidates)[0]
+      || items.find((l) => (
+        String(l.barcodeNo || '').toLowerCase() === code.toLowerCase()
+        || String(l.itemCode || '').toLowerCase() === code.toLowerCase()
+      )) || {};
 
     return {
       _id: String(inv._id),

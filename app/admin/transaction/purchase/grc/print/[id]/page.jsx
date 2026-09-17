@@ -18,6 +18,7 @@
 'use client';
 import { useEffect, useState } from 'react';
 import { useParams } from 'next/navigation';
+import { encodedBarcodeValue } from '@/lib/barcodeValue';
 
 /* Printable GRC receipt: header fields + the complete line-item grid,
    matching what was saved from GCRBarcodeGeneration.jsx. Opens in a normal
@@ -116,7 +117,7 @@ export default function GrcPrintPage() {
                 <td className="border border-slate-200 px-2 py-1">{r.gst}</td>
                 <td className="border border-slate-200 px-2 py-1">{r.retailPrice}</td>
                 <td className="border border-slate-200 px-2 py-1">{r.offerPrice}</td>
-                <td className="border border-slate-200 px-2 py-1 font-mono">{r.barcodeGenerated}</td>
+                <td className="border border-slate-200 px-2 py-1 font-mono">{encodedBarcodeValue(r)}</td>
               </tr>
             ))}
           </tbody>

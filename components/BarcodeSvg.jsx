@@ -77,9 +77,14 @@ export default function BarcodeSvg({
         margin,
         /* JsBarcode resolves each side as `marginX || margin`, so a zero here
            correctly falls through to `margin` and the existing callers keep
-           the single uniform margin they have always had. */
-        marginLeft: quietZone || undefined,
-        marginRight: quietZone || undefined,
+           the single uniform margin they have always had.
+
+           Its margins are in drawing units, not modules - one module is
+           `width` units wide - so the quiet zone is converted here. Passing
+           the module count straight through drew 8.3 modules at width 1.2
+           while lib/barcodeLabelGeometry.js sized the symbol for 10. */
+        marginLeft: quietZone ? quietZone * width : undefined,
+        marginRight: quietZone ? quietZone * width : undefined,
       });
     } catch {
       /* CODE128 encodes anything printable; if it still throws - an empty

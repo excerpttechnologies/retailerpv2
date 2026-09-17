@@ -12,7 +12,11 @@ export default function GrcBarcodeGenerationPage() {
   /* Also run after every successful Submit (onSaved below), so the grid is
      re-read from the database and shows what was actually saved rather than
      what the browser last held. The data is replaced, never cleared first, so
-     the screen - and a print dialog opened by Submit & Print - stays mounted. */
+     the screen - and a print dialog opened by Submit & Print - stays mounted.
+
+     ONE request: GET /api/grc/:id answers with the GRC, its barcode rows AND
+     its supplier's Price Calculation Setup, so the form is never shown with
+     prices that are not the supplier's. */
   const load = useCallback(() => {
     if (!id) return;
     fetch(`/api/grc/${id}`, { cache: 'no-store' })
@@ -27,7 +31,7 @@ export default function GrcBarcodeGenerationPage() {
   useEffect(() => { load(); }, [load]);
 
   if (error) return <div className="p-6 text-sm text-red-600">{error}</div>;
-  if (!data) return <div className="p-6 text-sm text-slate-500">Loading...</div>;
+  if (!data) return <div className="p-6 text-sm text-slate-500">Loading GRC and supplier price calculation setup...</div>;
 
   return (
     <div>
@@ -38,32 +42,26 @@ export default function GrcBarcodeGenerationPage() {
         <div className="text-sm font-semibold">Barcode Generation - {data.grc.grcNumber}</div>
       </div>
 
-      {/* GRC NO + SUPPLIER CODE info bar — gives the operator a constant
-          reference while working through the items list. */}
-      <div className="flex items-center gap-6 border-b border-slate-200 bg-slate-50 px-4 py-2 text-xs">
-        <div className="flex items-center gap-2">
-          <span className="font-semibold uppercase tracking-wide text-slate-500">GRC NO</span>
-          <span className="font-mono font-bold text-slate-800">{data.grc.grcNumber || '—'}</span>
-        </div>
-        <div className="h-4 w-px bg-slate-300" />
-        <div className="flex items-center gap-2">
-          <span className="font-semibold uppercase tracking-wide text-slate-500">Supplier</span>
-          <span className="font-mono font-bold text-slate-800">{data.grc.supplierCode || '—'}</span>
-        </div>
-      </div>
+
         {/* The GRC header is passed as grcHeader for the barcode value every
-            barcode of this GRC carries - SUPPLIER_CODE * GRC_NUMBER * SEQ *
-            QTY (lib/barcodeValue.js) - which the grid shows before a row is
-            saved. lastBarcodeSeq is the highest SEQ the GRC has given, so the
+            barcode of this GRC carries - SUPPLIER_CODE * GRC_NUMBER *
+            BILL_SL_NO * SERIAL_NO (lib/barcodeValue.js) - which the grid shows
+            before a row is saved. The Bill Sl No. is the row's own, so it is
+            not in the header; lastSerialByBill / serialFloorBase /
+            lastBarcodeSeq are the serials the GRC has already given, so the
             grid counts on from where the save route will. */}
         <GCRBarcodeGeneration
           grcId={id}
           initialRows={data.rows}
           supplierMarkup={data.grc.supplierMarkup}
+          supplierPriceSetup={data.grc.supplierPriceSetup || null}
           grcHeader={{
+            grcId: id,
             grcNumber: data.grc.grcNumber || '',
             supplierCode: data.grc.supplierCode || '',
             lastBarcodeSeq: Number(data.grc.lastBarcodeSeq) || 0,
+            lastSerialByBill: data.grc.lastSerialByBill,
+            serialFloorBase: data.grc.serialFloorBase,
           }}
           onSaved={load}
           editMode

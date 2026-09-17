@@ -1,6 +1,8 @@
 'use client';
 import BarcodeSvg from './BarcodeSvg';
 import { toLabelData } from '@/lib/barcodeLabelPrint';
+import { encodedBarcodeValue } from '@/lib/barcodeValue';
+import { parseSize } from '@/lib/barcodeLabelGeometry';
 
 /* ==========================================================================
    A printable sheet of barcode labels.
@@ -18,20 +20,11 @@ import { toLabelData } from '@/lib/barcodeLabelPrint';
    number and the billing document - it used to be written out twice.
    ========================================================================== */
 
-/* "50 x 40 mm" -> { w: 50, h: 40 }. Falls back to a sane default rather
-   than rendering a zero-sized label when a catalog row is missing sizes. */
-export function parseSize(text, fallback = { w: 50, h: 40 }) {
-  const m = String(text || '').match(/(\d+(?:\.\d+)?)\s*[x×]\s*(\d+(?:\.\d+)?)/i);
-  if (!m) return fallback;
-  const w = Number(m[1]);
-  const h = Number(m[2]);
-  if (!w || !h) return fallback;
-  return { w, h };
-}
-
-/* Re-exported so the screens that already import { BarcodeSvg } from this
-   file keep working unchanged. */
-export { BarcodeSvg };
+/* Re-exported so the screens that already import { BarcodeSvg } or
+   { parseSize } from this file keep working unchanged. parseSize ("50 x 40
+   mm" -> { w: 50, h: 40 }) is the one in lib/barcodeLabelGeometry.js, which
+   the GRC label sizes itself with - this file used to carry a copy of it. */
+export { BarcodeSvg, parseSize };
 
 /* One label.
 
@@ -64,7 +57,14 @@ export { BarcodeSvg };
    rather than a fixed layout that overflows on the small stock. */
 export function Label({ row, w, h }) {
   const label = toLabelData(row);
-  const code = label.barcode;
+  /* THE value the bars encode, and the one string printed under them - so
+     the image and the text can never differ. It is the record's composed
+     value in its canonical spelling ("G1318*05178*1*1"), the same string the
+     GRC label encodes, or for a barcode made before composed values existed
+     its own number (lib/barcodeValue.js encodedBarcodeValue). Only a row
+     with neither - an item-master row that has never been through Barcode
+     Generation - falls back to its item code. */
+  const code = encodedBarcodeValue(row) || String(row?.itemCode || '');
   const rate = label.sellingPrice;
   const cost = label.costPrice;
   const desc = label.description;

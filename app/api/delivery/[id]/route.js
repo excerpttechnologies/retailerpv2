@@ -37,8 +37,8 @@ export async function PUT(req, { params }) {
 
   /* Resolve supplier contactId from supplier master - this is the source of truth */
   if (doc.supplierId && isValidObjectId(doc.supplierId)) {
-    const Contact = (await import('@/models/Contact')).default;
-    const supplier = await Contact.findById(doc.supplierId).select('contactId').lean();
+    const { Supplier } = await import('@/lib/contacts');
+    const supplier = await Supplier.findById(doc.supplierId).select('contactId').lean();
     doc.supplierContactId = supplier?.contactId || '';
   }
 

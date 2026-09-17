@@ -1,5 +1,5 @@
 import dbConnect from '@/lib/db';
-import Contact from '@/models/Contact';
+import { Agent } from '@/lib/contacts';
 import { requireSession } from '@/lib/session';
 import { validate } from '@/lib/validate';
 import { TABS } from '@/app/admin/contact/agent/tabs';
@@ -20,7 +20,7 @@ export async function GET(req, { params }) {
   const { id } = await params;
   await dbConnect();
 
-  const doc = await Contact.findById(id).lean();
+  const doc = await Agent.findById(id).lean();
   if (!doc) return json({ doc: null }, 404);
   return json({ doc: { ...doc, _id: String(doc._id) } });
 }
@@ -36,7 +36,7 @@ export async function PUT(req, { params }) {
   const { errors, doc, ok } = validate(FIELDS, body.data || {});
   if (!ok) return json({ errors }, 422);
 
-  const updated = await Contact.findByIdAndUpdate(id, doc, { new: true, runValidators: true });
+  const updated = await Agent.findByIdAndUpdate(id, doc, { new: true, runValidators: true });
   if (!updated) return json({ error: 'Not found' }, 404);
 
   return json({ ok: true, id });
@@ -49,6 +49,6 @@ export async function DELETE(req, { params }) {
   const { id } = await params;
   await dbConnect();
 
-  await Contact.findByIdAndDelete(id);
+  await Agent.findByIdAndDelete(id);
   return json({ ok: true });
 }

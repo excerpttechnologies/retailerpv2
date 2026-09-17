@@ -3,7 +3,7 @@ import dbConnect from '@/lib/db';
 import { requireSession } from '@/lib/session';
 import { escapeRegex } from '@/lib/validate';
 
-import Contact from '@/models/Contact';
+import { findContactsOfKind } from '@/lib/contacts';
 import Business from '@/models/Business';
 import Ledger from '@/models/Ledger';
 
@@ -43,7 +43,7 @@ const SOURCES = [
   {
     docType: 'Purchase Invoice',
     Model: PurchaseInvoice,
-    party: 'supplierId', partyKind: 'contact',
+    party: 'supplierId', partyKind: 'Supplier',
     date: 'purchaseDate', number: 'purchaseInvoiceNo',
     side: 'Cr',
     description: 'Purchase Invoice',
@@ -52,7 +52,7 @@ const SOURCES = [
   {
     docType: 'Debit Note',
     Model: DebitNote,
-    party: 'supplierId', partyKind: 'contact',
+    party: 'supplierId', partyKind: 'Supplier',
     date: 'debitCreadted', number: 'debitNoteNo',
     side: 'Dr',
     description: 'Debit Note for Supplier',
@@ -61,7 +61,7 @@ const SOURCES = [
   {
     docType: 'Sales Invoice',
     Model: SalesInvoice,
-    party: 'customerId', partyKind: 'contact',
+    party: 'customerId', partyKind: 'Customer',
     /* SalesInvoice has no date field of its own - createdAt stands in */
     date: 'createdAt', number: 'salesInvoiceNo',
     side: 'Dr',
@@ -71,7 +71,7 @@ const SOURCES = [
   {
     docType: 'Credit Note',
     Model: CreditNote,
-    party: 'customerId', partyKind: 'contact',
+    party: 'customerId', partyKind: 'Customer',
     date: 'createdAt', number: 'creditNoteCode',
     side: 'Cr',
     description: 'Credit Note for Customer',
@@ -80,7 +80,7 @@ const SOURCES = [
   {
     docType: 'Sales Return',
     Model: SalesReturn,
-    party: 'customerId', partyKind: 'contact',
+    party: 'customerId', partyKind: 'Customer',
     date: 'returnDate', number: 'salesReturnNo',
     side: 'Cr',
     description: 'Sales Return',
@@ -89,7 +89,7 @@ const SOURCES = [
   {
     docType: 'POS',
     Model: PosInvoice,
-    party: 'customerId', partyKind: 'contact',
+    party: 'customerId', partyKind: 'Customer',
     date: 'date', number: 'invoiceNo',
     side: 'Dr',
     description: 'POS Invoice',
@@ -98,7 +98,7 @@ const SOURCES = [
   {
     docType: 'POS Return',
     Model: PosReturn,
-    party: 'customerId', partyKind: 'contact',
+    party: 'customerId', partyKind: 'Customer',
     date: 'date', number: 'invoiceNo',
     side: 'Cr',
     description: 'POS Return',
@@ -209,22 +209,28 @@ export async function GET(req) {
   const capped = collected.some((c) => c.capped);
 
   /* --------------------------------------------------- resolve the party */
-  const contactIds = new Set();
+  /* A supplierId is looked up among suppliers and a customerId among
+     customers - never one pool for both, now that the kinds can live in
+     collections of their own. */
+  const contactIds = { Supplier: new Set(), Customer: new Set() };
   const businessIds = new Set();
   collected.forEach(({ s, rows }) => rows.forEach((d) => {
     const id = d[s.party];
     if (!id) return;
     /* a voucher already carries its ledger's name - nothing to look up */
     if (s.partyKind === 'ledger') return;
-    (s.partyKind === 'business' ? businessIds : contactIds).add(String(id));
+    if (s.partyKind === 'business') businessIds.add(String(id));
+    else contactIds[s.partyKind].add(String(id));
   }));
 
-  const [contacts, businesses] = await Promise.all([
-    contactIds.size ? Contact.find({ _id: { $in: [...contactIds] } })
-      .select('businessName firstName lastName paymentLedgerId').lean() : [],
+  const CONTACT_FIELDS = 'businessName firstName lastName paymentLedgerId';
+  const [suppliers, customers, businesses] = await Promise.all([
+    contactIds.Supplier.size ? findContactsOfKind('Supplier', [...contactIds.Supplier], CONTACT_FIELDS) : [],
+    contactIds.Customer.size ? findContactsOfKind('Customer', [...contactIds.Customer], CONTACT_FIELDS) : [],
     businessIds.size ? Business.find({ _id: { $in: [...businessIds] } })
       .select('name').lean() : [],
   ]);
+  const contacts = [...suppliers, ...customers];
 
   /* a party's ledger name comes from its mapped ledger when there is one,
      and falls back to "<party> A/C" - which is how the deployed screen reads

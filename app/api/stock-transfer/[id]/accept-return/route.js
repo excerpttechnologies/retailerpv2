@@ -4,7 +4,10 @@ import StockTransfer from '@/models/StockTransfer';
 import { handler, json } from '@/lib/apiError';
 import { requirePermission, PERMISSIONS } from '@/lib/rbac';
 import { withLocationPairLock } from '@/lib/locks';
-import { withTransaction, loadUnits, receiveReturnAtSource, InventoryError, BARCODE_STATUS } from '@/lib/inventory';
+import {
+  withTransaction, loadUnits, receiveReturnAtSource, barcodeCandidates, linesAnswering,
+  InventoryError, BARCODE_STATUS,
+} from '@/lib/inventory';
 
 /* POST /api/stock-transfer/<id>/accept-return
    { barcodes: [...] }  - or omit to take back everything on its way.
@@ -39,8 +42,14 @@ export const POST = handler(async (req, { params }) => {
   }
 
   const asked = (body?.barcodes || []).map((b) => String(b || '').trim()).filter(Boolean);
+
+  /* An asked code may be a line's own number or any other spelling its unit
+     answers to (composed value, old barcode) - see linesAnswering. */
+  const candidates = await barcodeCandidates(asked, { businessId: doc.businessId, lines: doc.lines });
+  const askedLines = new Set(asked.flatMap((c) => linesAnswering(doc.lines, c, candidates)));
+
   const target = asked.length
-    ? outstanding.filter((l) => asked.includes(l.barcodeNo))
+    ? outstanding.filter((l) => askedLines.has(l))
     : outstanding;
 
   if (!target.length) {

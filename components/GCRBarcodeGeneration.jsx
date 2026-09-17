@@ -4,8 +4,11 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useRouter } from "next/navigation";
 import { useScope } from "./ScopeContext";
-import BarcodeLabelSheet, { parseSize } from "./BarcodeLabelSheet";
 import GrcBarcodeLabelSheet from "./GrcBarcodeLabel";
+/* One geometry module for the sticker stock - the same one the label
+   renderer lays a label out with and the GRC Barcode Print page prints
+   from, so the preview here cannot be measured differently. */
+import { parseSize, labelsPerRow, stockPageCss, labelPageRule } from "@/lib/barcodeLabelGeometry";
 import { useOptions } from "./useOptions";
 import { useBarcodeLookup } from "./useScanner";
 import Icon from "./Icon";
@@ -19,11 +22,18 @@ import {
   SHEET_INHERITED_FIELDS,
 } from "@/lib/itemsSheet";
 import ItemsSheet from "./ItemsSheet";
-import { composeBarcodeValue, nextSeqStart, hasComposedBarcode } from "@/lib/barcodeValue";
+import {
+  generateBarcodeValue, composedValueOf, unitNumberOf, encodedBarcodeValue, parseBarcodeValue,
+  billSlNoForBarcode, highestSerialNo, serialFloorOf,
+} from "@/lib/barcodeValue";
 import {
   LABEL_MODE, resolveLabelMode, batchAvailableQty, withLabelCounts, pendingBatchRows, labelKey,
   isUnprintableBatch,
 } from "@/lib/barcodeLabelPrint";
+import {
+  formDefaultsFromSetup, unmappedSetupFields, setupStatusMessage, setupIdentity, formatSetupValue,
+  PRICE_SETUP_TO_FORM,
+} from "@/lib/supplierPriceSetup";
 import BatchLabelCountDialog from "./BatchLabelCountDialog";
 import * as XLSX from "xlsx";
 
@@ -39,6 +49,21 @@ const decimal2 = (value) => {
   return raw.slice(0, dot + 1) + raw.slice(dot + 1).replace(/\./g, '').slice(0, 2);
 };
 const fixed2 = (value) => (Number.isFinite(Number(value)) ? Number(value).toFixed(2) : '');
+
+/* BILL SL NO. IS HIDDEN, NOT REMOVED (2026-09-17, at the business's request).
+
+   The Add Item form no longer shows or asks for it. It is still the third
+   part of every barcode value (SUPPLIER * GRC * BILL_SL_NO * SERIAL_NO), so
+   the form keeps carrying it exactly as before - form.serialNo, starting at 1
+   and carried from one entry to the next - and the Item Summary and Excel
+   columns still show and accept it. Set this back to true to show the two
+   Bill Sl No. boxes and their "required" checks again. */
+const SHOW_BILL_SL_NO = false;
+
+/* The initialRows default. A fresh [] on every render made the effect that
+   loads them run after every render - on the standalone screen, which passes
+   none, that re-rendered for ever and wiped each row as it was added. */
+const NO_ROWS = [];
 
 /* HSN Master stores a tax slab as a reference to a Tax record plus a price
    band; the barcode screen needs the percentage. Tax records do not move
@@ -95,7 +120,7 @@ const exportFieldLabels = {
   qty: "Quantity",
   noOfCuts: "No. of Cuts",
   totalMtr: "Total MTR",
-  billSlNo: "Serial No",
+  billSlNo: "Bill Sl No.",
   purchaseRate: "Purchase Rate",
   discountType: "Discount Type",
   discount: "Discount",
@@ -155,7 +180,10 @@ function convertToERPTemplate(rawHeaders, rawRows) {
     'quantity': 'qty',
     'noofcuts': 'noOfCuts',
     'totalmtr': 'totalMtr',
+    /* the column was headed "Serial No" for years, so a workbook exported
+       before the rename still imports into the same field */
     'serialno': 'billSlNo',
+    'billslno': 'billSlNo',
     'purchaserate': 'purchaseRate',
     'discounttype': 'discountType',
     'discount': 'discount',
@@ -531,30 +559,6 @@ function customFieldNames(rows) {
   return Array.from(new Set(rows.flatMap((row) => Object.keys(row?.customFields || {}))));
 }
 
-function incrementSerial(value) {
-  const serial = String(value ?? '').trim();
-  if (!serial) return '1';
-
-  if (/^\d+$/.test(serial)) {
-    return String(Number(serial) + 1).padStart(serial.length, '0');
-  }
-
-  const match = serial.match(/^(.*?)([A-Za-z]+)$/);
-  if (!match) return serial;
-
-  const prefix = match[1];
-  const letters = match[2].toUpperCase().split('');
-  let index = letters.length - 1;
-  while (index >= 0 && letters[index] === 'Z') {
-    letters[index] = 'A';
-    index -= 1;
-  }
-  if (index < 0) letters.unshift('A');
-  else letters[index] = String.fromCharCode(letters[index].charCodeAt(0) + 1);
-
-  return prefix + letters.join('');
-}
-
 function modeFromUom(uom, uniqueBarcode = "No") {
   const value = String(uom || "").trim();
   if (meterRegex.test(value)) return "batch";
@@ -737,9 +741,13 @@ function buildBarcodePlan({ uom, uniqueBarcode, qtyOrCuts, totalMtr, cutRows = [
 function calculatePrices(row) {
   const finalValue = finalRateOf(row);
 
-  const rsp = finalValue * (1 + Number(row.markupRSP ?? 100) / 100);
-  const wsp = finalValue * (1 + Number(row.markupWSP ?? 15) / 100);
-  const dp = finalValue * (1 + Number(row.markupDP ?? 15) / 100);
+  /* The markups are the row's own - the Add Item form starts them from the
+     supplier's Price Calculation Setup. No percentage is assumed for a blank
+     one: it used to be 100 / 15 / 15 here, which priced a row by numbers
+     nobody had entered. */
+  const rsp = finalValue * (1 + Number(row.markupRSP || 0) / 100);
+  const wsp = finalValue * (1 + Number(row.markupWSP || 0) / 100);
+  const dp = finalValue * (1 + Number(row.markupDP || 0) / 100);
 
   return {
     ...row,
@@ -792,7 +800,10 @@ function SearchSelect({ placeholder, value, label, onSearch, options, loading, o
         <div className={`flex items-center gap-1 rounded-md px-2 py-2 text-sm ${editableClass}`}>
           <span className="flex-1 truncate">{label || value}</span>
           <button type="button" onClick={() => { onClear(); setQuery(''); }}
-            className="shrink-0 text-gray-400 hover:text-red-500" aria-label="Clear">✕</button>
+            className="shrink-0 text-gray-400 hover:text-red-500" aria-label="Clear"
+            /* not a tab stop: it wipes the picked value with no confirm, and
+               it sat exactly where Tab from the field before it landed */
+            tabIndex={-1}>✕</button>
         </div>
       ) : (
         /* open / searching */
@@ -862,7 +873,7 @@ function SerialNoField({ value, onChange, editableClass, readOnlyClass, locked =
     readOnly: true,
     tabIndex: -1,
     "aria-readonly": "true",
-    title: "Shows the Serial No. entered above",
+    title: "Shows the Bill Sl No. entered above",
     onKeyDown: (event) => { if (event.key !== "Tab" && !event.ctrlKey && !event.metaKey) event.preventDefault(); },
     onPaste: (event) => event.preventDefault(),
     onCut: (event) => event.preventDefault(),
@@ -871,12 +882,12 @@ function SerialNoField({ value, onChange, editableClass, readOnlyClass, locked =
 
   return (
     <div className="max-w-[110px] space-y-1 xl:max-w-none">
-      <label className="block text-[11px] font-semibold text-gray-700">Serial No. *</label>
+      <label className="block text-[11px] font-semibold text-gray-700">Bill Sl No. *</label>
       <div className="relative">
         <input
           value={value ?? ""}
           inputMode="numeric"
-          aria-label="Serial No."
+          aria-label="Bill Sl No."
           placeholder="1"
           {...(locked ? lockedProps : { onChange: (event) => onChange(event.target.value) })}
           onWheel={(event) => event.currentTarget.blur()}
@@ -902,7 +913,95 @@ function SerialNoField({ value, onChange, editableClass, readOnlyClass, locked =
   );
 }
 
-function AddItemModal({ open, onClose, onSubmit, onSubmitAndPrint, rowCount = 0, barcodeFormat, business = "", markupDefaults = {}, rateCodeMapping = null }) {
+/* The five prices worked out from a form's rate, discount, markups and
+   offers - the arithmetic the rate effect below has always done, in one place
+   so re-seeding the markups from a supplier recalculates the same way. */
+function withFormPrices(current) {
+  const purchaseRate = Number(current.purchaseRate || 0);
+  const discount = Number(current.discount || 0);
+  const finalValue = current.discountType === "Flat"
+    ? Math.max(0, purchaseRate - discount)
+    : Math.max(0, purchaseRate - (purchaseRate * discount) / 100);
+  const rspPrice = finalValue * (1 + Number(current.markupRSP || 0) / 100);
+  const wspPrice = finalValue * (1 + Number(current.markupWSP || 0) / 100);
+  const dpPrice = finalValue * (1 + Number(current.markupDP || 0) / 100);
+  const rspOfferPct = Number(current.rspOfferPct || 0);
+  const wspOfferPct = Number(current.wspOfferPct || 0);
+  const dpOfferPct = Number(current.dpOfferPct || 0);
+
+  return {
+    ...current,
+    finalPrice: finalValue.toFixed(2),
+    rspPrice: rspPrice.toFixed(2),
+    wspPrice: wspPrice.toFixed(2),
+    dpPrice: dpPrice.toFixed(2),
+    rspOfferPrice: (rspPrice * (1 - rspOfferPct / 100)).toFixed(2),
+    wspOfferPrice: (wspPrice * (1 - wspOfferPct / 100)).toFixed(2),
+    dpOfferPrice: (dpPrice * (1 - dpOfferPct / 100)).toFixed(2),
+  };
+}
+
+/* SUPPLIER -> PRICE CALCULATION SETUP, as this form shows it.
+
+   The fields that have an input of their own on the form (Discount Type,
+   Discount, and Mark Up on Cost RSP / WSP / E-comm) are not repeated here -
+   those inputs start from the supplier's values. What is left (the Round Off
+   values) is listed read-only, with the supplier it came from. */
+function SupplierPriceSetupPanel({ setup }) {
+  if (!setup) return null;
+  const message = setupStatusMessage(setup);
+  const extra = unmappedSetupFields(setup);
+  const connected = (setup.fields || []).filter((field) => PRICE_SETUP_TO_FORM[field.key]);
+  return (
+    <div className="mb-4 rounded-md border border-[#dfe4eb] bg-[#f8fafc] px-3 py-2 text-[12px] text-gray-700" data-testid="supplier-price-setup">
+      <div className="flex flex-wrap items-baseline justify-between gap-2">
+        <span className="font-semibold">Supplier Price Calculation Setup</span>
+        {setup.supplierName && (
+          <span className="text-gray-500">{setup.supplierName}{setup.supplierCode ? ` (${setup.supplierCode})` : ""}</span>
+        )}
+      </div>
+      {message ? (
+        <div className="mt-1 text-gray-500">{message}</div>
+      ) : (
+        <>
+          {extra.length > 0 && (
+            <div className="mt-1 flex flex-wrap gap-x-5 gap-y-1">
+              {extra.map((field) => (
+                <span key={field.key}>
+                  {field.label}: <span className="font-semibold">{field.value === null ? "-" : formatSetupValue(field.value)}</span>
+                </span>
+              ))}
+            </div>
+          )}
+          {connected.length > 0 && (
+            <div className="mt-1 text-[11px] text-gray-500">
+              {connected.map((field) => field.label).join(", ")} fill the matching inputs below.
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
+function AddItemModal({ open, onClose, onSubmit, onSubmitAndPrint, barcodeFormat, business = "", markupDefaults = {}, priceSetup = null, rateCodeMapping = null, grcId = null, initialBillSlNo = 1 }) {
+  /* The form's starting prices: the GRC supplier's Price Calculation Setup
+     when the screen has it, otherwise the three markups it has always been
+     handed. A value the supplier does not have is left blank - never a
+     made-up percentage. */
+  const markups = markupDefaults || {};
+  const supplierDefaults = priceSetup
+    ? formDefaultsFromSetup(priceSetup)
+    : {
+      ...(markups.rsp != null ? { markupRSP: formatSetupValue(markups.rsp) } : {}),
+      ...(markups.wsp != null ? { markupWSP: formatSetupValue(markups.wsp) } : {}),
+      ...(markups.dp != null ? { markupDP: formatSetupValue(markups.dp) } : {}),
+    };
+  const supplierMarkups = {
+    markupRSP: supplierDefaults.markupRSP ?? "",
+    markupWSP: supplierDefaults.markupWSP ?? "",
+    markupDP: supplierDefaults.markupDP ?? "",
+  };
   const createBlankForm = (overrides = {}) => ({
     oldBarcode: "",
     itemCode: "",
@@ -928,14 +1027,14 @@ function AddItemModal({ open, onClose, onSubmit, onSubmitAndPrint, rowCount = 0,
     noOfCuts: "",
     totalMtr: "",
     purchaseRate: "",
-    discountType: "Percentage",
-    discount: "0",
+    discountType: supplierDefaults.discountType || "Percentage",
+    discount: supplierDefaults.discount ?? "0",
     finalPrice: "0.00",
-    markupRSP: markupDefaults.rsp ?? 100,
+    markupRSP: supplierMarkups.markupRSP,
     rspPrice: "0.00",
-    markupWSP: markupDefaults.wsp ?? 15,
+    markupWSP: supplierMarkups.markupWSP,
     wspPrice: "0.00",
-    markupDP: markupDefaults.dp ?? 15,
+    markupDP: supplierMarkups.markupDP,
     dpPrice: "0.00",
     rspOfferPct: 0,
     rspOfferPrice: "0.00",
@@ -944,11 +1043,14 @@ function AddItemModal({ open, onClose, onSubmit, onSubmitAndPrint, rowCount = 0,
     dpOfferPct: 0,
     dpOfferPrice: "0.00",
     offerApplicable: false,
-    serialNo: 1,
+    serialNo: initialBillSlNo,
     ...overrides,
   });
 
   const [form, setForm] = useState(() => createBlankForm());
+  /* State for the next Serial No. (4th part of barcode) - fetched from backend */
+  const [nextSerialNo, setNextSerialNo] = useState(1);
+  const [serialNoLoading, setSerialNoLoading] = useState(false);
   /* the reservation round trip - the Add buttons are disabled while it runs
      so a double-click cannot burn a second block of numbers */
   const [reserving, setReserving] = useState(false);
@@ -986,6 +1088,12 @@ function AddItemModal({ open, onClose, onSubmit, onSubmitAndPrint, rowCount = 0,
   const [cutRows, setCutRows] = useState([{ id: 1, value: "" }]);
   const [focusedCutIndex, setFocusedCutIndex] = useState(0);
   const cutTargetRef = useRef(0);
+  /* Refs for each CUTS(MTR) input — used for Tab/Shift+Tab keyboard navigation
+     so focus jumps directly to the next/prev input and never lands on the
+     +/− buttons between rows. The array is rebuilt on every render; stale
+     entries are avoided because React calls each ref callback with null when
+     the element unmounts and with the new element when it mounts. */
+  const cutsInputRefs = useRef([]);
 
   /* Debounced server-side item search */
   const searchItems = (q) => {
@@ -1081,11 +1189,14 @@ function AddItemModal({ open, onClose, onSubmit, onSubmitAndPrint, rowCount = 0,
 
   useEffect(() => {
     if (!open) return;
-    setForm((current) => ({
-      ...current,
-      serialNo: Number(rowCount || 0) + 1,
-    }));
+    /* NOTHING RESETS THE BILL SL NO. HERE.
 
+       This effect used to open the modal with serialNo = the grid's row count
+       plus one - and that count is the number of BARCODE ROWS, so after
+       twenty pieces of bill line 1 the modal proposed bill line 21, and that
+       number went into the third part of every barcode it made. The Bill Sl
+       No. is the supplier's line number, not a count of anything here, so
+       what the operator last entered is simply left alone. */
     setCutRows((current) => {
       if (!form.isMtr) return [{ id: 1, value: "" }];
       const count = Math.max(1, Number(form.noOfCuts || current.length || 1));
@@ -1099,32 +1210,31 @@ function AddItemModal({ open, onClose, onSubmit, onSubmitAndPrint, rowCount = 0,
   }, [open]);
 
   useEffect(() => {
-    const purchaseRate = Number(form.purchaseRate || 0);
-    const discount = Number(form.discount || 0);
-    const finalValue = form.discountType === "Flat"
-      ? Math.max(0, purchaseRate - discount)
-      : Math.max(0, purchaseRate - (purchaseRate * discount) / 100);
-
-    setForm((current) => {
-      const rspPrice = finalValue * (1 + Number(current.markupRSP || 0) / 100);
-      const wspPrice = finalValue * (1 + Number(current.markupWSP || 0) / 100);
-      const dpPrice = finalValue * (1 + Number(current.markupDP || 0) / 100);
-      const rspOfferPct = Number(current.rspOfferPct || 0);
-      const wspOfferPct = Number(current.wspOfferPct || 0);
-      const dpOfferPct = Number(current.dpOfferPct || 0);
-
-      return {
-        ...current,
-        finalPrice: finalValue.toFixed(2),
-        rspPrice: rspPrice.toFixed(2),
-        wspPrice: wspPrice.toFixed(2),
-        dpPrice: dpPrice.toFixed(2),
-        rspOfferPrice: (rspPrice * (1 - rspOfferPct / 100)).toFixed(2),
-        wspOfferPrice: (wspPrice * (1 - wspOfferPct / 100)).toFixed(2),
-        dpOfferPrice: (dpPrice * (1 - dpOfferPct / 100)).toFixed(2),
-      };
-    });
+    setForm((current) => withFormPrices(current));
   }, [form.purchaseRate, form.discount, form.discountType]);
+
+  /* A DIFFERENT SUPPLIER, OR A CHANGED SETUP, RE-SEEDS THE PRICE FIELDS.
+
+     Keyed on the supplier and its setup values rather than on the object the
+     page hands down: the page re-reads the GRC after every Submit, and that
+     must not throw away markups the operator has typed. The first render is
+     already seeded by createBlankForm. */
+  const setupKey = setupIdentity(priceSetup);
+  const seededSetupRef = useRef(setupKey);
+  useEffect(() => {
+    if (seededSetupRef.current === setupKey) return;
+    seededSetupRef.current = setupKey;
+    /* nothing of the previous supplier's survives: a field the new one has
+       no value for goes back to the form's own starting value */
+    setForm((current) => withFormPrices({
+      ...current,
+      ...supplierMarkups,
+      discountType: supplierDefaults.discountType || "Percentage",
+      discount: supplierDefaults.discount ?? "0",
+    }));
+    // supplierDefaults/supplierMarkups are derived from the setup this key names
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [setupKey]);
 
   /* The real Purchase Rate written through the active Purchase Rate Code
      Master. Derived, never stored in form state and never written back into
@@ -1163,9 +1273,41 @@ function AddItemModal({ open, onClose, onSubmit, onSubmitAndPrint, rowCount = 0,
 
   const updateField = (key, value) => setForm((current) => ({ ...current, [key]: value }));
 
-  /* Both Serial No. boxes come through here, which is why they stay in step.
-     See SerialNoField for why the digits are stripped rather than validated. */
+  /* Both Bill Sl No. boxes come through here, which is why they stay in
+     step. See SerialNoField for why the digits are stripped rather than
+     validated. */
   const updateSerialNo = (raw) => updateField("serialNo", String(raw ?? "").replace(/\D/g, ""));
+
+  /* Fetch next Serial No. (4th part of barcode) when Bill Sl No. changes */
+  const fetchNextSerialNo = useCallback(async (billSlNo) => {
+    if (!grcId || !billSlNo || !String(billSlNo).trim()) {
+      setNextSerialNo(1);
+      return;
+    }
+    setSerialNoLoading(true);
+    try {
+      const response = await fetch(`/api/barcode-generation/next-serial?grcId=${grcId}&billSlNo=${encodeURIComponent(String(billSlNo).trim())}`);
+      const data = await response.json();
+      if (data.ok && data.nextSerialNo) {
+        setNextSerialNo(Number(data.nextSerialNo));
+      } else {
+        setNextSerialNo(1);
+      }
+    } catch {
+      setNextSerialNo(1);
+    } finally {
+      setSerialNoLoading(false);
+    }
+  }, [grcId]);
+
+  useEffect(() => {
+    const billSlNo = String(form.serialNo ?? "").trim();
+    if (billSlNo) {
+      fetchNextSerialNo(billSlNo);
+    } else {
+      setNextSerialNo(1);
+    }
+  }, [form.serialNo, fetchNextSerialNo]);
 
   /* HSN appears in row 1 and again in row 3. Both call this, so both read
      the same form.hsnId / hsnLabel and both go through handleHsnSelection -
@@ -1312,7 +1454,9 @@ function AddItemModal({ open, onClose, onSubmit, onSubmitAndPrint, rowCount = 0,
 
     if (!code) {
       setLookup({ status: "idle", message: "" });
-      clearFetchedItem();
+      /* only what an old barcode loaded is cleared with it - Tab through an
+         empty Old Barcode box used to wipe an Item Code picked by hand */
+      if (resolvedRef.current) clearFetchedItem();
       return;
     }
     /* already loaded, or already being fetched - a repeat scan is a no-op */
@@ -1398,7 +1542,7 @@ function AddItemModal({ open, onClose, onSubmit, onSubmitAndPrint, rowCount = 0,
         ...current,
         itemId: "", itemName: "", itemCode: "", subGroupName: "", groupName: "", printDescription: "",
         hsnId: "", hsn: "", hsn2Id: "", hsn2: "", gst: "0",
-        markupRSP: markupDefaults.rsp ?? "", markupWSP: markupDefaults.wsp ?? "", markupDP: markupDefaults.dp ?? "",
+        ...supplierMarkups,
       }));
       return;
     }
@@ -1420,9 +1564,7 @@ function AddItemModal({ open, onClose, onSubmit, onSubmitAndPrint, rowCount = 0,
       hsn2Id: "",
       hsn2: "",
       gst: "0",
-      markupRSP: markupDefaults.rsp ?? "",
-      markupWSP: markupDefaults.wsp ?? "",
-      markupDP: markupDefaults.dp ?? "",
+      ...supplierMarkups,
     }));
     try {
       const response = await fetch(`/api/item/${encodeURIComponent(opt.value)}/detail`);
@@ -1436,15 +1578,20 @@ function AddItemModal({ open, onClose, onSubmit, onSubmitAndPrint, rowCount = 0,
          when the HSN is chosen by hand */
       applyHsnSlabs(Array.isArray(item.slabs) ? item.slabs : []);
       applyHsn2Slabs(Array.isArray(item.slabs) ? item.slabs : []);
-      setForm((current) => ({
+      /* An item's OWN markup, when the item master has a real number for
+         it, is more specific than the supplier's; otherwise the supplier's
+         Price Calculation Setup value stays. Anything that is not a number
+         never replaces it - "No" used to arrive here and blank Markup E-COMM %. */
+      const itemMarkup = (value, fallback) => (value == null || fixed2(value) === "" ? fallback : fixed2(value));
+      setForm((current) => withFormPrices({
         ...current,
         hsnId: item.hsnId || "",
         hsn: item.hsnCode || "",
         hsn2Id: item.hsnId || "",
         hsn2: item.hsnCode || "",
-        markupRSP: item.markupRSP == null ? (markupDefaults.rsp ?? "") : fixed2(item.markupRSP),
-        markupWSP: item.markupWSP == null ? (markupDefaults.wsp ?? "") : fixed2(item.markupWSP),
-        markupDP: item.markupDP == null ? (markupDefaults.dp ?? "") : fixed2(item.markupDP),
+        markupRSP: itemMarkup(item.markupRSP, supplierMarkups.markupRSP),
+        markupWSP: itemMarkup(item.markupWSP, supplierMarkups.markupWSP),
+        markupDP: itemMarkup(item.markupDP, supplierMarkups.markupDP),
       }));
     } catch {
       if (itemDetailRef.current === detailRequest) {
@@ -1681,16 +1828,22 @@ function AddItemModal({ open, onClose, onSubmit, onSubmitAndPrint, rowCount = 0,
       setReserveError("Barcode not found. Please enter or scan a valid barcode.");
       return;
     }
-    /* the field only ever holds digits, so "not a number" cannot get here -
-       what is left to check is that it is present and not zero */
-    const serialEntered = String(form.serialNo ?? "").trim();
-    if (!serialEntered) {
-      setReserveError("Serial No. is required.");
-      return;
-    }
-    if (Number(serialEntered) < 1) {
-      setReserveError("Serial No. must be 1 or more.");
-      return;
+    /* Only while the Bill Sl No. box is on screen (SHOW_BILL_SL_NO): a
+       hidden field cannot be corrected, so it is not checked here - it holds
+       the form's own value (1, or the one carried from the previous entry),
+       and the save route still refuses a row that reaches it without one. */
+    if (SHOW_BILL_SL_NO) {
+      /* the field only ever holds digits, so "not a number" cannot get here -
+         what is left to check is that it is present and not zero */
+      const serialEntered = String(form.serialNo ?? "").trim();
+      if (!serialEntered) {
+        setReserveError("Bill Sl No. is required - it is the line of the supplier's bill these goods came in on, and the third part of their barcode.");
+        return;
+      }
+      if (Number(serialEntered) < 1) {
+        setReserveError("Bill Sl No. must be 1 or more.");
+        return;
+      }
     }
     if (!form.itemName?.trim()) {
       setReserveError("Please select an Item Code.");
@@ -1709,7 +1862,7 @@ function AddItemModal({ open, onClose, onSubmit, onSubmitAndPrint, rowCount = 0,
     if (reserving) return;                       // guards the double-click
 
     const generatedRows = [];
-    const baseSerial = String(form.serialNo || 1).trim();
+    const baseSerial = String(Number(form.serialNo) >= 1 ? form.serialNo : 1).trim();
     const finalPriceValue = Number(form.finalPrice || 0);
     const purchaseRateValue = Number(form.purchaseRate || 0);
     const barcodePlan = buildBarcodePlan({
@@ -1762,9 +1915,10 @@ function AddItemModal({ open, onClose, onSubmit, onSubmitAndPrint, rowCount = 0,
         retailPrice: String(form.rspPrice || 0),
         uniqueBarcode: Boolean(form.uniqueBarcode) ? "Yes" : "No",
         /* No barcode value here. The save route gives every new barcode its
-           value - SUPPLIER_CODE * GRC_NUMBER * SEQ * QTY, SEQ being the GRC's
-           own running number (lib/barcodeValue.js) - and the grid shows the
-           value it will get by the same rule. Built here too, the two could
+           value - SUPPLIER_CODE * GRC_NUMBER * BILL_SL_NO * SERIAL_NO, the Bill Sl
+           No. being this row's own and SERIAL_NO the per-Bill-Sl-No running number
+           (lib/barcodeValue.js) - and the grid shows the value it will get by
+           the same rule. Built here too, the two could
            differ, and a label printed from this copy would not scan as the
            stored barcode. (grcHeader is not in scope here either.) */
         barcodeNo: "",
@@ -1776,6 +1930,7 @@ function AddItemModal({ open, onClose, onSubmit, onSubmitAndPrint, rowCount = 0,
         groupId: planItem.groupId || null,
         groupSize: planItem.groupSize || 1,
         billSlNo: String(baseSerial),
+        serialNo: nextSerialNo ? String(nextSerialNo) : "",  // Operator-overridable starting Serial No.
         rsp: String(form.rspPrice || 0),
         wsp: String(form.wspPrice || 0),
         dp: String(form.dpPrice || 0),
@@ -1794,7 +1949,10 @@ function AddItemModal({ open, onClose, onSubmit, onSubmitAndPrint, rowCount = 0,
     if (printAfterSubmit && onSubmitAndPrint) await onSubmitAndPrint(generatedRows);
     else onSubmit(generatedRows);
 
-    const nextSerial = incrementSerial(baseSerial);
+    /* The Bill Sl No. is not bumped after an Add. It is the supplier's line
+       number, not a counter of ours: several items can sit on one bill line,
+       and the operator moves it on when the bill does. */
+    const nextSerial = baseSerial;
     /* the next row is a different physical piece, so its Old Barcode starts
        empty - createBlankForm already clears it, this just clears the
        matching lookup state so the old "loaded" note does not linger */
@@ -1925,15 +2083,34 @@ function AddItemModal({ open, onClose, onSubmit, onSubmitAndPrint, rowCount = 0,
             </div>
           </div>
 
-          {/* ROW 2: Serial No. | Supplier Description | Print Description.
+          {/* ROW 2: [Bill Sl No.] | Serial No. | Supplier Description | Print Description.
 
-              Serial No. is pinned to 90px - it holds a short running number -
-              so the two descriptions take a half each of everything left. They
-              hold real supplier text and are the fields that most need width;
-              this is also why the page shell below dropped its second gutter,
-              which was costing the card 32px it could spend here. */}
-          <div className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-[90px_minmax(0,1fr)_minmax(0,1fr)]">
-            <SerialNoField value={form.serialNo} onChange={updateSerialNo} editableClass={editableClass} />
+              Bill Sl No. is the supplier's bill line number (3rd part of barcode),
+              hidden while SHOW_BILL_SL_NO is off - its value still travels.
+              Serial No. is the auto-incrementing counter per Bill Sl No. (4th part of barcode).
+              Row 2 Serial No. is EDITABLE - the operator can override the auto-suggested value. */}
+          <div className={`mt-3 grid grid-cols-1 gap-3 md:grid-cols-2 ${SHOW_BILL_SL_NO ? "xl:grid-cols-[90px_90px_minmax(0,1fr)_minmax(0,1fr)]" : "xl:grid-cols-[90px_minmax(0,1fr)_minmax(0,1fr)]"}`}>
+            {SHOW_BILL_SL_NO && <SerialNoField value={form.serialNo} onChange={updateSerialNo} editableClass={editableClass} />}
+            <div className="space-y-1">
+              <label className="block text-[11px] font-semibold text-gray-700">Serial No. *</label>
+              <div className="relative">
+                <input
+                  value={nextSerialNo ?? ""}
+                  inputMode="numeric"
+                  aria-label="Serial No."
+                  placeholder="1"
+                  onWheel={(event) => event.currentTarget.blur()}
+                  onChange={(event) => {
+                    const digits = String(event.target.value).replace(/\D/g, "");
+                    setNextSerialNo(digits === "" ? "" : Number(digits));
+                  }}
+                  className={`w-full rounded-md px-2 py-2 text-sm ${editableClass}`}
+                />
+                {serialNoLoading && (
+                  <div className="absolute right-2 top-1/2 -translate-y-1/2 text-[10px] text-blue-600">Loading...</div>
+                )}
+              </div>
+            </div>
 
             <div className="space-y-1">
               <label className="block text-[11px] font-semibold text-gray-700">Supplier Description</label>
@@ -1946,17 +2123,41 @@ function AddItemModal({ open, onClose, onSubmit, onSubmitAndPrint, rowCount = 0,
             </div>
           </div>
 
-          {/* ROW 3: Serial No. | HSN (second, independent) | Unique Barcode | MTR.
+          {/* ROW 3: [Bill Sl No.] | Serial No. | HSN (second, independent) | Unique Barcode | MTR.
 
-              Serial No. here is a locked read-back of the value entered in row 2
-              — one value, two windows.
-
-              HSN here is the SECOND independent HSN field.  It starts with the
-              same value as the first HSN (Row 1) when an item or old barcode is
-              loaded, but the operator can search, select or clear it freely
-              without affecting the first HSN field, and vice-versa. */}
-          <div className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-[90px_170px_230px_230px]">
-            <SerialNoField value={form.serialNo} readOnlyClass={readOnlyClass} locked />
+              Bill Sl No. here is a locked read-back of the value entered in row 2
+              — one value, two windows, hidden with it. Serial No. shows the next
+              auto-increment value. */}
+          <div className={`mt-3 grid grid-cols-1 gap-3 md:grid-cols-2 ${SHOW_BILL_SL_NO ? "xl:grid-cols-[90px_90px_170px_230px_230px]" : "xl:grid-cols-[90px_170px_230px_230px]"}`}>
+            {SHOW_BILL_SL_NO && <SerialNoField value={form.serialNo} readOnlyClass={readOnlyClass} locked />}
+            <div className="space-y-1">
+              <label className="block text-[11px] font-semibold text-gray-700">Serial No. *</label>
+              <div className="relative">
+                <input
+                  value={nextSerialNo ?? ""}
+                  inputMode="numeric"
+                  aria-label="Serial No."
+                  placeholder="1"
+                  readOnly
+                  tabIndex={-1}
+                  onWheel={(event) => event.currentTarget.blur()}
+                  className={`w-full rounded-md px-2 py-2 text-sm ${readOnlyClass} cursor-not-allowed pr-7`}
+                />
+                <svg
+                  viewBox="0 0 24 24"
+                  aria-hidden="true"
+                  className="pointer-events-none absolute right-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-gray-400"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                >
+                  <rect x="5" y="11" width="14" height="9" rx="2" />
+                  <path d="M8 11V8a4 4 0 0 1 8 0v3" />
+                </svg>
+              </div>
+            </div>
 
             {renderHsn2Field()}
 
@@ -2012,6 +2213,8 @@ function AddItemModal({ open, onClose, onSubmit, onSubmitAndPrint, rowCount = 0,
 
           <div className="mt-5">
             <div className="mb-4 text-center text-[15px] font-bold uppercase tracking-wide underline decoration-[1.5px] underline-offset-4">Price Calculation</div>
+
+            <SupplierPriceSetupPanel setup={priceSetup} />
 
             {/* Price Calculation grid */}
             <div className="grid grid-cols-1 gap-3 md:grid-cols-5">
@@ -2107,7 +2310,9 @@ function AddItemModal({ open, onClose, onSubmit, onSubmitAndPrint, rowCount = 0,
               {!form.isMtr && (
                 <div className="space-y-1">
                   <label className="block text-[11px] font-semibold text-gray-700">Final price *</label>
-                  <input value={form.finalPrice} readOnly className={`w-full rounded-md px-2 py-2 text-sm font-semibold ${readOnlyClass}`} />
+                  {/* worked out, never typed - so not a Tab stop: Tab goes from
+                      Discount straight on to the next box that takes input */}
+                  <input value={form.finalPrice} readOnly tabIndex={-1} className={`w-full rounded-md px-2 py-2 text-sm font-semibold ${readOnlyClass}`} />
                 </div>
               )}
             </div>
@@ -2184,17 +2389,27 @@ function AddItemModal({ open, onClose, onSubmit, onSubmitAndPrint, rowCount = 0,
                       min={0}
                       step="0.01"
                       value={cut.value}
+                      ref={(el) => { cutsInputRefs.current[index] = el; }}
                       onWheel={(e) => e.currentTarget.blur()}
                       onFocus={() => setFocusedCutIndex(index)}
                       onChange={(event) => updateCutValue(index, event.target.value)}
                       onBlur={() => commitCutValue(index)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Tab" && !e.shiftKey && index < cutRows.length - 1) {
+                          e.preventDefault();
+                          cutsInputRefs.current[index + 1]?.focus();
+                        } else if (e.key === "Tab" && e.shiftKey && index > 0) {
+                          e.preventDefault();
+                          cutsInputRefs.current[index - 1]?.focus();
+                        }
+                      }}
                       className={`h-10 rounded-md px-2 text-sm ${index === focusedCutIndex ? "border border-orange-300 bg-orange-50" : editableClass} focus:border-[#0d5ddc] focus:outline-none focus:ring-2 focus:ring-[#0d5ddc]/20`}
                     />
                     <div className="flex h-10 items-center justify-center gap-2">
                       {index === cutRows.length - 1 ? (
-                        <button type="button" onClick={addCutRow} className="flex h-8 w-8 items-center justify-center rounded-md bg-[#2fbf6c] text-lg font-bold text-white">+</button>
+                        <button type="button" tabIndex={-1} onClick={addCutRow} className="flex h-8 w-8 items-center justify-center rounded-md bg-[#2fbf6c] text-lg font-bold text-white">+</button>
                       ) : (
-                        <button type="button" onClick={() => removeCutRow(index)} className="flex h-8 w-8 items-center justify-center rounded-md bg-[#e34a3a] text-xl font-bold text-white">−</button>
+                        <button type="button" tabIndex={-1} onClick={() => removeCutRow(index)} className="flex h-8 w-8 items-center justify-center rounded-md bg-[#e34a3a] text-xl font-bold text-white">−</button>
                       )}
                     </div>
                   </div>
@@ -2205,6 +2420,7 @@ function AddItemModal({ open, onClose, onSubmit, onSubmitAndPrint, rowCount = 0,
                   <input
                     value={cutRows.reduce((sum, row) => sum + (Number(row.value || 0) || 0), 0).toFixed(2)}
                     readOnly
+                    tabIndex={-1}
                     className={`w-40 rounded-md px-2 py-2 text-sm ${readOnlyClass}`}
                   />
                 </div>
@@ -2246,29 +2462,6 @@ function AddItemModal({ open, onClose, onSubmit, onSubmitAndPrint, rowCount = 0,
    as fifty, and a batch defaulted to its entire quantity. Counts now follow
    the rule, and a batch asks.
    ========================================================================== */
-
-/* The physical page for a run on sticker stock: the catalog's sheet size,
-   widened if the labels on it do not actually fit.
-
-   The seeded catalog is not self-consistent - 'RT 72 x 116 mm' declares a
-   72mm sheet, a label size of "0 x 0 mm" and 2 labels per row. parseSize
-   rejects the zero and substitutes 50x40, so two 50mm labels would be laid
-   across a 72mm page and the second one would fall off the edge of the
-   paper. Taking the wider of the two keeps every label on the sheet; a
-   little extra margin is recoverable, a clipped barcode is not.
-
-   Returns null when there is no usable sheet size at all, so the caller can
-   fall back to A4 rather than emit a zero-sized page that prints nothing. */
-function stockPageCss(format, labelW, labelH, perRow, gapMm) {
-  const sheet = String(format?.pageSize || '').match(/(\d+(?:\.\d+)?)\s*[x×]\s*(\d+(?:\.\d+)?)/i);
-  if (!sheet) return null;
-  const sheetW = Number(sheet[1]);
-  const sheetH = Number(sheet[2]);
-  if (!sheetW || !sheetH) return null;
-
-  const needW = labelW * perRow + gapMm * (perRow - 1);
-  return Math.max(sheetW, needW) + 'mm ' + Math.max(sheetH, labelH) + 'mm';
-}
 
 function PrintLabelPicker({ rows, open, onClose }) {
   const scope = useScope();
@@ -2394,14 +2587,12 @@ function PrintLabelPicker({ rows, open, onClose }) {
      push the last column off the edge of the paper - hence gap 0 there, and
      a 1mm cut line on a sheet of A4 that somebody has to guillotine. */
   const geometry = parseSize(format?.labelSize);
-  const perRow = Math.max(1, Number(format?.stickerInRow) || 1);
+  const perRow = labelsPerRow(format);
   const onStock = paper === 'stock';
   const gapMm = onStock ? 0 : 1;
   const stockSize = stockPageCss(format, geometry.w, geometry.h, perRow, gapMm);
 
-  const pageRule = onStock && stockSize
-    ? '@page { size: ' + stockSize + '; margin: 0; }'
-    : '@page { size: A4; margin: 5mm; }';
+  const pageRule = labelPageRule(format, { onStock, gapMm });
   const gap = gapMm + 'mm';
 
   /* ---------------------------------------------------------------- print --
@@ -2586,7 +2777,7 @@ function PrintLabelPicker({ rows, open, onClose }) {
     <div className="no-print fixed inset-0 z-[70] flex items-center justify-center bg-black/40 p-4">
       <BatchLabelCountDialog
         open={Boolean(batchPrompt)}
-        barcode={batchPrompt?.key || ''}
+        barcode={promptRow ? encodedBarcodeValue(promptRow) : ''}
         description={promptRow ? (promptRow.printDescription || promptRow.itemName || promptRow.supplierDescription || '') : ''}
         available={batchAvailableQty(promptRow)}
         initialValue={batchPrompt ? (batchCounts[batchPrompt.key] ?? '') : ''}
@@ -2610,8 +2801,13 @@ function PrintLabelPicker({ rows, open, onClose }) {
                 <div key={key || index} className="mb-3 flex items-center gap-3 rounded border border-gray-200 p-2">
                   <input type="checkbox" checked={selected.includes(key)} onChange={() => setSelected((prev) => prev.includes(key) ? prev.filter((item) => item !== key) : [...prev, key])} />
                   <div className="min-w-0 flex-1">
-                    <div className="font-medium">{row.itemName || row.supplierDescription || "Item"}</div>
-                    <div className="text-xs text-gray-600">{key}</div>
+                    <div className="font-medium">{row.itemCode || row.itemName || row.supplierDescription || "Item"}</div>
+                    {/* the barcode value exactly as its label encodes and
+                        prints it, with the unit's own number beside it */}
+                    <div className="font-mono text-xs text-gray-600" style={{ textTransform: "none" }}>
+                      {encodedBarcodeValue(row)}
+                      {composedValueOf(row) && unitNumberOf(row) ? <span className="ml-2 text-gray-400">{unitNumberOf(row)}</span> : null}
+                    </div>
                   </div>
                   {/* The count is the rule's, not an input: an MTR barcode
                       is always two stickers and a unique one always one. Only
@@ -2692,7 +2888,7 @@ function PrintLabelPicker({ rows, open, onClose }) {
                 <div className="overflow-auto rounded border border-gray-300 bg-white p-2">
                   {/* GrcBarcodeLabelSheet is the same component the
                       barcode-print page renders, so Preview = Print exactly. */}
-                  <GrcBarcodeLabelSheet rows={selectedRows} />
+                  <GrcBarcodeLabelSheet rows={selectedRows} format={format} gap={gap} />
                 </div>
               </>
             )}
@@ -2758,7 +2954,7 @@ function PrintLabelPicker({ rows, open, onClose }) {
           <style>{pageRule}</style>
           {/* GrcBarcodeLabelSheet matches the print page exactly — same
               component, same 2-column grid, same Label, same data contract. */}
-          <GrcBarcodeLabelSheet rows={selectedRows} />
+          <GrcBarcodeLabelSheet rows={selectedRows} format={format} gap={gap} />
         </div>,
         document.body
       )}
@@ -2766,7 +2962,7 @@ function PrintLabelPicker({ rows, open, onClose }) {
   );
 }
 
-export default function GCRBarcodeGeneration({ grcId = null, initialRows = [], supplierMarkup = {}, grcHeader = {}, onSaved = null }) {
+export default function GCRBarcodeGeneration({ grcId = null, initialRows = NO_ROWS, supplierMarkup = {}, supplierPriceSetup = null, grcHeader = {}, onSaved = null }) {
   const router = useRouter();
   const scope = useScope();
 
@@ -2890,13 +3086,24 @@ export default function GCRBarcodeGeneration({ grcId = null, initialRows = [], s
     return acc;
   }, { taxable: 0, gst: 0, net: 0, pcs: 0, mtr: 0 }), [validRows]);
 
+  /* ITEM SUMMARY - one line per BILL LINE of the supplier's bill.
+
+     The Bill Sl No. is part of the key, not a number worked out from the
+     position of the line in this table. It used to be neither: the table
+     rendered {index + 1} in that column and this object carried no billSlNo
+     at all, so the screen the barcode rule cites as the place to check the
+     third segment was showing a row counter instead - and one item received
+     on two different bill lines was folded into a single line that could not
+     name either of them. */
   const summaryRows = useMemo(() => {
     const map = new Map();
     validRows.forEach((row) => {
-      const key = `${row.itemCode || row.itemName || "item"}-${row.hsn || ""}-${row.gst || ""}-${row.uom || ""}`;
+      const billSlNo = String(row.billSlNo ?? "").trim();
+      const key = `${billSlNo}-${row.itemCode || row.itemName || "item"}-${row.hsn || ""}-${row.gst || ""}-${row.uom || ""}`;
       if (!map.has(key)) {
         map.set(key, {
           id: key,
+          billSlNo,
           itemName: row.itemName || row.supplierDescription || row.itemCode,
           qty: 0,
           beforeTax: 0,
@@ -3036,7 +3243,8 @@ export default function GCRBarcodeGeneration({ grcId = null, initialRows = [], s
       }
 
       /* ---- NEW rows get no number here: the save route gives each its
-         barcode value (SUPPLIER_CODE * GRC_NUMBER * SEQ * QTY) on Submit. */
+         barcode value (SUPPLIER_CODE * GRC_NUMBER * BILL_SL_NO * SEQ) on
+         Submit. */
       const updatedById = new Map();
       const addedRows = [];
       const notes = { offerKept: [], offerStarted: [], finalKept: [] };
@@ -3088,7 +3296,7 @@ export default function GCRBarcodeGeneration({ grcId = null, initialRows = [], s
     }
   }
 
-  async function saveRows(rowsToSave = validRows, printAfterSave = false) {
+  async function saveRows(rowsToSave = validRows, printAfterSave = false, { printIds = null } = {}) {
     /* one save at a time - see savingRef */
     if (savingRef.current) return false;
     savingRef.current = true;
@@ -3195,12 +3403,30 @@ export default function GCRBarcodeGeneration({ grcId = null, initialRows = [], s
          save did not store. */
       const storedById = new Map((saved.rows || []).map((s) => [String(s._id), s]));
       const storedByClientId = new Map((saved.createdRows || []).map((s) => [String(s.id), s]));
+      /* Both barcode fields as the server stored them, taken together off the
+         one record it answered with. barcodeGenerated used to be filled in
+         here from barcodeNo, which printed the number twice on any barcode
+         whose composed value is a different string - a label taken straight
+         after Submit then disagreed with the same label printed from the
+         Barcode Print page, which reads the record back from the database. */
       const asStored = (row) => {
         const s = (row._id && storedById.get(String(row._id))) || storedByClientId.get(String(row.id));
-        return s ? { ...row, _id: s._id, barcodeNo: s.barcodeNo, barcodeGenerated: s.barcodeNo, seq: s.seq } : row;
+        return s
+          ? {
+            ...row, _id: s._id, barcodeNo: s.barcodeNo, barcodeGenerated: s.barcodeGenerated ?? '', seq: s.seq,
+            /* the parts the stored value was made from, so the grid and a
+               print straight after Submit agree with the value */
+            ...(s.billSlNo !== undefined ? { billSlNo: s.billSlNo } : {}),
+            ...(s.serialNo !== undefined ? { serialNo: s.serialNo } : {}),
+          }
+          : row;
       };
       if (printAfterSave) {
-        setPrintRows(rowsToSave.map(asStored).filter((row) => row._id && row.barcodeNo));
+        const wanted = printIds ? new Set(printIds.map(String)) : null;
+        setPrintRows(rowsToSave
+          .filter((row) => !wanted || wanted.has(String(row.id)))
+          .map(asStored)
+          .filter((row) => row._id && labelKey(row)));
         setShowPrint(true);
       }
       router.refresh?.();
@@ -3264,10 +3490,18 @@ export default function GCRBarcodeGeneration({ grcId = null, initialRows = [], s
   /* A new row on the ITEMS sheet. The grid has no column for how the unit is
      counted or discounted, so those follow the row above
      (SHEET_INHERITED_FIELDS); everything the operator types starts empty.
-     It takes the next bill serial, as Add Item does - the seq in its barcode
-     identifier - after the highest on the grid and the row above (a paste
-     makes several rows before the grid re-renders). No barcode number: the
-     save route composes it. */
+
+     THE BILL SL NO. IS CARRIED DOWN FROM THE ROW ABOVE, NOT COUNTED UP.
+     It is the line of the supplier's bill these goods came in on, and it is
+     the third part of every barcode of that line - so several rows of one
+     bill line share it, and it changes only when the bill line does. This
+     used to be `highest on the grid + 1`, which made the number a running
+     row counter: twenty pieces of bill line 1 produced bill lines 1 to 20,
+     and the barcode carried the row's position where the bill line belongs.
+     A row with nothing above it starts blank, and the save route refuses a
+     blank one by name rather than inventing a number for it.
+
+     No barcode number here either: the save route composes it. */
   const createSheetRow = useCallback((template) => {
     const row = emptyRow(`sheet-${Date.now()}-${sheetRowSeq.current++}`);
     if (template) {
@@ -3275,40 +3509,61 @@ export default function GCRBarcodeGeneration({ grcId = null, initialRows = [], s
         if (template[key] !== undefined && template[key] !== null) row[key] = template[key];
       });
     }
-    const serialOf = (value) => (/^\d+$/.test(String(value ?? "").trim()) ? Number(value) : 0);
-    const highest = sheetRowsRef.current.reduce((max, item) => Math.max(max, serialOf(item.billSlNo)), serialOf(template?.billSlNo));
-    row.billSlNo = String(highest + 1);
+    const carried = String(template?.billSlNo ?? "").trim()
+      || String([...sheetRowsRef.current].reverse().find((item) => String(item?.billSlNo ?? "").trim())?.billSlNo ?? "").trim();
+    row.billSlNo = carried;
     return row;
   }, []);
 
   /* THE barcode value of every row, as this screen shows it - the ITEMS
-     sheet's Barcode Identifier column and the Item With Barcode tab:
+     sheet's Barcode Identifier column and the Item With Barcode tab - in the
+     canonical spelling the label encodes and prints (lib/barcodeValue.js):
 
-       SUPPLIER_CODE * GRC_NUMBER * SEQ * QTY  (lib/barcodeValue.js)
+        SUPPLIER_CODE*GRC_NUMBER*BILL_SL_NO*SERIAL_NO
 
-     - a saved row: its SEQ with its quantity as the grid now holds it - the
-       stored value, or the value the save will give it for an edited quantity
-     - a row not saved yet: the SEQ the save route will give it - the next
-       after every barcode on the GRC, in grid order, counted the same way
-     - a row saved before values were composed: its number as printed
-     The save route stores the value by the same function and printing reads
-     only stored values, so the text and the bars cannot disagree. */
-  const provisionalSeq = useMemo(() => {
+      - a saved row: its STORED value, never one rebuilt from its fields - or,
+        when its Bill Sl No. has been changed on the grid, that value with the
+        new Bill Sl No., which is what the save restates it to
+      - a row not saved yet: the value the save route will give it - the next
+        SERIAL_NO on its Bill Sl No. after every serial the saved values carry
+        and after the GRC's floor for that line, in grid order
+      - a row saved before values were composed: its own number as printed
+      Printing reads only stored values, so the text and the bars cannot
+      disagree. */
+  const provisionalSerialNo = useMemo(() => {
     const saved = rows.filter((row) => row._id).concat(pendingDeletes.map((entry) => entry.row));
-    let next = nextSeqStart(saved, grcHeader.lastBarcodeSeq);
-    const map = new Map();
+    const nextByBill = new Map();
+    const byRow = new Map();
     rows.forEach((row) => {
-      if (!row._id && String(row.itemCode || row.itemName || "").trim()) map.set(row.id, next++);
+      if (row._id || !String(row.itemCode || row.itemName || "").trim()) return;
+      const billSlNo = billSlNoForBarcode(row.billSlNo);
+      if (!billSlNo) return;
+      const previous = nextByBill.has(billSlNo)
+        ? nextByBill.get(billSlNo)
+        : Math.max(highestSerialNo(saved, billSlNo), serialFloorOf(grcHeader, billSlNo, saved));
+      /* a typed starting Serial No. moves the line on, never back - as the
+         save route applies it */
+      const requested = /^\d+$/.test(String(row.serialNo ?? "").trim()) ? Number(row.serialNo) : 0;
+      const serial = Math.max(previous + 1, requested);
+      nextByBill.set(billSlNo, serial);
+      byRow.set(row.id, serial);
     });
-    return map;
-  }, [rows, pendingDeletes, grcHeader.lastBarcodeSeq]);
+    return byRow;
+  }, [rows, pendingDeletes, grcHeader]);
 
   const barcodeValueOf = useCallback((row) => {
-    const parts = { supplierCode: grcHeader.supplierCode, grcNumber: grcHeader.grcNumber };
-    if (row._id && !hasComposedBarcode(row, parts)) return row.barcodeNo || row.barcodeGenerated || "";
-    const seq = row._id ? row.seq : provisionalSeq.get(row.id);
-    return composeBarcodeValue({ ...parts, seq, qty: row.qty });
-  }, [provisionalSeq, grcHeader.grcNumber, grcHeader.supplierCode]);
+    const parts = { supplierCode: grcHeader.supplierCode, referenceCode: grcHeader.grcNumber };
+    if (row._id) {
+      const stored = composedValueOf(row);
+      if (!stored) return unitNumberOf(row);
+      const storedParts = parseBarcodeValue(stored);
+      const billSlNo = billSlNoForBarcode(row.billSlNo);
+      if (!billSlNo || storedParts.billSlNo === billSlNo) return stored;
+      return generateBarcodeValue({ ...parts, billSlNo, serialNo: storedParts.serialNo }) || stored;
+    }
+    const serialNo = provisionalSerialNo.get(row.id);
+    return serialNo ? generateBarcodeValue({ ...parts, billSlNo: row.billSlNo, serialNo }) : "";
+  }, [provisionalSerialNo, grcHeader.grcNumber, grcHeader.supplierCode]);
 
   return (
     <div className="min-h-screen bg-gray-100 px-2 py-4 md:py-6">
@@ -3321,20 +3576,34 @@ export default function GCRBarcodeGeneration({ grcId = null, initialRows = [], s
 
       <AddItemModal
         open={showAddItem}
-        rowCount={validRows.length}
         barcodeFormat={barcodeFormat}
         /* scopes the Old Barcode lookup to the selected company, so a code
            belonging to another business reports that rather than "not found" */
         business={scope.business}
         markupDefaults={supplierMarkup}
+        /* the GRC supplier's Price Calculation Setup (GET /api/grc/[id]) */
+        priceSetup={supplierPriceSetup}
         rateCodeMapping={rateCodeMapping}
+        grcId={grcHeader.grcId || grcId}
+        /* The next Bill Sl No. to suggest in the form, derived from the Item
+           Summary: the highest billSlNo already present in the saved rows + 1.
+           When the GRC has no rows yet, this is 1. This mirrors exactly what
+           the Item Summary table shows - it is built from the same rows array
+           - so the Serial No. field is always in step with that table. */
+        initialBillSlNo={
+          validRows.length === 0
+            ? 1
+            : Math.max(...validRows.map((r) => Number(r.billSlNo) || 0)) + 1
+        }
         onClose={() => setShowAddItem(true)}
         onSubmit={(items) => appendRows(items)}
         onSubmitAndPrint={(items) => {
           const nextRows = [...rows, ...items];
           setRows(nextRows);
-          setPrintRows(nextRows);
-          return saveRows(nextRows, true);
+          /* the whole grid is saved, but only the barcodes this entry made
+             go to the picker - Submit & Print used to offer, pre-ticked,
+             every label of the GRC again */
+          return saveRows(nextRows, true, { printIds: items.map((item) => item.id) });
         }}
       />
 
@@ -3435,6 +3704,7 @@ export default function GCRBarcodeGeneration({ grcId = null, initialRows = [], s
               pendingDeleteCount={pendingDeletes.length}
               onUndoDeletes={undoDeletes}
               focusRequest={sheetFocus}
+              identifierOf={barcodeValueOf}
             />
           )}
 
@@ -3457,8 +3727,12 @@ export default function GCRBarcodeGeneration({ grcId = null, initialRows = [], s
                   <tr><td colSpan={7 + additionalFields.length} className="px-3 py-8 text-center text-gray-500">No data found</td></tr>
                 ) : summaryRows.map((row, index) => (
                   <tr key={row.id} className="odd:bg-white even:bg-gray-50">
+                    {/* Sl No is this table's own counter; Bill Sl No is the
+                        bill line the goods came in on, and the third part of
+                        every barcode of that line. They are different numbers
+                        and are no longer both the row's position. */}
                     <td className="border border-gray-300 px-2 py-2">{index + 1}</td>
-                    <td className="border border-gray-300 px-2 py-2">{index + 1}</td>
+                    <td className="border border-gray-300 px-2 py-2">{row.billSlNo || "-"}</td>
                     <td className="border border-gray-300 px-2 py-2">{row.itemName}</td>
                     <td className="border border-gray-300 px-2 py-2">{money(row.qty)}</td>
                     <td className="border border-gray-300 px-2 py-2">{money(row.beforeTax)}</td>
@@ -3533,7 +3807,11 @@ export default function GCRBarcodeGeneration({ grcId = null, initialRows = [], s
                     <td className="border border-gray-300 px-2 py-2">{row.uniqueBarcode || "No"}</td>
                     <td className="border border-gray-300 px-2 py-2"><input value={barcodeValueOf(row)} disabled className="w-52 rounded border border-gray-200 bg-gray-100 px-2 py-1 font-mono text-gray-500" aria-label="System generated barcode" /></td>
                     {additionalFields.map((field) => <td key={field} className="border border-gray-300 px-2 py-2">{row.customFields?.[field] || "-"}</td>)}
-                    <td className="border border-gray-300 px-2 py-2"><div className="flex gap-2"><button type="button" className="text-blue-600 hover:underline">Edit</button><button type="button" onClick={() => { if (!row._id || window.confirm(`Remove barcode ${row.barcodeNo || ""}? It will be deleted from this GRC when you click Submit.`)) removeRow(row); }} disabled={isLockedRow(row)} title={lockReason(row) || undefined} className="text-red-600 hover:underline disabled:cursor-not-allowed disabled:text-gray-400 disabled:no-underline">Delete</button></div></td>
+                    {/* Not Tab stops: this table has no inputs, so Tab out of
+                        the Add Item form ran through the toolbar straight onto
+                        row 1's Delete - which removes an unsaved row with no
+                        confirm. Deleting stays a deliberate click. */}
+                    <td className="border border-gray-300 px-2 py-2"><div className="flex gap-2"><button type="button" tabIndex={-1} className="text-blue-600 hover:underline">Edit</button><button type="button" tabIndex={-1} onClick={() => { if (!row._id || window.confirm(`Remove barcode ${row.barcodeNo || ""}? It will be deleted from this GRC when you click Submit.`)) removeRow(row); }} disabled={isLockedRow(row)} title={lockReason(row) || undefined} className="text-red-600 hover:underline disabled:cursor-not-allowed disabled:text-gray-400 disabled:no-underline">Delete</button></div></td>
                   </tr>
                 ))}
               </tbody>
@@ -3554,7 +3832,7 @@ export default function GCRBarcodeGeneration({ grcId = null, initialRows = [], s
           the bill serial never reach a label. They used to be handed down here
           for a "provenance line" on the sticker; that line is gone. */}
       {/* Only saved barcodes, as saved, are printable: a label carries the
-          stored value (SUPPLIER_CODE * GRC_NUMBER * SEQ * QTY) and nothing
+          stored value (SUPPLIER_CODE * GRC_NUMBER * BILL_SL_NO * SEQ) and nothing
           else. A row not saved yet, or with an edit not saved yet, prints
           after Submit - see saveRows. */}
       <PrintLabelPicker rows={printRows.length ? printRows : validRows.filter((row) => row._id && !row._edited)} open={showPrint} onClose={() => { setShowPrint(false); setPrintRows([]); }} />

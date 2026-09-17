@@ -9,6 +9,7 @@ import { useScope } from './ScopeContext';
 import { refreshOptions, useOptions } from './useOptions';
 import { fmt } from '@/lib/format';
 import { sourceLabel } from '@/lib/sourceLabel';
+import { barcodeKey } from '@/lib/barcodeValue';
 
 /* Renders the Purchase add screens from the registry `form.cards` spec:
    fields | info | scan | source | grid | totals   (see purchaseRegistry.js) */
@@ -436,7 +437,10 @@ function VendorItems({ supplierId, selected, onChange, scope }) {
   const matches = available.filter((row) => {
     const query = term.trim().toLowerCase();
     if (!query) return true;
-    return [row.barcodeGenerated, row.itemCode, row.itemName, row.supplierDescription, row.printDescription, row.purRate, row.finalNet, row.retailPrice, row.offerPrice]
+    /* a barcode may be typed with or without the spaces around '*' */
+    const barcodeQuery = barcodeKey(query);
+    if ([row.barcodeGenerated, row.barcodeNo].some((value) => barcodeKey(value).toLowerCase().includes(barcodeQuery))) return true;
+    return [row.itemCode, row.itemName, row.supplierDescription, row.printDescription, row.purRate, row.finalNet, row.retailPrice, row.offerPrice]
       .some((value) => String(value || '').toLowerCase().includes(query));
   });
   const toggle = (id) => setChecked((current) => current.includes(id) ? current.filter((value) => value !== id) : [...current, id]);

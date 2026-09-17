@@ -2,9 +2,9 @@ import dbConnect from '@/lib/db';
 import { requireUser } from '@/lib/rbac';
 import { handler, json } from '@/lib/apiError';
 import { BarcodeLabel } from '@/lib/barcodeLabel';
-import { barcodeHistory, shape, InventoryError, SCAN_ERRORS } from '@/lib/inventory';
+import { barcodeHistory, barcodeFilter, unitFor, shape, InventoryError, SCAN_ERRORS } from '@/lib/inventory';
 import CompanyLocation from '@/models/CompanyLocation';
-import Contact from '@/models/Contact';
+import { Supplier } from '@/lib/contacts';
 import Grc from '@/models/Grc';
 
 /* GET /api/barcode/<code>
@@ -23,17 +23,20 @@ export const GET = handler(async (req, { params }) => {
   const { code } = await params;
   await dbConnect();
 
+  /* any spelling of the unit's number, composed value or old barcode; of
+     several rows, the one the code is closest to (see unitFor) */
   const text = String(code || '').trim();
-  const unit = await BarcodeLabel.findOne({
-    $or: [{ barcodeNo: text }, { barcodeGenerated: text }],
-  }).lean();
+  const matches = text
+    ? await BarcodeLabel.find(barcodeFilter([text])).limit(50).lean()
+    : [];
+  const unit = unitFor(matches, text);
 
   if (!unit) {
     throw new InventoryError(SCAN_ERRORS.NOT_FOUND,
       'Barcode ' + text + ' is not in the system.', { status: 404 });
   }
 
-  const events = await barcodeHistory(unit.barcodeNo || unit.barcodeGenerated);
+  const events = await barcodeHistory(unit.barcodeNo || unit.barcodeGenerated, { barcodeId: unit._id });
 
   /* Resolve the ids the trail refers to, in one round trip each, so the
      screen renders names rather than object ids. */
@@ -48,7 +51,7 @@ export const GET = handler(async (req, { params }) => {
       ? CompanyLocation.find({ _id: { $in: locationIds } }).select('name businessPrintName').lean()
       : [],
     unit.supplierId
-      ? Contact.findById(unit.supplierId).select('businessName firstName lastName contactId').lean().catch(() => null)
+      ? Supplier.findById(unit.supplierId).select('businessName firstName lastName contactId').lean().catch(() => null)
       : null,
     unit.grcId
       ? Grc.findById(unit.grcId).select('grcNumber grcDate').lean().catch(() => null)

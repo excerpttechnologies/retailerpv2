@@ -144,7 +144,7 @@ import mongoose from 'mongoose';
 import dbConnect from '@/lib/db';
 import Delivery from '@/models/Delivery';
 import Transporter from '@/models/Transporter';
-import Contact from '@/models/Contact';
+import { Supplier } from '@/lib/contacts';
 import Dispatch from '@/models/Dispatch';
 import Grc from '@/models/Grc';
 import { requireSession } from '@/lib/session';
@@ -210,7 +210,7 @@ async function resolveNames(rows) {
 
   const [transporters, suppliers, dispatches] = await Promise.all([
     tIds.length ? Transporter.find({ _id: { $in: tIds } }).lean() : [],
-    sIds.length ? Contact.find({ _id: { $in: sIds } }).select('contactId businessName firstName middleName lastName gstNo').lean() : [],
+    sIds.length ? Supplier.find({ _id: { $in: sIds } }).select('contactId businessName firstName middleName lastName gstNo').lean() : [],
     dIds.length ? Dispatch.find({ _id: { $in: dIds } }).lean() : [],
   ]);
 
@@ -237,7 +237,7 @@ async function resolveSupplierContactIds(rows) {
 
   if (sIds.length === 0) return supplierContactIds;
 
-  const suppliers = await Contact.find({ _id: { $in: sIds } })
+  const suppliers = await Supplier.find({ _id: { $in: sIds } })
     .select('contactId')
     .lean();
 
@@ -311,7 +311,7 @@ export async function GET(req) {
       rows.map((r) => r.supplierId).filter((s) => s && isValidObjectId(String(s))).map(String)
     )];
     const suppliers = supplierIds.length
-      ? await Contact.find({ _id: { $in: supplierIds } })
+      ? await Supplier.find({ _id: { $in: supplierIds } })
         .select('contactId businessName firstName middleName lastName gstNo').lean()
       : [];
 
@@ -398,7 +398,7 @@ export async function GET(req) {
     const rx = { $regex: escapeRegex(search), $options: 'i' };
     /* "Search transaction, LR or supplier" - supplier is matched by resolving
        names to ids first, since the name lives on the contact */
-    const supplierIds = await Contact.find({
+    const supplierIds = await Supplier.find({
       $or: [{ businessName: rx }, { firstName: rx }, { lastName: rx }],
     }).select('_id').lean();
 
@@ -453,7 +453,7 @@ export async function POST(req) {
 
   /* Resolve supplier contactId from supplier master - this is the source of truth */
   if (doc.supplierId && isValidObjectId(doc.supplierId)) {
-    const supplier = await Contact.findById(doc.supplierId).select('contactId').lean();
+    const supplier = await Supplier.findById(doc.supplierId).select('contactId').lean();
     doc.supplierContactId = supplier?.contactId || '';
   }
 

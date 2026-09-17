@@ -105,12 +105,17 @@ ok('values past the last column are counted, not lost silently', wide.droppedCol
 ok('the input rows are never mutated', saved.qty === '20' && saved.gst === '0');
 
 console.log('--- barcode identifier column ---');
-const idCols = sheetColumns([], { identifierOf: (row, index) => ['G1318', '05177', row.billSlNo || index + 1, row.qty].filter(Boolean).join(' * ') });
+/* the identifier the screen shows: SUPPLIER * GRC * BILL_SL_NO * SEQ
+   (lib/barcodeValue.js). No index fallback - a row with no Bill Sl No. has no
+   value to show, and the save route refuses it by name. */
+const idCols = sheetColumns([], { identifierOf: (row, index) => (String(row.billSlNo ?? '').trim()
+  ? ['G1318', '05177', String(row.billSlNo).trim(), String(index + 1)].join(' * ')
+  : '') });
 ok('the identifier sits after Sl No, read-only', idCols[1].key === 'barcodeIdentifier' && idCols[1].readOnly && idCols[2].key === 'itemCode');
-ok('it is worked out from the row, so it follows an edited quantity',
-  idCols[1].display({ ...saved, billSlNo: '1', qty: '35' }, 0) === 'G1318 * 05177 * 1 * 35', idCols[1].display({ ...saved, billSlNo: '1', qty: '35' }, 0));
+ok('it is worked out from the row: the bill line third, the seq fourth, the quantity nowhere',
+  idCols[1].display({ ...saved, billSlNo: '1', qty: '35' }, 0) === 'G1318 * 05177 * 1 * 1', idCols[1].display({ ...saved, billSlNo: '1', qty: '35' }, 0));
 const rowWithId = planPaste({ rows: [], columns: idCols, top: 0, left: 0,
-  matrix: parseTsv('1\tG1318 * 05177 * 1 * 20\t10-PLNBTM\t10-PLNBTM\t520811\t0\t20\t-\t74.00 / 70.30\t0.00\n'), createRow });
+  matrix: parseTsv('1\tG1318 * 05177 * 1 * 1\t10-PLNBTM\t10-PLNBTM\t520811\t0\t20\t-\t74.00 / 70.30\t0.00\n'), createRow });
 ok('a whole copied table row - Sl No and identifier included - lines up', rowWithId.skipped.length === 0
   && rowWithId.rows[0].itemCode === '10-PLNBTM' && rowWithId.rows[0].qty === '20' && rowWithId.rows[0].purchaseRate === '74',
   JSON.stringify(rowWithId.rows[0]));

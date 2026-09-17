@@ -7,6 +7,7 @@ import Tax from '@/models/Tax';
 import CompanyLocation from '@/models/CompanyLocation';
 import StockTransferPacket from '@/models/StockTransferPacket';
 import { BarcodeLabel } from '@/lib/barcodeLabel';
+import { barcodeFilter } from '@/lib/inventory';
 import { requireSession } from '@/lib/session';
 import { escapeRegex } from '@/lib/validate';
 
@@ -113,16 +114,24 @@ export async function GET(req) {
     finYear: sp.get('finYear') || '',
   };
 
-  /* rule 1 - the code must exist in this business's GRC item list */
+  /* rule 1 - the code must exist in this business's GRC item list.
+
+     A scanned barcode is resolved first, exactly and in any spelling (its own
+     number, its composed value, its old barcode - see barcodeFilter); only a
+     code that is no barcode falls back to the item-code match. Both filters
+     and the business scope are $or clauses, so they are combined with $and -
+     spread into one object, the scope's $or would replace the code's. */
   const rx = codeMatch(code);
-  const barcodeRow = await BarcodeLabel.findOne({
-    ...barcodeOrItemCodeFilter(code),
-    ...stockScope(scope.businessId),
-  }).lean();
+  const inScope = (filter) => (scope.businessId
+    ? { $and: [filter, stockScope(scope.businessId)] }
+    : filter);
+  const barcodeRow = await BarcodeLabel.findOne(inScope(barcodeFilter([code]))).lean()
+    || await BarcodeLabel.findOne(inScope(barcodeOrItemCodeFilter(code))).lean();
 
   if (!barcodeRow) {
     /* distinguish "never received anywhere" from "not received HERE" */
-    const elsewhere = await BarcodeLabel.findOne(barcodeOrItemCodeFilter(code)).lean();
+    const elsewhere = await BarcodeLabel.exists(barcodeFilter([code]))
+      || await BarcodeLabel.findOne(barcodeOrItemCodeFilter(code)).lean();
     return json({
       error: elsewhere
         ? 'No stock of "' + code + '" at this business. Receive it here first.'

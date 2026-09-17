@@ -4,7 +4,9 @@ import StockTransfer, { TRANSFER_STATUS } from '@/models/StockTransfer';
 import { handler, json } from '@/lib/apiError';
 import { requirePermission, PERMISSIONS } from '@/lib/rbac';
 import { withLocationPairLock } from '@/lib/locks';
-import { withTransaction, loadUnits, receiveTransfer, InventoryError, BARCODE_STATUS } from '@/lib/inventory';
+import {
+  withTransaction, loadUnits, receiveTransfer, barcodeCandidates, linesAnswering, InventoryError, BARCODE_STATUS,
+} from '@/lib/inventory';
 
 /* POST /api/stock-transfer/<id>/receive
    { barcodes: [...] }  - or omit to accept everything still in transit.
@@ -48,15 +50,21 @@ export const POST = handler(async (req, { params }) => {
     }, 409);
   }
 
+  /* An asked code may be a line's own number or any other spelling its unit
+     answers to (composed value, old barcode) - see linesAnswering. */
+  const candidates = await barcodeCandidates(asked, { businessId: doc.businessId, lines: doc.lines });
+  const linesOf = (c) => linesAnswering(doc.lines, c, candidates);
+  const askedLines = new Set(asked.flatMap(linesOf));
+
   const target = asked.length
-    ? open.filter((l) => asked.includes(l.barcodeNo))
+    ? open.filter((l) => askedLines.has(l))
     : open;
 
   if (!target.length) {
     /* Told apart from "nothing left": the operator scanned something, and it
        is on the document but already settled - which is the double-scan case
        and deserves its own message. */
-    const settled = asked.filter((c) => (doc.lines || []).some((l) => l.barcodeNo === c && (l.received || l.returned)));
+    const settled = asked.filter((c) => linesOf(c).some((l) => l.received || l.returned));
     return json({
       error: settled.length
         ? 'Already handled on this transfer: ' + settled.slice(0, 10).join(', ')
@@ -65,7 +73,7 @@ export const POST = handler(async (req, { params }) => {
     }, 409);
   }
 
-  const unknown = asked.filter((c) => !(doc.lines || []).some((l) => l.barcodeNo === c));
+  const unknown = asked.filter((c) => !linesOf(c).length);
   if (unknown.length) {
     return json({
       error: 'These barcodes are not on transfer ' + doc.transferNo + ': ' + unknown.slice(0, 10).join(', '),

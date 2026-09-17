@@ -10,9 +10,6 @@ export const FIELDS = [
 
 export const ROWS_TABLE = {
     "title": "Tax Slabs",
-    "info": [
-      "<b>Tax Slabs Immutable On Edit:</b> You can add or delete tax slabs only while creating a new record. Once created, tax slabs cannot be added or removed during editing. only the amount &amp; tax name can be edited."
-    ],
     "key": "taxSlabs",
     "cols": [
       {

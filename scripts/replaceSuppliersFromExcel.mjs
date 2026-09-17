@@ -54,6 +54,7 @@
 import path from 'path';
 import { existsSync, writeFileSync, mkdirSync } from 'fs';
 import mongoose from 'mongoose';
+import { contactCollection } from '../lib/contactStorage.js';
 import XLSX from 'xlsx';
 
 const APPLY = process.argv.includes('--apply');
@@ -192,7 +193,7 @@ async function main() {
      overflow classifier */
   await mongoose.connect(URI);
   const db = mongoose.connection.db;
-  const contacts = db.collection('contact');
+  const contacts = db.collection(contactCollection('Supplier'));
   const cityMaster = new Set(
     (await db.collection('cities').find({}).project({ name: 1 }).toArray().catch(() => []))
       .map((c) => T(c.name).toLowerCase()).filter(Boolean)

@@ -4,7 +4,8 @@ import { useRouter } from 'next/navigation';
 import Icon from './Icon';
 import BarcodeSvg from './BarcodeSvg';
 import { RETURN_REASONS } from './transferConstants';
-import { useScanner, useScanSound } from './useScanner';
+import { useScanner, useScanSound, useBarcodeLookup } from './useScanner';
+import { sameBarcode } from '@/lib/barcodeValue';
 
 /* ==========================================================================
    One stock transfer, from despatch to bill.
@@ -91,8 +92,25 @@ export default function StockTransferDetail({ id }) {
   const pickAll = (list) => setPicked(list.map((l) => l.barcodeNo));
 
   /* ------------------------------------------------------ scanner ------- */
-  const onScan = useCallback((code) => {
-    const line = (doc?.lines || []).find((l) => l.barcodeNo === code);
+  const { lookup } = useBarcodeLookup({ business: doc?.businessId || '', location: '', intent: 'LOOKUP' });
+
+  /* A line holds the unit's own number (and its composed value, from the
+     detail route). A label may encode either spelling of that value, or
+     carry an old vendor number no line holds - for that, the server says
+     which unit the code is and the line is found by the unit. */
+  const lineFor = useCallback(async (code) => {
+    const lines = doc?.lines || [];
+    const local = lines.find((l) =>
+      l.barcodeNo === code || sameBarcode(l.barcodeNo, code) || sameBarcode(l.barcodeGenerated, code));
+    if (local) return local;
+    const res = await lookup(code);
+    if (!res.ok || !res.unit) return null;
+    return lines.find((l) =>
+      (l.barcodeId && String(l.barcodeId) === String(res.unit._id)) || sameBarcode(l.barcodeNo, res.unit.barcodeNo)) || null;
+  }, [doc, lookup]);
+
+  const onScan = useCallback(async (code) => {
+    const line = await lineFor(code);
     if (!line) {
       setFlash({ type: 'err', msg: 'Barcode ' + code + ' is not on transfer ' + (doc?.transferNo || '') + '.' });
       beep('err');
@@ -108,10 +126,12 @@ export default function StockTransferDetail({ id }) {
       beep('err');
       return;
     }
-    setPicked((p) => (p.includes(code) ? p : [...p, code]));
-    setFlash({ type: 'ok', msg: line.itemName + ' selected (' + code + ')' });
+    /* the selection holds the line's own number - what the actions send */
+    const no = line.barcodeNo;
+    setPicked((p) => (p.includes(no) ? p : [...p, no]));
+    setFlash({ type: 'ok', msg: line.itemName + ' selected (' + no + ')' });
     beep('ok');
-  }, [doc, beep]);
+  }, [doc, beep, lineFor]);
 
   useScanner(onScan, { enabled: Boolean(doc) && !busy });
 

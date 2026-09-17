@@ -229,6 +229,7 @@ import Icon from './Icon';
 import MultiSelect from './MultiSelect';
 import BarcodeLabelSheet from './BarcodeLabelSheet';
 import { useScope } from './ScopeContext';
+import { composeBarcodeValue, encodedBarcodeValue, parseBarcodeValue, unitAnswersTo } from '@/lib/barcodeValue';
 
 /* Barcode Print Label.
 
@@ -334,7 +335,12 @@ export default function BarcodePrintLabel() {
           quantity: r.qty,
           rsp: r.rsp,
           wsp: r.wsp ?? '',
-          barcodeGenerated: '',
+          /* A challan line is a purchase line, not a barcode, and the print
+             route returns no barcode fields today - so these are blank and
+             the item code is printed. Carried rather than blanked, so a line
+             that does name its barcode prints that barcode. */
+          barcodeNo: r.barcodeNo || '',
+          barcodeGenerated: r.barcodeGenerated || '',
           copies: 1,
         })));
         if (!(d.items || []).length) setStatus('That challan has no line items.');
@@ -352,9 +358,15 @@ export default function BarcodePrintLabel() {
     setStatus(null);
 
     try {
-      /* 1. real generated barcodes for this code */
+      /* 1. real generated barcodes for this code.
+
+            A label printed today encodes the canonical value
+            ("G1318*05178*1*1") while the record stores it spaced
+            ("G1318 * 05178 * 1 * 1"), and this lookup matches text - so a
+            composed code is looked up in its stored spelling. */
+      const parsed = parseBarcodeValue(code);
       const qs = new URLSearchParams({
-        code,
+        code: parsed ? composeBarcodeValue(parsed) : code,
         business: scope.business || '',
         location: scope.location || '',
         finYear: scope.finYear || '',
@@ -362,7 +374,15 @@ export default function BarcodePrintLabel() {
       });
       const bres = await fetch('/api/barcode-generation?' + qs);
       const bdata = await bres.json().catch(() => ({}));
-      const found = bdata.rows || [];
+      const hits = bdata.rows || [];
+
+      /* The lookup is a contains-match, so "...* 1 * 1" also finds
+         "...* 1 * 10" to "...* 1 * 19". When some of what came back IS the
+         scanned barcode (in either spelling), only those are added - a scan
+         adds the label that was scanned. A typed item code matches no
+         barcode exactly and still adds every barcode of that item. */
+      const exact = hits.filter((r) => unitAnswersTo(r, code));
+      const found = exact.length ? exact : hits;
 
       if (found.length) {
         setRows((prev) => [...prev, ...found.map((r) => ({
@@ -373,10 +393,14 @@ export default function BarcodePrintLabel() {
           wsp: r.wspPrice ?? '',
           offerPrice: r.offerPrice ?? '',
           printDescription: r.printDescription || '',
+          /* both fields, as stored - the label reads what it encodes off
+             the pair (encodedBarcodeValue), and a record whose number is its
+             only barcode has nothing in barcodeGenerated */
+          barcodeNo: r.barcodeNo || '',
           barcodeGenerated: r.barcodeGenerated || '',
           copies: 1,
         }))]);
-        if ((bdata.total || 0) > found.length) {
+        if (found === hits && (bdata.total || 0) > found.length) {
           setStatus('Showing the first ' + found.length + ' of ' + bdata.total
             + ' barcodes for that code. Narrow the search to add the rest.');
         }
@@ -398,6 +422,7 @@ export default function BarcodePrintLabel() {
         quantity: 0,
         rsp: hit.rsp ?? '',
         wsp: hit.wsp ?? '',
+        barcodeNo: '',
         barcodeGenerated: '',
         copies: 1,
       }]);
@@ -560,9 +585,11 @@ export default function BarcodePrintLabel() {
                     <td className="text-brand-link">{r.itemName}</td>
                     <td>
                       {r.itemCode}
-                      {r.barcodeGenerated && (
+                      {/* what the label will encode and print under the
+                          bars, in the same canonical spelling */}
+                      {encodedBarcodeValue(r) && (
                         <span className="block font-mono text-[11px] text-inkmuted">
-                          {r.barcodeGenerated}
+                          {encodedBarcodeValue(r)}
                         </span>
                       )}
                     </td>

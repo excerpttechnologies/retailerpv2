@@ -8,7 +8,11 @@ import { escapeRegex } from '@/lib/validate';
 import { nextDocNumber } from '@/lib/docnumber';
 import { handler } from '@/lib/apiError';
 import { requirePermission, PERMISSIONS } from '@/lib/rbac';
-import { withTransaction, loadUnits, returnSoldUnits, InventoryError, BARCODE_STATUS } from '@/lib/inventory';
+import {
+  withTransaction, loadUnits, returnSoldUnits, barcodeCandidates, linesAnswering, lineBarcodeSpellings,
+  unitsByCode, InventoryError, BARCODE_STATUS,
+} from '@/lib/inventory';
+import { barcodeKey, sameBarcode } from '@/lib/barcodeValue';
 
 /* /api/sell-pos-return - list + create. */
 
@@ -95,8 +99,8 @@ export const POST = handler(async (req) => {
     return json({ errors: { parentInvoiceId: 'Choose the invoice being returned against.' } }, 422);
   }
 
-  const codes = [...new Set((data.barcodes || []).map((c) => String(c || '').trim()).filter(Boolean))];
-  if (!codes.length) {
+  const scanned = [...new Set((data.barcodes || []).map((c) => String(c || '').trim()).filter(Boolean))];
+  if (!scanned.length) {
     return json({ errors: { barcodes: 'Scan or select the items being returned.' } }, 422);
   }
 
@@ -115,7 +119,17 @@ export const POST = handler(async (req) => {
       .filter((l) => l.barcodeNo)
       .map((l) => [String(l.barcodeNo), l])
   );
-  const notOnInvoice = codes.filter((c) => !soldLines.has(c));
+  /* A line stores the unit's own number; a scanned label may carry its
+     composed value or its old barcode. Each scanned code is matched to its
+     line, and from here on stands for that line's own number. */
+  const barcodeLines = [...soldLines.values()];
+  const candidates = await barcodeCandidates(scanned, {
+    businessId: businessId || invoice.businessId,
+    lines: barcodeLines,
+  });
+  const lineOf = (c) => linesAnswering(barcodeLines, c, candidates)[0];
+  const notOnInvoice = scanned.filter((c) => !lineOf(c));
+  const codes = [...new Set(scanned.map((c) => lineOf(c)?.barcodeNo).filter(Boolean).map(String))];
   if (notOnInvoice.length) {
     return json({
       error: 'Not sold on invoice ' + invoice.invoiceNo + ': ' + notOnInvoice.slice(0, 8).join(', ')
@@ -129,12 +143,12 @@ export const POST = handler(async (req) => {
   const priorReturns = await PosReturn.find({ parentInvoiceId: parentId }).select('items invoiceNo').lean();
   const alreadyReturned = new Map();
   priorReturns.forEach((r) => (r.items || []).forEach((l) => {
-    if (l.barcodeNo) alreadyReturned.set(String(l.barcodeNo), r.invoiceNo);
+    if (l.barcodeNo) alreadyReturned.set(barcodeKey(l.barcodeNo), r.invoiceNo);
   }));
-  const duplicates = codes.filter((c) => alreadyReturned.has(c));
+  const duplicates = codes.filter((c) => alreadyReturned.has(barcodeKey(c)));
   if (duplicates.length) {
     return json({
-      error: 'Already returned: ' + duplicates.map((c) => c + ' (on ' + alreadyReturned.get(c) + ')').slice(0, 6).join(', ') + '.',
+      error: 'Already returned: ' + duplicates.map((c) => c + ' (on ' + alreadyReturned.get(barcodeKey(c)) + ')').slice(0, 6).join(', ') + '.',
       code: 'ALREADY_RETURNED',
       skipped: duplicates,
     }, 409);
@@ -184,7 +198,7 @@ export const POST = handler(async (req) => {
        same unit while this form was open */
     const clash = await PosReturn.findOne({
       parentInvoiceId: parentId,
-      'items.barcodeNo': { $in: codes },
+      'items.barcodeNo': { $in: lineBarcodeSpellings(codes) },
     }).session(dbSession || null).lean();
     if (clash) {
       throw new InventoryError('ALREADY_RETURNED',
@@ -193,7 +207,11 @@ export const POST = handler(async (req) => {
     }
 
     const units = await loadUnits(codes, { businessId, session: dbSession, prefer: BARCODE_STATUS.SOLD });
-    const missing = codes.filter((c) => !units.some((u) => (u.barcodeNo || u.barcodeGenerated) === c));
+    /* each line needs a unit of its own - two lines that resolve to one
+       unit would refund it twice */
+    const unitOf = unitsByCode(codes, units);
+    const missing = codes.filter((c, i) =>
+      !unitOf.has(barcodeKey(c)) || codes.findIndex((d) => sameBarcode(d, c)) < i);
     if (missing.length) {
       throw new InventoryError('BARCODE_NOT_FOUND',
         'These barcodes are no longer in the system: ' + missing.join(', '), { status: 422, skipped: missing });

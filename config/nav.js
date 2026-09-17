@@ -12,6 +12,7 @@ import {
   LuWarehouse,
   LuMonitor,
   LuBarcode,
+  LuBinary,
   LuSplit,
   LuTag,
   LuCreditCard,
@@ -156,6 +157,14 @@ export const NAV = [
         label: 'Barcode Label Settings',
         icon: LuTag,
         href: '/admin/setting/barcode-label-setting',
+      },
+      /* The digit -> letter code a purchase rate is printed in on a label
+         (lib/purchaseRateCode.js). The page was built but had no menu entry,
+         so it could only be reached by typing its URL. */
+      {
+        label: 'Purchase Rate Code Master',
+        icon: LuBinary,
+        href: '/admin/setting/purchase-rate-code',
       },
       {
         label: 'Payment Method Master',
@@ -445,12 +454,32 @@ export const NAV = [
         href: '/admin/transaction/stocktransfers/transferstockreceiveds' },
     ],
   },
-  {
+  // {
+  //   label: 'Inter Company Sell',
+  //   icon: LuHouse,
+  //   children: [
+  //     { label: 'Delivery Challan', icon: LuFileCheck,
+  //       href: '/admin/transaction/intercompanysell/deliverychallan' },
+  //     { label: 'Sales Invoice', icon: LuFileText,
+  //       href: '/admin/transaction/intercompanysell/salesinvoice' },
+  //     { label: 'Auto Purchases Received', icon: LuPackageCheck,
+  //       href: '/admin/transaction/intercompanysell/auto-purchases-received' },
+  //     { label: 'Auto Purchases Return', icon: LuPackageMinus,
+  //       href: '/admin/transaction/intercompanysell/auto-purchases-return' },
+  //     { label: 'Sales Return', icon: LuUndo2,
+  //       href: '/admin/transaction/intercompanysell/salereturn' },
+  //   ],
+  // },
+
+
+   {
     label: 'Inter Company Sell',
     icon: LuHouse,
     children: [
       { label: 'Delivery Challan', icon: LuFileCheck,
         href: '/admin/transaction/intercompanysell/deliverychallan' },
+      { label: 'Receive Delivery Challan', icon: LuPackageCheck,
+        href: '/admin/transaction/intercompanysell/receivedeliverychallan' },
       { label: 'Sales Invoice', icon: LuFileText,
         href: '/admin/transaction/intercompanysell/salesinvoice' },
       { label: 'Auto Purchases Received', icon: LuPackageCheck,
