@@ -23,7 +23,7 @@ import {
 } from "@/lib/itemsSheet";
 import ItemsSheet from "./ItemsSheet";
 import {
-  generateBarcodeValue, composedValueOf, unitNumberOf, encodedBarcodeValue, parseBarcodeValue,
+  generateBarcodeValue, composedValueOf, unitNumberOf, parseBarcodeValue,
   billSlNoForBarcode, highestSerialNo, serialFloorOf,
 } from "@/lib/barcodeValue";
 import {
@@ -32,7 +32,6 @@ import {
 } from "@/lib/barcodeLabelPrint";
 import {
   formDefaultsFromSetup, unmappedSetupFields, setupStatusMessage, setupIdentity, formatSetupValue,
-  PRICE_SETUP_TO_FORM,
 } from "@/lib/supplierPriceSetup";
 import BatchLabelCountDialog from "./BatchLabelCountDialog";
 import * as XLSX from "xlsx";
@@ -951,7 +950,6 @@ function SupplierPriceSetupPanel({ setup }) {
   if (!setup) return null;
   const message = setupStatusMessage(setup);
   const extra = unmappedSetupFields(setup);
-  const connected = (setup.fields || []).filter((field) => PRICE_SETUP_TO_FORM[field.key]);
   return (
     <div className="mb-4 rounded-md border border-[#dfe4eb] bg-[#f8fafc] px-3 py-2 text-[12px] text-gray-700" data-testid="supplier-price-setup">
       <div className="flex flex-wrap items-baseline justify-between gap-2">
@@ -973,18 +971,16 @@ function SupplierPriceSetupPanel({ setup }) {
               ))}
             </div>
           )}
-          {connected.length > 0 && (
-            <div className="mt-1 text-[11px] text-gray-500">
-              {connected.map((field) => field.label).join(", ")} fill the matching inputs below.
-            </div>
-          )}
+          {/* the "... fill the matching inputs below." hint that listed those
+              fields is removed (user, 2026-09-17); the inputs themselves still
+              start from the supplier's values */}
         </>
       )}
     </div>
   );
 }
 
-function AddItemModal({ open, onClose, onSubmit, onSubmitAndPrint, barcodeFormat, business = "", markupDefaults = {}, priceSetup = null, rateCodeMapping = null, grcId = null, initialBillSlNo = 1 }) {
+function AddItemModal({ open, onClose, onSubmit, onSubmitAndPrint, barcodeFormat, business = "", markupDefaults = {}, priceSetup = null, rateCodeMapping = null, grcId = null, initialBillSlNo = 1, initialNextSerialNo = 1 }) {
   /* The form's starting prices: the GRC supplier's Price Calculation Setup
      when the screen has it, otherwise the three markups it has always been
      handed. A value the supplier does not have is left blank - never a
@@ -1048,8 +1044,10 @@ function AddItemModal({ open, onClose, onSubmit, onSubmitAndPrint, barcodeFormat
   });
 
   const [form, setForm] = useState(() => createBlankForm());
-  /* State for the next Serial No. (4th part of barcode) - fetched from backend */
-  const [nextSerialNo, setNextSerialNo] = useState(1);
+  /* State for the next Serial No. (4th part of barcode) - fetched from backend.
+     Seeded from Item Summary SL NO (the row's position in the summary table),
+     passed in as initialNextSerialNo. The operator can still override it. */
+  const [nextSerialNo, setNextSerialNo] = useState(initialNextSerialNo);
   const [serialNoLoading, setSerialNoLoading] = useState(false);
   /* the reservation round trip - the Add buttons are disabled while it runs
      so a double-click cannot burn a second block of numbers */
@@ -2777,7 +2775,7 @@ function PrintLabelPicker({ rows, open, onClose }) {
     <div className="no-print fixed inset-0 z-[70] flex items-center justify-center bg-black/40 p-4">
       <BatchLabelCountDialog
         open={Boolean(batchPrompt)}
-        barcode={promptRow ? encodedBarcodeValue(promptRow) : ''}
+        barcode={promptRow ? promptRow.barcodeNo || '' : ''}
         description={promptRow ? (promptRow.printDescription || promptRow.itemName || promptRow.supplierDescription || '') : ''}
         available={batchAvailableQty(promptRow)}
         initialValue={batchPrompt ? (batchCounts[batchPrompt.key] ?? '') : ''}
@@ -2802,11 +2800,10 @@ function PrintLabelPicker({ rows, open, onClose }) {
                   <input type="checkbox" checked={selected.includes(key)} onChange={() => setSelected((prev) => prev.includes(key) ? prev.filter((item) => item !== key) : [...prev, key])} />
                   <div className="min-w-0 flex-1">
                     <div className="font-medium">{row.itemCode || row.itemName || row.supplierDescription || "Item"}</div>
-                    {/* the barcode value exactly as its label encodes and
-                        prints it, with the unit's own number beside it */}
+                    {/* the unit's own barcodeNo only - the composed value
+                        ("G1319*05183*1*1") is hidden here (user, 2026-09-17) */}
                     <div className="font-mono text-xs text-gray-600" style={{ textTransform: "none" }}>
-                      {encodedBarcodeValue(row)}
-                      {composedValueOf(row) && unitNumberOf(row) ? <span className="ml-2 text-gray-400">{unitNumberOf(row)}</span> : null}
+                      {row.barcodeNo}
                     </div>
                   </div>
                   {/* The count is the rule's, not an input: an MTR barcode
@@ -3515,9 +3512,10 @@ export default function GCRBarcodeGeneration({ grcId = null, initialRows = NO_RO
     return row;
   }, []);
 
-  /* THE barcode value of every row, as this screen shows it - the ITEMS
-     sheet's Barcode Identifier column and the Item With Barcode tab - in the
-     canonical spelling the label encodes and prints (lib/barcodeValue.js):
+  /* THE barcode value of every row, for the ITEMS sheet's Barcode Identifier
+     column when that column is shown (the Item With Barcode tab's Barcode No
+     shows the saved barcodeNo instead) - in the canonical spelling
+     the label encodes and prints (lib/barcodeValue.js):
 
         SUPPLIER_CODE*GRC_NUMBER*BILL_SL_NO*SERIAL_NO
 
@@ -3595,6 +3593,10 @@ export default function GCRBarcodeGeneration({ grcId = null, initialRows = NO_RO
             ? 1
             : Math.max(...validRows.map((r) => Number(r.billSlNo) || 0)) + 1
         }
+        /* The Serial No.* field initial value — the SL NO from the Item Summary
+           for the next new entry. Item Summary SL NO is simply the row counter
+           of that table (1, 2, 3...), so the next one is summaryRows.length + 1. */
+        initialNextSerialNo={summaryRows.length + 1}
         onClose={() => setShowAddItem(true)}
         onSubmit={(items) => appendRows(items)}
         onSubmitAndPrint={(items) => {
@@ -3704,7 +3706,6 @@ export default function GCRBarcodeGeneration({ grcId = null, initialRows = NO_RO
               pendingDeleteCount={pendingDeletes.length}
               onUndoDeletes={undoDeletes}
               focusRequest={sheetFocus}
-              identifierOf={barcodeValueOf}
             />
           )}
 
@@ -3805,7 +3806,11 @@ export default function GCRBarcodeGeneration({ grcId = null, initialRows = NO_RO
                     <td className="border border-gray-300 px-2 py-2">{money(row.wsp || 0)}</td>
                     <td className="border border-gray-300 px-2 py-2">{money(row.dp || 0)}</td>
                     <td className="border border-gray-300 px-2 py-2">{row.uniqueBarcode || "No"}</td>
-                    <td className="border border-gray-300 px-2 py-2"><input value={barcodeValueOf(row)} disabled className="w-52 rounded border border-gray-200 bg-gray-100 px-2 py-1 font-mono text-gray-500" aria-label="System generated barcode" /></td>
+                    {/* Barcode No is the saved record's own barcodeNo, as stored
+                        ("9A1163") - never barcodeGenerated ("G1319 * 05183 *
+                        1 * 1"), and never a value worked out here. A row not
+                        saved yet has none until Submit gives it one. */}
+                    <td className="border border-gray-300 px-2 py-2"><input value={(row._id && row.barcodeNo) || ""} disabled className="w-52 rounded border border-gray-200 bg-gray-100 px-2 py-1 font-mono text-gray-500" aria-label="System generated barcode" /></td>
                     {additionalFields.map((field) => <td key={field} className="border border-gray-300 px-2 py-2">{row.customFields?.[field] || "-"}</td>)}
                     {/* Not Tab stops: this table has no inputs, so Tab out of
                         the Add Item form ran through the toolbar straight onto

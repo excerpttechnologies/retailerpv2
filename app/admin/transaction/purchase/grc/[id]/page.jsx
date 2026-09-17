@@ -42,6 +42,11 @@ import { encodedBarcodeValue } from '@/lib/barcodeValue';
 const fields = FORM.cards.flatMap((card) => card.fields || []);
 const number = (value) => Number(value) || 0;
 
+/* The Item With Barcode table's "Barcode Generated" column is hidden from the
+   UI, not removed (user, 2026-09-17) - set this to true to show it again.
+   barcodeGenerated itself is untouched: labels and printing still use it. */
+const SHOW_BARCODE_GENERATED = false;
+
 export default function EditTransactionPurchaseGrcPage() {
   const { id } = useParams();
   const router = useRouter();
@@ -192,7 +197,7 @@ export default function EditTransactionPurchaseGrcPage() {
         </div>
         <div className="card-body overflow-x-auto">
           {tab === 'items' ? (
-            <table className="dt min-w-[1500px]"><thead><tr>{['Item Code', 'Batch/Unique', 'Bill Sl No', 'Supplier Description', 'Qty', 'UOM', 'HSN', 'Pur Rate', 'Final Net', 'GST %', 'Retail Price', 'Offer Price', 'Barcode Generated', ''].map((heading) => <th key={heading}>{heading}</th>)}</tr></thead><tbody>
+            <table className="dt min-w-[1500px]"><thead><tr>{['Item Code', 'Batch/Unique', 'Bill Sl No', 'Supplier Description', 'Qty', 'UOM', 'HSN', 'Pur Rate', 'Final Net', 'GST %', 'Retail Price', 'Offer Price', 'Barcode No', ...(SHOW_BARCODE_GENERATED ? ['Barcode Generated'] : []), ''].map((heading) => <th key={heading}>{heading}</th>)}</tr></thead><tbody>
               {/* "No barcode items yet" is right for a GRC being built, but
                   misleading for an IMPORTED one - it reads as "none exist",
                   when the truth is the historical export carried no item
@@ -201,7 +206,7 @@ export default function EditTransactionPurchaseGrcPage() {
                   whether the import dropped something. Nothing is fabricated;
                   the row count is still zero. */}
               {rows.length === 0 && (
-                <tr><td colSpan={14} className="dt-empty">
+                <tr><td colSpan={SHOW_BARCODE_GENERATED ? 15 : 14} className="dt-empty">
                   {data.importedFrom
                     ? `No item detail was included for this GRC in the historical import${
                       data.totalQuantity ? ` - its header records a total quantity of ${data.totalQuantity}` : ''
@@ -209,7 +214,7 @@ export default function EditTransactionPurchaseGrcPage() {
                     : 'No barcode items yet.'}
                 </td></tr>
               )}
-              {rows.map((row) => <tr key={row._id}><td>{cell(row.itemCode)}</td><td>{cell(row.batchUnique)}</td><td>{cell(row.billSlNo)}</td><td>{cell(row.supplierDescription)}</td><td>{cell(row.qty)}</td><td>{cell(row.uom)}</td><td>{cell(row.hsn)}</td><td>{cell(row.purRate)}</td><td>{cell(row.finalNet)}</td><td>{cell(row.gst)}</td><td>{cell(row.retailPrice)}</td><td>{cell(row.offerPrice)}</td><td>{/* what its label encodes and prints */}{cell(encodedBarcodeValue(row))}</td><td><button type="button" className="text-brand-link underline" onClick={openBarcode}>Edit</button></td></tr>)}
+              {rows.map((row) => <tr key={row._id}><td>{cell(row.itemCode)}</td><td>{cell(row.batchUnique)}</td><td>{cell(row.billSlNo)}</td><td>{cell(row.supplierDescription)}</td><td>{cell(row.qty)}</td><td>{cell(row.uom)}</td><td>{cell(row.hsn)}</td><td>{cell(row.purRate)}</td><td>{cell(row.finalNet)}</td><td>{cell(row.gst)}</td><td>{cell(row.retailPrice)}</td><td>{cell(row.offerPrice)}</td><td>{/* the unit's own stored barcodeNo ("9A1163") - never barcodeGenerated */}{cell(row.barcodeNo)}</td>{SHOW_BARCODE_GENERATED && <td>{/* what its label encodes and prints */}{cell(encodedBarcodeValue(row))}</td>}<td><button type="button" className="text-brand-link underline" onClick={openBarcode}>Edit</button></td></tr>)}
             </tbody></table>
           ) : (
             <table className="dt min-w-[900px]">

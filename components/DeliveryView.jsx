@@ -11,7 +11,8 @@ import { useScope } from './ScopeContext';
 import { fmt, toCsv, toXlsHtml, download, printTable } from '@/lib/format';
 import { FIELDS, freightBreakdown, bookingDelayDays, delayTone } from '@/app/admin/transport/delivery/fields';
 import { FIELDS as TRANSPORTER_FIELDS } from '@/app/admin/transport/transporter/fields';
-import { AGENT_QUICK_FIELDS, TABS as SUPPLIER_TABS } from '@/app/admin/contact/supplier/tabs';
+import { AGENT_QUICK_FIELDS, FIELD_LABELS as SUPPLIER_FIELD_LABELS, TABS as SUPPLIER_TABS } from '@/app/admin/contact/supplier/tabs';
+import SupplierImportPanel from './SupplierImportPanel';
 
 /* The LR-page quick-add does not collect a transporter code. The API still
   requires one, so the dialog supplies an internal value when saving. */
@@ -250,6 +251,15 @@ function DeliveryDialog({ row, onClose, onSaved }) {
                 tabs: SUPPLIER_TABS,
                 /* the same GST NO duplicate check as Contacts > Suppliers */
                 gstLookup: true,
+                /* GST / Excel import panel on the Basic Information tab,
+                   identical to the standalone Supplier Add page. applyPatch
+                   writes into the form state; nothing reaches the API until
+                   the operator hits Submit. */
+                renderStepExtras: ({ tab, data, applyPatch }) => (
+                  tab.key === 'basic'
+                    ? <SupplierImportPanel data={data} labels={SUPPLIER_FIELD_LABELS} onApply={applyPatch} />
+                    : null
+                ),
                 quickAdds: {
                   agentId: {
                     label: 'Add Agent', title: 'Add Agent', slug: 'agent', ref: 'agent',
@@ -337,11 +347,6 @@ function DeliveryDialog({ row, onClose, onSaved }) {
                       </span>
                     )}
                   </div>
-                )}
-                {!isEdit && nextNo && (
-                  <p className="mt-0.5 text-[11.5px] text-inkmuted">
-                    Auto-generated on save — do not type manually
-                  </p>
                 )}
                 {errors.transactionNo && (
                   <div className="mt-1 text-[12px] text-red-600">{errors.transactionNo}</div>

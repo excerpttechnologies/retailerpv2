@@ -13,6 +13,10 @@ import {
   mm,
 } from '@/lib/barcodeLabelGeometry';
 
+/* Whether a label prints the composed value ("G1319*05183*1*1") as text on
+   the right of its identifier row. Hidden from the UI, not removed. */
+const SHOW_COMPOSED_TEXT = false;
+
 /* ==========================================================================
    GrcBarcodeLabel — the SINGLE label renderer shared by:
 
@@ -130,7 +134,10 @@ export function Label({ label, geometry }) {
      its own number, which is what the left-hand side already prints, and the
      right-hand side stays empty rather than showing something invented. */
   const barcodeNo = label.barcodeNo;
-  const secondary = label.barcodeGenerated ? label.barcode : '';
+  /* The right-hand composed text is HIDDEN (user, 2026-09-17): only the
+     unit's own barcodeNo is printed as text. The bars above are unchanged.
+     Set SHOW_COMPOSED_TEXT to true to print it again. */
+  const secondary = SHOW_COMPOSED_TEXT && label.barcodeGenerated ? label.barcode : '';
 
   /* A row of three values on one grid, so each value's horizontal position is
      fixed regardless of how long its neighbours are. minmax(0, …) stops

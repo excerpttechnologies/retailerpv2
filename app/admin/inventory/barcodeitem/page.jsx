@@ -2,7 +2,6 @@
 'use client';
 
 import ListView from '@/components/ListView';
-import { canonicalBarcodeValue } from '@/lib/barcodeValue';
 
 /* Barcode Items - list.
    Data should NOT load until the user applies a filter/search.
@@ -116,10 +115,8 @@ const CONFIG = {
     {
       k: "barcodeNo",
       t: "Barcode No",
-      // The API fills this from the stored barcodeGenerated
-      // ("G1318 * 05178 * 1 * 1"); shown in the spelling the label prints
-      // ("G1318*05178*1*1"). A counter number comes back unchanged.
-      value: (row) => canonicalBarcodeValue(row.barcodeNo)
+      // The stored barcodeNo ("9A1163"), as it is - never barcodeGenerated.
+      value: (row) => row.barcodeNo || ""
     },
 
     {

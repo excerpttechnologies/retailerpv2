@@ -944,7 +944,8 @@ function savedRowsOf(units) {
    Submit carries the same Bill Sl No. and Serial No. as its value. */
 function savedRowOf(u) {
   return {
-    _id: String(u._id), barcodeNo: unitBarcode(u), barcodeGenerated: u.barcodeGenerated || '',
+    /* barcodeNo as stored - never barcodeGenerated in its place */
+    _id: String(u._id), barcodeNo: String(u.barcodeNo ?? '').trim(), barcodeGenerated: u.barcodeGenerated || '',
     seq: u.seq || '', billSlNo: u.billSlNo || '', serialNo: u.serialNo || '',
   };
 }

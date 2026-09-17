@@ -74,10 +74,11 @@ export async function GET(req) {
 
   const barcodeStart = sp.get('barcodeStart');
   const barcodeEnd = sp.get('barcodeEnd');
+  /* the "Barcode No" Start / End filter - on the stored barcodeNo */
   if (barcodeStart || barcodeEnd) {
-    filter.barcodeGenerated = {};
-    if (barcodeStart) filter.barcodeGenerated.$gte = barcodeStart;
-    if (barcodeEnd) filter.barcodeGenerated.$lte = barcodeEnd;
+    filter.barcodeNo = {};
+    if (barcodeStart) filter.barcodeNo.$gte = barcodeStart;
+    if (barcodeEnd) filter.barcodeNo.$lte = barcodeEnd;
   }
 
   const search = (sp.get('search') || '').trim();
@@ -131,7 +132,10 @@ export async function GET(req) {
   return json({
     rows: rows.map((r) => ({
       _id: String(r._id),
-      barcodeNo: r.barcodeGenerated || r.oldBarcode || '',
+      /* Barcode No is the stored barcodeNo ("9A1163"); the composed
+         barcodeGenerated ("G1319 * 05183 * 1 * 1") comes back as itself */
+      barcodeNo: r.barcodeNo || '',
+      barcodeGenerated: r.barcodeGenerated || '',
       itemCode: r.itemCode || '',
       itemId: r.printDescription || r.supplierDescription || r.itemCode || '',
       description: r.printDescription || r.supplierDescription || '',

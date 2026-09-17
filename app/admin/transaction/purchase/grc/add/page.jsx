@@ -19,6 +19,9 @@ export default function AddTransactionPurchaseGrcPage() {
         quickAdd: {
           field: 'supplierId', label: '', title: '', slug: 'supplier', inline: true,
           endpoint: '/api/supplier', fields: SUPPLIER_QUICK_FIELDS,
+          /* Navigate to the full Supplier Add page instead of opening a modal,
+             so the operator gets the complete form including Import from GST. */
+          navigate: '/admin/contact/supplier/add',
         },
         quickAdds: {
           agentId: {
