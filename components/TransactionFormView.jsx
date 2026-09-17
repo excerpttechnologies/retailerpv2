@@ -562,7 +562,8 @@ export default function TransactionFormView({ cfg, id, slug }) {
   const freightLocked = data.freightMode === FREIGHT_NONE;
 
   useEffect(() => {
-    if (!voucherCard) return undefined;
+    /* wait for the company - the rate is looked up in its HSN Master */
+    if (!voucherCard || !scope.business) return undefined;
     const codes = Array.from(new Set(
       voucherRows.map((row) => String(row.hsnCode || '').trim()).filter((c) => c.length >= 4)
     )).filter((code) => !hsnRateCache.current.has(code));
@@ -574,11 +575,15 @@ export default function TransactionFormView({ cfg, id, slug }) {
 
     Promise.all(codes.map(async (code) => {
       try {
-        const hsnResponse = await fetch('/api/hsn?perPage=20&search=' + encodeURIComponent(code));
+        /* this company's HSN Master only - the same code can exist under
+           another company with a different (or missing) tax slab */
+        const hsnResponse = await fetch('/api/hsn?perPage=20&search=' + encodeURIComponent(code)
+          + '&business=' + encodeURIComponent(scope.business));
         const hsnPayload = await hsnResponse.json();
         const rows = hsnPayload.rows || [];
-        /* the search is a contains-match, so prefer the exact code */
-        const match = rows.find((r) => String(r.code || '').trim() === code) || rows[0];
+        /* the search is a contains-match: only the exact code gives a rate -
+           a neighbouring code's slab is not this code's tax */
+        const match = rows.find((r) => String(r.code || '').trim() === code);
         const taxId = match?.taxSlabs?.[0]?.gstTaxNameId;
         if (!taxId) return [code, null];
         const taxResponse = await fetch('/api/tax/' + taxId);
@@ -598,7 +603,7 @@ export default function TransactionFormView({ cfg, id, slug }) {
     });
 
     return () => { cancelled = true; };
-  }, [voucherRows, voucherCard]);
+  }, [voucherRows, voucherCard, scope.business]);
 
   /* Recompute after anything that feeds the formulas: a Taxable edit, an HSN
      code, a rate arriving, the Freight mode, a row added or removed.
@@ -624,8 +629,15 @@ export default function TransactionFormView({ cfg, id, slug }) {
         }
         const tax = rate ? Math.round(taxable * rate) / 100 : 0;
         const taxAmount = tax.toFixed(2);
-        const totalAmount = (taxable + tax).toFixed(2);
-        const totalValue = String(row.totalAmount ?? '').trim() || totalAmount;
+        const totalAmount = (taxable + tax + freight).toFixed(2);
+        /* A total the operator typed stands; one the screen filled in follows
+           the numbers. It used to keep whatever it was first given (the taxable
+           plus the PREVIOUS keystroke's tax, or the taxable alone when the rate
+           arrived later) and it never added the freight the formula above
+           names. */
+        const typedTotal = String(row.totalAmount ?? '').trim();
+        const previousAuto = taxable + (Number(row.taxAmount) || 0) + freight;
+        const totalValue = typedTotal && Math.abs(Number(typedTotal) - previousAuto) > 0.005 ? typedTotal : totalAmount;
         if (row.taxAmount === taxAmount && row.totalAmount === totalValue && row.freightAmount === freightValue) return row;
         changed = true;
         return { ...row, taxAmount, totalAmount: totalValue, freightAmount: freightValue };
@@ -733,8 +745,8 @@ export default function TransactionFormView({ cfg, id, slug }) {
     setVoucherRows((current) => current.map((row, rowIndex) => {
       if (rowIndex !== index) return row;
       const next = { ...row, [key]: value };
-      if (['invoiceQty', 'taxableValue', 'taxAmount'].includes(key)) {
-        next.totalAmount = (Number(next.taxableValue) + Number(next.taxAmount)).toFixed(2);
+      if (['invoiceQty', 'taxableValue', 'taxAmount', 'freightAmount'].includes(key)) {
+        next.totalAmount = (Number(next.taxableValue) + Number(next.taxAmount) + (Number(next.freightAmount) || 0)).toFixed(2);
       }
       return next;
     }));

@@ -46,12 +46,21 @@ export default function GrcPrintPage() {
 
   const { grc, rows } = data;
 
+  /* Money from the rows, the way every other GRC screen works it out:
+       taxable = final purchase rate (tax-exclusive) x qty
+       GST     = taxable x the row's GST% / 100   - an amount
+       net     = taxable + GST
+     This used to add up the GST PERCENTAGES as a "total" and print the
+     taxable value as the net. A GRC with no barcode rows (an imported one)
+     prints the totals stored on its header instead. */
+  const taxableOf = (r) => (parseFloat(r.finalNet || r.purRate) || 0) * (parseFloat(r.qty) || 0);
   const totalQty = rows.reduce((s, r) => s + (parseFloat(r.qty) || 0), 0);
-  const totalGst = rows.reduce((s, r) => s + (parseFloat(r.gst) || 0), 0);
-  const totalNet = rows.reduce(
-    (s, r) => s + (parseFloat(r.finalNet || r.purRate) || 0) * (parseFloat(r.qty) || 0),
-    0
-  );
+  const totalTaxable = rows.reduce((s, r) => s + taxableOf(r), 0);
+  /* each line's GST rounded to the paisa, as the save route totals the header */
+  const totalGst = rows.reduce((s, r) => s + Math.round(taxableOf(r) * (parseFloat(r.gst) || 0)) / 100, 0);
+  const totalNet = totalTaxable + totalGst;
+  /* rows count only when at least one carries a purchase price */
+  const hasRows = rows.some((r) => taxableOf(r) > 0);
 
   return (
     <div className="max-w-5xl mx-auto p-6 text-slate-800 text-sm print:p-0">
@@ -71,7 +80,10 @@ export default function GrcPrintPage() {
         </button>
       </div>
 
-      <div className="border border-slate-300 rounded-lg p-6">
+      {/* print-doc: the global print stylesheet (app/globals.css) hides
+          everything at print time except .print-doc - without it the
+          browser's print preview of this page was a blank sheet */}
+      <div className="print-doc border border-slate-300 rounded-lg p-6">
         <h1 className="text-lg font-bold mb-1">Goods Receipt Challan</h1>
         <p className="text-xs text-slate-500 mb-4">GRC No: {grc.grcNumber}</p>
 
@@ -81,9 +93,9 @@ export default function GrcPrintPage() {
           <Field label="Vendor Doc Date" value={fmtDate(grc.vendorDocDate)} />
           <Field label="Occasion" value={grc.occasion} />
           <Field label="Total Quantity" value={grc.totalQuantity} />
-          <Field label="GST" value={grc.gst} />
-          <Field label="Taxable" value={grc.taxable} />
-          <Field label="Net Amount" value={grc.netAmount} />
+          <Field label="Taxable" value={hasRows ? totalTaxable.toFixed(2) : grc.taxable} />
+          <Field label="GST Amount" value={hasRows ? totalGst.toFixed(2) : grc.gst} />
+          <Field label="Net Amount" value={hasRows ? totalNet.toFixed(2) : grc.netAmount} />
         </div>
 
         <table className="w-full border-collapse text-[11px]">
@@ -125,10 +137,9 @@ export default function GrcPrintPage() {
             <tr className="bg-slate-100 font-semibold">
               <td colSpan={5} className="border border-slate-300 px-2 py-1 text-right">Totals</td>
               <td className="border border-slate-300 px-2 py-1">{totalQty}</td>
-              <td colSpan={5} className="border border-slate-300"></td>
-              <td className="border border-slate-300 px-2 py-1">{totalGst.toFixed(2)}</td>
-              <td colSpan={2} className="border border-slate-300"></td>
-              <td className="border border-slate-300 px-2 py-1">₹ {totalNet.toFixed(2)}</td>
+              <td colSpan={9} className="border border-slate-300 px-2 py-1 text-right">
+                Taxable ₹ {totalTaxable.toFixed(2)} · GST ₹ {totalGst.toFixed(2)} · Net ₹ {totalNet.toFixed(2)}
+              </td>
             </tr>
           </tfoot>
         </table>

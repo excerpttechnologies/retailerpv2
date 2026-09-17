@@ -41,6 +41,7 @@
 
 
 
+import { isValidObjectId } from 'mongoose';
 import dbConnect from '@/lib/db';
 import Grc from '@/models/Grc';
 import { Supplier } from '@/lib/contacts';
@@ -66,6 +67,8 @@ export async function GET(_req, { params }) {
   /* Next 15 hands `params` over as a Promise - destructuring it directly
      yields undefined, so every lookup here silently missed. */
   const { id } = await params;
+  /* a GRC number or other non-id used to throw a cast error - a bare 500 */
+  if (!isValidObjectId(id)) return json({ error: 'GRC not found' }, 404);
 
   const grc = await Grc.findById(id).lean();
   if (!grc) return json({ error: 'GRC not found' }, 404);

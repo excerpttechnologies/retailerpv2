@@ -16,7 +16,7 @@ import { computeSampleBarcode } from "@/lib/barcodeFormat";
 import { encodeRate } from "@/lib/purchaseRateCode";
 import { gstPercentForAmount, slabGstPercent } from "@/lib/hsnGst";
 import { purchasePriceError } from "@/lib/purchasePrice";
-import { toGridRow } from "@/lib/barcodeRowSync";
+import { toGridRow, pmfOf, PMF_REQUIRED_MESSAGE } from "@/lib/barcodeRowSync";
 import {
   money, finalRateOf, sameValue, sheetColumns, sheetProblems, isLockedRow, lockReason, isBlankRow,
   SHEET_INHERITED_FIELDS,
@@ -48,6 +48,11 @@ const decimal2 = (value) => {
   return raw.slice(0, dot + 1) + raw.slice(dot + 1).replace(/\./g, '').slice(0, 2);
 };
 const fixed2 = (value) => (Number.isFinite(Number(value)) ? Number(value).toFixed(2) : '');
+/* the Add Item form's three offer percentages */
+const OFFER_PCT_KEYS = ["rspOfferPct", "wspOfferPct", "dpOfferPct"];
+/* start of the notice shown when saved rows get their GST% from HSN Master
+   (an action for the operator - the banner shows it in amber) */
+const GST_FILL_NOTICE = "GST% was missing";
 
 /* BILL SL NO. IS HIDDEN, NOT REMOVED (2026-09-17, at the business's request).
 
@@ -58,6 +63,13 @@ const fixed2 = (value) => (Number.isFinite(Number(value)) ? Number(value).toFixe
    columns still show and accept it. Set this back to true to show the two
    Bill Sl No. boxes and their "required" checks again. */
 const SHOW_BILL_SL_NO = false;
+
+/* THE "SUPPLIER PRICE CALCULATION SETUP" BOX IS HIDDEN, NOT REMOVED
+   (2026-09-17, at the business's request). The supplier's setup still fills
+   Discount Type, Discount and the three markups exactly as before, and its
+   Round Off values still apply - only the read-only box above the Price
+   Calculation inputs is not shown. Set this back to true to show it again. */
+const SHOW_SUPPLIER_PRICE_SETUP = false;
 
 /* The initialRows default. A fresh [] on every render made the effect that
    loads them run after every render - on the standalone screen, which passes
@@ -77,8 +89,11 @@ async function fetchTaxRate(taxId) {
 
   try {
     const response = await fetch(`/api/tax/${key}`);
+    /* a failed read is not a 0% rate - leave it uncached so the next lookup
+       asks again */
+    if (!response.ok) return 0;
     const payload = await response.json();
-    const rate = slabGstPercent(payload?.doc || payload || {});
+    const rate = slabGstPercent(payload?.doc || {});
     taxRateCache.set(key, rate);
     return rate;
   } catch {
@@ -940,6 +955,46 @@ function withFormPrices(current) {
   };
 }
 
+/* OFFER PRICE / MARK DOWN FROM THE INVENTORY ITEM.
+
+   Inventory > Item stores an item's offers as percentages (RSP / WSP / Ecomm
+   Offer %; /api/item/<id>/detail returns them as rspOfferPct, wspOfferPct,
+   dpOfferPct). `item` is that detail, or null when the item is cleared. Its
+   percentages go into the offer boxes - and OFFER APPLICABLE is ticked, since
+   the boxes are disabled otherwise - and withFormPrices turns them into offer
+   prices off the row's RSP / WSP / E-COMM, the same arithmetic as a typed %.
+   A % the operator typed is never overwritten, and an item with no offer
+   clears only what the previous item filled in.
+
+   Pure: what the last item filled in (and whether it ticked the box) is kept
+   on the form itself as _autoOffer, which the submitted row never carries -
+   so it is safe inside a setForm updater, which React may run twice. */
+function withItemOffers(current, item) {
+  const previous = current._autoOffer || null;
+  const next = { ...current };
+  const applied = {};
+  OFFER_PCT_KEYS.forEach((key) => {
+    const now = Number(current[key] || 0);
+    const auto = previous?.[key] != null ? Number(previous[key]) : null;
+    if (now !== 0 && now !== auto) return;                 // typed by the operator
+    if (item?.[key] != null) {
+      /* rounded once, so the box and the record of it always agree */
+      const pct = Number(fixed2(item[key]));
+      next[key] = fixed2(pct);
+      applied[key] = pct;
+    } else if (auto !== null) {
+      next[key] = 0;
+    }
+  });
+  const any = Object.keys(applied).length > 0;
+  if (any) next.offerApplicable = true;
+  /* untick only what an item ticked, and never while a % the operator typed
+     is still in a box - it would sit disabled and be dropped on Submit */
+  else if (previous?.ticked && OFFER_PCT_KEYS.every((key) => Number(next[key] || 0) === 0)) next.offerApplicable = false;
+  next._autoOffer = any ? { ...applied, ticked: Boolean(previous?.ticked) || !current.offerApplicable } : null;
+  return next;
+}
+
 /* SUPPLIER -> PRICE CALCULATION SETUP, as this form shows it.
 
    The fields that have an input of their own on the form (Discount Type,
@@ -1053,6 +1108,16 @@ function AddItemModal({ open, onClose, onSubmit, onSubmitAndPrint, barcodeFormat
      so a double-click cannot burn a second block of numbers */
   const [reserving, setReserving] = useState(false);
   const [reserveError, setReserveError] = useState("");
+  /* Says why the offer boxes did not fill: the picked item has no RSP / WSP /
+     E-COMM Offer % saved in Inventory > Item (most items have none). */
+  const [offerNote, setOfferNote] = useState("");
+  const noteItemOffers = (item, code) => setOfferNote(
+    item && OFFER_PCT_KEYS.some((key) => item[key] != null)
+      ? ""
+      : item
+        ? `No RSP / WSP / E-COMM Offer % is saved for ${code} in Inventory > Item.`
+        : `${code} was not found in Inventory > Item, so no Offer % was filled.`
+  );
   /* Server-side search state for Item Code and HSN */
   const [itemOptions, setItemOptions] = useState([]);
   const [itemLoading, setItemLoading] = useState(false);
@@ -1124,6 +1189,9 @@ function AddItemModal({ open, onClose, onSubmit, onSubmitAndPrint, barcodeFormat
     setHsnLoading(true);
     hsnTimerRef.current = setTimeout(() => {
       const qs = new URLSearchParams({ perPage: '20', search: q || '' });
+      /* this company's HSN Master only - the same code can exist under
+         another company with a different (or missing) tax slab */
+      if (business) qs.set('business', business);
       fetch('/api/hsn?' + qs)
         .then((r) => r.json())
         .then((d) => {
@@ -1149,6 +1217,7 @@ function AddItemModal({ open, onClose, onSubmit, onSubmitAndPrint, barcodeFormat
     setHsn2Loading(true);
     hsn2TimerRef.current = setTimeout(() => {
       const qs = new URLSearchParams({ perPage: '20', search: q || '' });
+      if (business) qs.set('business', business);
       fetch('/api/hsn?' + qs)
         .then((r) => r.json())
         .then((d) => {
@@ -1316,7 +1385,7 @@ function AddItemModal({ open, onClose, onSubmit, onSubmitAndPrint, barcodeFormat
       <label className="block text-[11px] font-semibold text-gray-700">HSN *</label>
       <SearchSelect
         placeholder="Search HSN…"
-        value={form.hsnId}
+        value={form.hsnId || form.hsn}
         label={hsnLabel}
         onSearch={searchHsn}
         options={hsnOptions}
@@ -1337,7 +1406,7 @@ function AddItemModal({ open, onClose, onSubmit, onSubmitAndPrint, barcodeFormat
       <label className="block text-[11px] font-semibold text-gray-700">HSN *</label>
       <SearchSelect
         placeholder="Search HSN…"
-        value={form.hsn2Id}
+        value={form.hsn2Id || form.hsn2}
         label={hsn2Label}
         onSearch={searchHsn2}
         options={hsn2Options}
@@ -1401,14 +1470,17 @@ function AddItemModal({ open, onClose, onSubmit, onSubmitAndPrint, barcodeFormat
     hsnDetailRef.current = detailRequest;
 
     const code = hsnDoc?.code || hsnDoc?.label || "";
+    let hsnId = hsnDoc?.value || "";
     let taxSlabs = Array.isArray(hsnDoc?.taxSlabs) ? hsnDoc.taxSlabs : [];
 
     if (!taxSlabs.length && code) {
       try {
-        const response = await fetch(`/api/hsn?perPage=20&search=${encodeURIComponent(code)}`);
+        const response = await fetch(`/api/hsn?perPage=20&search=${encodeURIComponent(code)}${business ? `&business=${encodeURIComponent(business)}` : ""}`);
         const payload = await response.json();
         const match = (payload.rows || []).find((row) => String(row.code || '').trim() === String(code).trim());
         taxSlabs = Array.isArray(match?.taxSlabs) ? match.taxSlabs : [];
+        /* a code looked up by text still records the master's id */
+        if (!hsnId && match?._id) hsnId = String(match._id);
       } catch {
         taxSlabs = [];
       }
@@ -1416,10 +1488,13 @@ function AddItemModal({ open, onClose, onSubmit, onSubmitAndPrint, barcodeFormat
 
     if (hsnDetailRef.current !== detailRequest) return;
 
-    setForm((current) => ({ ...current, hsn: code, hsnId: hsnDoc?.value || current.hsnId }));
+    setForm((current) => ({ ...current, hsn: code, hsnId: hsnId || current.hsnId }));
 
     const slabs = await resolveSlabRates(taxSlabs);
     if (hsnDetailRef.current !== detailRequest) return;
+    /* an HSN this company's master has no slab for leaves the GST% already on
+       the form (an Old Barcode's own rate) instead of resetting it to 0 */
+    if (!slabs.length && hsnDoc?.keepGst) return;
     applyHsnSlabs(slabs);
   };
 
@@ -1431,13 +1506,42 @@ function AddItemModal({ open, onClose, onSubmit, onSubmitAndPrint, barcodeFormat
     hsn2DetailRef.current += 1;
     applyHsnSlabs([]);
     applyHsn2Slabs([]);
+    setItemLabel('');
+    setHsnLabel('');
     setHsn2Label('');
-    setForm((current) => ({
+    setOfferNote('');
+    setForm((current) => withFormPrices(withItemOffers({
       ...current,
       itemId: "", itemCode: "", itemName: "", itemLabel: "",
       hsnId: "", hsn: "", hsn2Id: "", hsn2: "", gst: "0",
       printDescription: "", supplierDescription: "", subGroupName: "", groupName: "",
-    }));
+    }, null)));
+  };
+
+  /* An old barcode's item in Inventory > Item, with its detail (offer %).
+     Stored barcode rows carry no itemId, and the Item master keeps most codes
+     in `name` (itemCode blank), so the code is matched the way the Item Code
+     picker lists items - itemCode first, then name. null when not found. */
+  const itemDetailByCode = async (itemId, itemCode) => {
+    try {
+      let id = itemId ? String(itemId) : "";
+      const code = String(itemCode || "").trim();
+      if (!id && code) {
+        const qs = new URLSearchParams({ perPage: "20", search: code });
+        if (business) qs.set("business", business);
+        const response = await fetch("/api/item?" + qs);
+        if (!response.ok) return null;
+        const rows = (await response.json()).rows || [];
+        const match = rows.find((row) => String(row.itemCode || "").trim() === code)
+          || rows.find((row) => String(row.name || "").trim() === code);
+        id = match?._id ? String(match._id) : "";
+      }
+      if (!id) return null;
+      const response = await fetch(`/api/item/${encodeURIComponent(id)}/detail`);
+      return response.ok ? (await response.json())?.item || null : null;
+    } catch {
+      return null;
+    }
   };
 
   /* Old Barcode -> the item it belongs to.
@@ -1462,8 +1566,11 @@ function AddItemModal({ open, onClose, onSubmit, onSubmitAndPrint, barcodeFormat
 
     inFlightRef.current = code;
     setLookup({ status: "loading", message: "Fetching barcode..." });
-    /* the previous item must not linger while the new one is on its way */
-    clearFetchedItem();
+    /* the previous LOOKUP's item must not linger while the new one is on its
+       way - but an Item Code / HSN / description the operator entered is only
+       replaced by a barcode that is actually found (see below), never wiped
+       by one that is not */
+    if (resolvedRef.current) clearFetchedItem();
 
     try {
       const result = await scanLookup(code);
@@ -1481,12 +1588,16 @@ function AddItemModal({ open, onClose, onSubmit, onSubmitAndPrint, barcodeFormat
           status: "error",
           message: result?.code === "BARCODE_WRONG_BUSINESS"
             ? result.error
-            : "Barcode not found. Please enter or scan a valid barcode.",
+            : result?.code === "OFFLINE"
+              ? "Could not reach the server. Try the scan again."
+              : "Barcode not found. Please enter or scan a valid barcode.",
         });
         return;
       }
 
       const unit = result.unit;
+      /* a match replaces whatever item / HSN / GST was on the form */
+      clearFetchedItem();
 
       /* When a barcode is scanned, populate labels so the SearchSelect
          closed state shows the item code and HSN code correctly. */
@@ -1519,6 +1630,27 @@ function AddItemModal({ open, onClose, onSubmit, onSubmitAndPrint, barcodeFormat
         status: "found",
         message: `${unit.itemCode || unit.itemName || "Item"} loaded.`,
       });
+
+      /* GST% from this company's HSN Master for the record's HSN - the path a
+         hand-picked HSN takes, so the rate follows the tax slab rather than
+         the old label's stored GST% (keepGst: an HSN missing from the master
+         leaves the record's own rate standing) - and the HSN ids the two HSN
+         boxes are shown by. */
+      if (unit.hsn) {
+        resolveHsnGst({ code: unit.hsn, keepGst: true });
+        resolveHsn2Gst({ code: unit.hsn });
+      }
+      /* the scan itself is applied - a code re-entered from here on is a new
+         lookup, not a repeat of one still in flight */
+      if (inFlightRef.current === code) inFlightRef.current = "";
+      /* the item's own offer % from Inventory > Item - the old label's offer
+         price belongs to that label, not to the item. Dropped if another code
+         was entered, or an item was picked by hand, while it was on its way. */
+      const offerTurn = itemDetailRef.current;
+      const offerItem = await itemDetailByCode(unit.itemId, unit.itemCode || unit.itemName);
+      if (resolvedRef.current !== code || itemDetailRef.current !== offerTurn) return;
+      setForm((current) => withFormPrices(withItemOffers(current, offerItem)));
+      noteItemOffers(offerItem, unit.itemCode || unit.itemName || code);
     } catch {
       if (inFlightRef.current !== code) return;
       setLookup({ status: "error", message: "Could not reach the server. Try the scan again." });
@@ -1536,12 +1668,13 @@ function AddItemModal({ open, onClose, onSubmit, onSubmitAndPrint, barcodeFormat
       applyHsnSlabs([]);
       applyHsn2Slabs([]);
       setHsn2Label('');
-      setForm((current) => ({
+      setForm((current) => withFormPrices(withItemOffers({
         ...current,
         itemId: "", itemName: "", itemCode: "", subGroupName: "", groupName: "", printDescription: "",
         hsnId: "", hsn: "", hsn2Id: "", hsn2: "", gst: "0",
         ...supplierMarkups,
-      }));
+      }, null)));
+      setOfferNote("");
       return;
     }
     const detailRequest = itemDetailRef.current + 1;
@@ -1567,7 +1700,13 @@ function AddItemModal({ open, onClose, onSubmit, onSubmitAndPrint, barcodeFormat
     try {
       const response = await fetch(`/api/item/${encodeURIComponent(opt.value)}/detail`);
       const payload = await response.json();
-      if (!response.ok || itemDetailRef.current !== detailRequest) return;
+      if (itemDetailRef.current !== detailRequest) return;
+      if (!response.ok) {
+        /* no detail - the previous item's offer % must not stay on this one */
+        setForm((current) => withFormPrices(withItemOffers(current, null)));
+        setOfferNote("");
+        return;
+      }
       const item = payload?.item || {};
       setHsnLabel(item.hsnCode || '');
       setHsn2Label(item.hsnCode || '');
@@ -1581,7 +1720,7 @@ function AddItemModal({ open, onClose, onSubmit, onSubmitAndPrint, barcodeFormat
          Price Calculation Setup value stays. Anything that is not a number
          never replaces it - "No" used to arrive here and blank Markup E-COMM %. */
       const itemMarkup = (value, fallback) => (value == null || fixed2(value) === "" ? fallback : fixed2(value));
-      setForm((current) => withFormPrices({
+      setForm((current) => withFormPrices(withItemOffers({
         ...current,
         hsnId: item.hsnId || "",
         hsn: item.hsnCode || "",
@@ -1590,11 +1729,14 @@ function AddItemModal({ open, onClose, onSubmit, onSubmitAndPrint, barcodeFormat
         markupRSP: itemMarkup(item.markupRSP, supplierMarkups.markupRSP),
         markupWSP: itemMarkup(item.markupWSP, supplierMarkups.markupWSP),
         markupDP: itemMarkup(item.markupDP, supplierMarkups.markupDP),
-      }));
+      }, item)));
+      noteItemOffers(item, itemCode);
     } catch {
       if (itemDetailRef.current === detailRequest) {
         setHsnLabel('');
         setHsn2Label('');
+        setForm((current) => withFormPrices(withItemOffers(current, null)));
+        setOfferNote("");
       }
     }
     await resolveProductGroup(opt.subGroupId || "");
@@ -1631,14 +1773,16 @@ function AddItemModal({ open, onClose, onSubmit, onSubmitAndPrint, barcodeFormat
     hsn2DetailRef.current = detailRequest;
 
     const code = hsnDoc?.code || hsnDoc?.label || "";
+    let hsn2Id = hsnDoc?.value || "";
     let taxSlabs = Array.isArray(hsnDoc?.taxSlabs) ? hsnDoc.taxSlabs : [];
 
     if (!taxSlabs.length && code) {
       try {
-        const response = await fetch(`/api/hsn?perPage=20&search=${encodeURIComponent(code)}`);
+        const response = await fetch(`/api/hsn?perPage=20&search=${encodeURIComponent(code)}${business ? `&business=${encodeURIComponent(business)}` : ""}`);
         const payload = await response.json();
         const match = (payload.rows || []).find((row) => String(row.code || '').trim() === String(code).trim());
         taxSlabs = Array.isArray(match?.taxSlabs) ? match.taxSlabs : [];
+        if (!hsn2Id && match?._id) hsn2Id = String(match._id);
       } catch {
         taxSlabs = [];
       }
@@ -1646,7 +1790,7 @@ function AddItemModal({ open, onClose, onSubmit, onSubmitAndPrint, barcodeFormat
 
     if (hsn2DetailRef.current !== detailRequest) return;
 
-    setForm((current) => ({ ...current, hsn2: code, hsn2Id: hsnDoc?.value || current.hsn2Id }));
+    setForm((current) => ({ ...current, hsn2: code, hsn2Id: hsn2Id || current.hsn2Id }));
 
     const slabs = await resolveSlabRates(taxSlabs);
     if (hsn2DetailRef.current !== detailRequest) return;
@@ -1847,6 +1991,12 @@ function AddItemModal({ open, onClose, onSubmit, onSubmitAndPrint, barcodeFormat
       setReserveError("Please select an Item Code.");
       return;
     }
+    /* P-M-F is required - for Submit and Submit & Print Label alike, before
+       anything is added or saved. No value is assumed for it. */
+    if (!pmfOf(form)) {
+      setReserveError(PMF_REQUIRED_MESSAGE);
+      return;
+    }
     /* Checked HERE, before any barcode number is reserved: a zero-price line
        used to be generated, reserved and appended to the grid, and was only
        refused when the whole GRC was submitted - by which time it had spent
@@ -1981,6 +2131,11 @@ function AddItemModal({ open, onClose, onSubmit, onSubmitAndPrint, barcodeFormat
       markupWSP: current.markupWSP,
       markupDP: current.markupDP,
       offerApplicable: current.offerApplicable,
+      /* the item stays picked, so the offer % it gave stays with it */
+      ...Object.fromEntries(OFFER_PCT_KEYS
+        .filter((key) => current._autoOffer?.[key] != null)
+        .map((key) => [key, fixed2(current._autoOffer[key])])),
+      _autoOffer: current._autoOffer || null,
       serialNo: nextSerial,
     }));
     setCutRows([{ id: 1, value: "" }]);
@@ -2040,7 +2195,9 @@ function AddItemModal({ open, onClose, onSubmit, onSubmitAndPrint, barcodeFormat
               <label className="block text-[11px] font-semibold text-gray-700">Item Code *</label>
               <SearchSelect
                 placeholder="Search Item Code…"
-                value={form.itemId}
+                /* the code counts as selected too: an Old Barcode fills the
+                   code, but stored barcodes carry no item id */
+                value={form.itemId || form.itemCode}
                 label={itemLabel}
                 onSearch={searchItems}
                 options={itemOptions}
@@ -2075,7 +2232,7 @@ function AddItemModal({ open, onClose, onSubmit, onSubmitAndPrint, barcodeFormat
                 <input type="number" step="1" min={0} value={form.sm} onChange={(event) => updateField("sm", event.target.value)} className={`w-full rounded-md px-2 py-2 text-sm ${editableClass}`} />
               </div>
               <div className="space-y-1">
-                <label className="block text-[11px] font-semibold text-gray-700">P-M-F</label>
+                <label className="block text-[11px] font-semibold text-gray-700">P-M-F *</label>
                 <input value={form.p_m_f} onChange={(event) => updateField("p_m_f", event.target.value)} className={`w-full rounded-md px-2 py-2 text-sm ${editableClass}`} />
               </div>
             </div>
@@ -2212,7 +2369,7 @@ function AddItemModal({ open, onClose, onSubmit, onSubmitAndPrint, barcodeFormat
           <div className="mt-5">
             <div className="mb-4 text-center text-[15px] font-bold uppercase tracking-wide underline decoration-[1.5px] underline-offset-4">Price Calculation</div>
 
-            <SupplierPriceSetupPanel setup={priceSetup} />
+            {SHOW_SUPPLIER_PRICE_SETUP && <SupplierPriceSetupPanel setup={priceSetup} />}
 
             {/* Price Calculation grid */}
             <div className="grid grid-cols-1 gap-3 md:grid-cols-5">
@@ -2344,6 +2501,7 @@ function AddItemModal({ open, onClose, onSubmit, onSubmitAndPrint, barcodeFormat
             </div>
 
             <div className="mt-5 text-center text-[15px] font-bold uppercase tracking-wide underline decoration-[1.5px] underline-offset-4">Offer Price /Mark Down</div>
+            {offerNote && <div className="mt-2 text-center text-[11px] text-amber-700" data-testid="offer-note">{offerNote}</div>}
             <div className="mt-4 grid grid-cols-1 gap-3 md:grid-cols-6">
               <div className="space-y-1">
                 <label className="block text-[11px] font-semibold text-gray-700">RSP Offer %</label>
@@ -3015,6 +3173,61 @@ export default function GCRBarcodeGeneration({ grcId = null, initialRows = NO_RO
     setRows(initialRows.map(toGridRow));
   }, [initialRows]);
 
+  /* GST% FOR SAVED ROWS THAT CARRY NONE.
+
+     Some rows were saved with GST% "0" although their HSN has a tax slab in
+     HSN Master, so every total showed GST 0.00 and Net equal to Taxable. When
+     the GRC loads, each such row is given the rate of its own HSN - this
+     company's HSN Master, the band picked by the row's final rate, exactly as
+     the Add Item form picks it. NOTHING IS WRITTEN: the rows show the rate,
+     the totals follow, and the notice asks the operator to Submit to store
+     it. A row that already has a rate, or has been sold / moved, is left
+     alone, and an HSN with no rate changes nothing. */
+  useEffect(() => {
+    /* the company is not known yet - an unscoped HSN search could take
+       another company's slab for the same code */
+    if (!scope.businessReady) return undefined;
+    const loaded = Array.isArray(initialRows) ? initialRows : [];
+    const pending = loaded.filter((row) => row._id && !isLockedRow(row)
+      && String(row.hsn || "").trim() && !(Number(row.gst) > 0));
+    if (!pending.length) return undefined;
+    let cancelled = false;
+    const rateOf = (row) => Number(row.finalPrice || row.finalNet) || Number(row.purchaseRate || row.purRate) || 0;
+    /* each row's HSN is looked up in its OWN company's HSN Master */
+    const businessOf = (row) => String(row.businessId || scope.business || "");
+    const keyOf = (row) => businessOf(row) + "|" + String(row.hsn || "").trim();
+    (async () => {
+      const slabsByKey = new Map();
+      await Promise.all([...new Map(pending.map((row) => [keyOf(row), row])).values()].map(async (row) => {
+        const code = String(row.hsn).trim();
+        const business = businessOf(row);
+        if (!business) return;
+        try {
+          const qs = new URLSearchParams({ perPage: "20", search: code, business });
+          const response = await fetch("/api/hsn?" + qs);
+          if (!response.ok) return;
+          const payload = await response.json();
+          const match = (payload.rows || []).find((hsn) => String(hsn.code || "").trim() === code);
+          if (match) slabsByKey.set(keyOf(row), await resolveSlabRates(match.taxSlabs || []));
+        } catch { /* no rate found - the row keeps its own */ }
+      }));
+      if (cancelled) return;
+      const rateFor = (row) => {
+        const slabs = slabsByKey.get(keyOf(row));
+        return slabs && slabs.length ? Number(gstPercentForAmount(slabs, rateOf(row))) || 0 : 0;
+      };
+      const ids = new Set(pending.filter((row) => rateFor(row) > 0).map((row) => String(row._id)));
+      if (!ids.size) return;
+      setRows((current) => current.map((row) => (
+        ids.has(String(row._id)) && !(Number(row.gst) > 0) && !isLockedRow(row)
+          ? { ...row, gst: String(rateFor(row)) }
+          : row
+      )));
+      setImportMessage(`${GST_FILL_NOTICE} on ${ids.size} saved row${ids.size === 1 ? "" : "s"} and has been filled from HSN Master - check the totals and press Submit to save it.`);
+    })();
+    return () => { cancelled = true; };
+  }, [initialRows, scope.business, scope.businessReady]);
+
   /* The active Purchase Rate Code Master for this scope. Loaded once here and
      handed down, so the Add Item form never has to fetch it itself and every
      row generated in one session encodes against the same table. An absent or
@@ -3074,7 +3287,8 @@ export default function GCRBarcodeGeneration({ grcId = null, initialRows = NO_RO
   const totals = useMemo(() => validRows.reduce((acc, row) => {
     const qty = Number(row.qty || 0);
     const beforeTax = Number(row.finalPrice || 0) * qty;
-    const gstAmount = beforeTax * (Number(row.gst || 0) / 100);
+    /* each line's GST rounded to the paisa, as the save route totals the GRC */
+    const gstAmount = Math.round(beforeTax * Number(row.gst || 0)) / 100;
     acc.taxable += beforeTax;
     acc.gst += gstAmount;
     acc.net += beforeTax + gstAmount;
@@ -3114,8 +3328,9 @@ export default function GCRBarcodeGeneration({ grcId = null, initialRows = NO_RO
       const beforeTax = Number(row.finalPrice || 0) * qty;
       entry.qty += qty;
       entry.beforeTax += beforeTax;
-      entry.gst += beforeTax * (Number(row.gst || 0) / 100);
-      entry.net += beforeTax + beforeTax * (Number(row.gst || 0) / 100);
+      const lineGst = Math.round(beforeTax * Number(row.gst || 0)) / 100;
+      entry.gst += lineGst;
+      entry.net += beforeTax + lineGst;
       Object.entries(row.customFields || {}).forEach(([key, value]) => {
         const current = entry.customFields[key];
         entry.customFields[key] = current && current !== value ? `${current}, ${value}` : value;
@@ -3220,6 +3435,8 @@ export default function GCRBarcodeGeneration({ grcId = null, initialRows = NO_RO
           String(row.purchaseRate ?? "").trim() !== "" ? row.purchaseRate : row.purRate
         );
         if (priceProblem) problems.push(`${where}: ${priceProblem}`);
+        /* a new row needs a P-M-F; a saved one may not lose the one it has */
+        if (!pmfOf(row) && (!existing || pmfOf(existing))) problems.push(`${where}: ${PMF_REQUIRED_MESSAGE}`);
 
         numericKeys.forEach((key) => {
           const value = changes[key];
@@ -3344,6 +3561,23 @@ export default function GCRBarcodeGeneration({ grcId = null, initialRows = NO_RO
            below, it has to go or the operator never sees why */
         setShowSaveConfirm(false);
         setSaveError(`${priceErrors[0].problem} Check: ${shown}${more}`);
+        return false;
+      }
+
+      /* P-M-F on every barcode this Submit CREATES (no _id yet) - rows added
+         on the sheet, imported or from the Add Item form. A saved barcode keeps
+         the P-M-F it was stored with: the ITEMS sheet has no P-M-F column to
+         correct one, and requiring it there would stop every edit of a GRC
+         saved before the rule. */
+      const pmfErrors = [];
+      rowsToSave.forEach((row, index) => {
+        if (!row._id && !pmfOf(row)) pmfErrors.push(row.itemCode || row.itemName || `Row ${index + 1}`);
+      });
+      if (pmfErrors.length > 0) {
+        const shown = pmfErrors.slice(0, 3).join(', ');
+        const more = pmfErrors.length > 3 ? ` and ${pmfErrors.length - 3} more` : '';
+        setShowSaveConfirm(false);
+        setSaveError(`${PMF_REQUIRED_MESSAGE} Check: ${shown}${more}`);
         return false;
       }
 
@@ -3646,7 +3880,7 @@ export default function GCRBarcodeGeneration({ grcId = null, initialRows = NO_RO
              - all unchanged                        → green (nothing to do) */
           const changedCount = validRows.filter((r) => r._importStatus === 'CHANGED').length;
           const newCount     = validRows.filter((r) => r._importStatus === 'NEW').length;
-          const hasAction    = changedCount > 0 || newCount > 0;
+          const hasAction    = changedCount > 0 || newCount > 0 || importMessage.startsWith(GST_FILL_NOTICE);
           const isError      = importMessage.startsWith("The file was not imported") || importMessage.startsWith("Unable to");
           const banner = isError
             ? "border-red-200 bg-red-50 text-red-800"

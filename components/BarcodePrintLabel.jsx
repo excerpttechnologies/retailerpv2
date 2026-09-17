@@ -323,27 +323,38 @@ export default function BarcodePrintLabel() {
     if (!grcId) return;
     setBusy(true);
 
-    fetch('/api/purchase-grc/' + grcId + '/print')
+    /* The GRC's printable units are its barcode rows (GET /api/grc/<id>, the
+       same records Barcode Generation saves and Barcode Print prints). This
+       used to read the challan's purchase lines (grc.items), which Barcode
+       Generation never writes - empty on almost every GRC - so the page
+       said "That challan has no line items." and Preview refused. Each row is
+       mapped exactly as a scanned barcode is below, and starts with the
+       label count the label rule gives it (unique 1, MTR 2; a batch 1). */
+    fetch('/api/grc/' + encodeURIComponent(grcId))
       .then(async (r) => {
-        if (!r.ok) throw new Error('Could not load that challan');
-        return r.json();
+        const body = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(body.error || 'Could not load that challan');
+        return body;
       })
       .then((d) => {
-        setRows((d.items || []).map((r) => ({
-          itemName: r.itemName,
-          itemCode: r.batchNo,
-          quantity: r.qty,
-          rsp: r.rsp,
-          wsp: r.wsp ?? '',
-          /* A challan line is a purchase line, not a barcode, and the print
-             route returns no barcode fields today - so these are blank and
-             the item code is printed. Carried rather than blanked, so a line
-             that does name its barcode prints that barcode. */
+        const units = (d.rows || []).filter((r) => r.barcodeNo || r.barcodeGenerated);
+        setRows(units.map((r) => ({
+          /* the stored row as it is (quantity, unit, batch type, rates - what
+             a label's length and CP lines are read from), with the table's
+             own field names on top */
+          ...r,
+          itemName: r.printDescription || r.supplierDescription || '',
+          itemCode: r.itemCode || '',
+          quantity: r.qty || '',
+          rsp: r.retailPrice ?? '',
+          wsp: r.wspPrice ?? '',
+          offerPrice: r.offerPrice ?? '',
+          printDescription: r.printDescription || '',
           barcodeNo: r.barcodeNo || '',
           barcodeGenerated: r.barcodeGenerated || '',
-          copies: 1,
+          copies: r.labelCount ?? 1,
         })));
-        if (!(d.items || []).length) setStatus('That challan has no line items.');
+        if (!units.length) setStatus('No barcodes have been generated for this GRC yet.');
       })
       .catch((e) => setStatus(e.message))
       .finally(() => setBusy(false));

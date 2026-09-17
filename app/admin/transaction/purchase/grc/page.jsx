@@ -40,10 +40,14 @@ const CONFIG = {
     { k: "occasion", t: "Occasion" },
     { k: "agentId", t: "Agent", f: "ref" },
     { k: "vendorDocNo", t: "Vendor Doc No" },
-    { k: "purchaseTermId", t: "Purchase Term", f: "ref" },
+    /* The purchase term (Before Tax / After Tax) is stored on the GRC as
+       freightMode - the form's Before Tax / After Tax / N/A select, and where
+       the historical import put the workbook's "Purchase Term". No GRC ever
+       had a purchaseTermId, so this column used to be blank on every row. */
+    { k: "freightMode", t: "Purchase Term" },
     { k: "taxable", t: "Taxable", f: "amount" },
     { k: "totalQuantity", t: "Total Quantity", f: "amount" },
-    { k: "gst", t: "GST", f: "amount" },
+    { k: "gstAmount", t: "GST", f: "amount", value: (r) => r.gstAmount || 0 },
     { k: "netAmount", t: "Net Amount", f: "amount" },
   ],
 };

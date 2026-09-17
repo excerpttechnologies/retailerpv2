@@ -10,7 +10,7 @@ import { nextDocNumber } from '@/lib/docnumber';
 import { BarcodeLabel, BARCODE_STATUS } from '@/lib/barcodeLabel';
 import { reserveBarcodeNumbers, loadFormat, uomTypeOf, batchTypeOf } from '@/lib/barcodeEngine';
 import { withTransaction, receiveIntoStock, restateReceipt, voidUnits, InventoryError } from '@/lib/inventory';
-import { matchRowsToUnits, editedFields, toGridRow, rowBarcode, unitBarcode, clientIdOf } from '@/lib/barcodeRowSync';
+import { matchRowsToUnits, editedFields, toGridRow, rowBarcode, unitBarcode, clientIdOf, pmfOf, PMF_REQUIRED_MESSAGE } from '@/lib/barcodeRowSync';
 import {
   BARCODE_SEPARATOR, composeBarcodeValue, barcodeValueProblem, billSlNoProblem, billSlNoForBarcode,
   grcNumberForBarcode, nextSeqStart, highestSeq, hasComposedBarcode, highestSerialNo, serialFloorOf,
@@ -181,7 +181,8 @@ export const POST = handler(async (req) => {
     }, 400);
   }
 
-  /* P-M-F and SM are both optional - a row without one saves with it blank. */
+  /* SM is optional. P-M-F is required on every barcode this save CREATES
+     (buildDocs); a saved barcode keeps the P-M-F it has. */
 
   /* An Old Barcode that is supplied must actually EXIST.
 
@@ -224,7 +225,7 @@ export const POST = handler(async (req) => {
   /* ---- money, derived from the rows rather than trusted from the form ---
      An existing GRC is re-totalled from every row it holds once the save has
      landed, since the request may carry only some of them (grcTotals). */
-  const { totalQuantity, gst } = grcTotals(rows);
+  const { totalQuantity, gst, taxable, netAmount } = grcTotals(rows);
 
   /* Item codes on the rows are free text; resolving them once here means the
      barcode carries a real itemId and the reports stop having to re-match on
@@ -525,8 +526,10 @@ export const POST = handler(async (req) => {
       vendorDocNo: vendorDocNo || '',
       totalQuantity: totals?.count || totalQuantity,
       gst,
-      netAmount: totals?.value || 0,
-      taxable: (totals?.value || 0) - (totals?.discAmount || 0),
+      /* from the rows (grcTotals), not the screen's own total, which already
+         had GST in it and was then stored as the taxable value too */
+      netAmount,
+      taxable,
     };
     if (business && isValidObjectId(business)) grcPayload.businessId = business;
     if (location && isValidObjectId(location)) grcPayload.locationId = location;
@@ -678,6 +681,14 @@ async function buildDocs({ rows, startSeq = 1, takenValues = new Set(), units = 
   rows.forEach((r) => {
     if (!billSlNoForBarcode(r.billSlNo)) {
       throw new InventoryError('BARCODE_VALUE', billSlNoProblem(r), { status: 400 });
+    }
+    /* P-M-F is required on every barcode this save CREATES - the P-M-F
+       buildDoc stores, never a value made up for it. Saved barcodes never
+       reach here, so a GRC saved before the rule still saves. */
+    if (!pmfOf(r)) {
+      throw new InventoryError('INVALID_INPUT',
+        (String(r.itemCode || r.itemName || '').trim() || 'A row') + ': ' + PMF_REQUIRED_MESSAGE + ' Nothing was saved.',
+        { status: 400 });
     }
   });
 
@@ -963,22 +974,28 @@ function hasMoved(unit) {
   return Boolean(at && from && at !== from);
 }
 
-/* The GRC header's money, from barcode rows - stored or submitted, they use
-   the same field names. */
+/* The GRC header's money, from barcode rows - stored (finalNet / purRate) or
+   submitted (finalPrice / purchaseRate).
+
+     taxable    = final purchase rate (already net of discount, tax-exclusive)
+                  x qty, summed
+     gst        = each row's taxable x its GST% / 100, summed - an AMOUNT
+     netAmount  = taxable + gst
+
+   It used to add up selling prices (offerPrice || retailPrice) for the net
+   amount, take a discount off a rate that is already net of it, and add up
+   the rows' GST PERCENTAGES as the GST - so a GRC of 15 rows at 5% stored a
+   GST of 75. Same arithmetic as every screen (lib/itemsSheet.js gstAmountOf). */
 function grcTotals(rows) {
+  const r2 = (value) => Math.round((value + Number.EPSILON) * 100) / 100;
   const qtyOf = (row) => parseFloat(row.qty) || 0;
+  const rateOf = (row) => parseFloat(row.finalNet || row.finalPrice || row.purRate || row.purchaseRate) || 0;
   const totalQuantity = rows.reduce((sum, row) => sum + qtyOf(row), 0);
-  const netAmount = rows.reduce((sum, row) => {
-    const price = parseFloat(row.offerPrice || row.retailPrice) || 0;
-    return sum + price * qtyOf(row);
-  }, 0);
-  const discountAmount = rows.reduce((sum, row) => {
-    const rate = parseFloat(row.finalNet || row.purRate) || 0;
-    const discount = parseFloat(row.disc) || 0;
-    return sum + (rate * discount) / 100 * qtyOf(row);
-  }, 0);
-  const gst = rows.reduce((sum, row) => sum + (parseFloat(row.gst) || 0), 0);
-  return { totalQuantity, gst, netAmount, taxable: netAmount - discountAmount };
+  const taxable = rows.reduce((sum, row) => sum + rateOf(row) * qtyOf(row), 0);
+  /* each line's GST rounded to the paisa, then added up - the way the GRC
+     voucher works out its tax and the reference ERP's totals add up */
+  const gst = rows.reduce((sum, row) => sum + Math.round(rateOf(row) * qtyOf(row) * (parseFloat(row.gst) || 0)) / 100, 0);
+  return { totalQuantity, taxable: r2(taxable), gst: r2(gst), netAmount: r2(taxable + gst) };
 }
 
 async function resolveItems(rows, businessId) {

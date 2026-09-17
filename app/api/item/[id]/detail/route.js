@@ -84,6 +84,14 @@ import { requireSession } from '@/lib/session';
 
 const json = (d, s = 200) => Response.json(d, { status: s });
 
+/* An offer percentage as stored on an item, or null: blank, "No" and 0 mean
+   no offer, and anything outside (0, 100) is not a usable percentage. */
+const offerPct = (value) => {
+  if (value === null || value === undefined || String(value).trim() === '') return null;
+  const n = Number(value);
+  return Number.isFinite(n) && n > 0 && n < 100 ? n : null;
+};
+
 export async function GET(req, { params }) {
   const session = await requireSession();
   if (!session) return json({ error: 'Unauthorized' }, 401);
@@ -139,6 +147,14 @@ export async function GET(req, { params }) {
       markupRSP: item.markupRSP ?? item.markupRsp ?? null,
       markupWSP: item.markupWSP ?? item.markupWsp ?? null,
       markupDP: item.markupDP ?? item.markupDp ?? item.markupEcomm ?? item.markupEComm ?? null,
+      /* The item's own OFFER percentages, as Inventory > Item stores them
+         (app/admin/inventory/item/fields.js: "RSP Offer %" rspOfferPercent,
+         "WSP Offer %" wsp, "Ecomm Offer %" offerPriceNetPrice - "No" on most
+         items). null when the item has none. Barcode Generation turns them
+         into offer prices off the row's RSP / WSP / E-COMM. */
+      rspOfferPct: offerPct(item.rspOfferPercent),
+      wspOfferPct: offerPct(item.wsp),
+      dpOfferPct: offerPct(item.offerPriceNetPrice),
       slabs,
     },
   });

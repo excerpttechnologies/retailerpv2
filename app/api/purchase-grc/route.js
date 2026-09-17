@@ -129,8 +129,48 @@ export async function GET(req) {
     .lean();
 
   const labels = await resolveRefLabels(rows);
+  
+  /* Calculate GST amount for display.
+     
+     The GRC.gst field should contain the GST amount calculated from items.
+     However, some records may have incorrect data or the field may contain
+     the GST percentage instead of amount.
+     
+     Per requirements: calculate GST amount from netAmount (tax-inclusive):
+     GST Amount = netAmount × implied_gst_rate / (100 + implied_gst_rate)
+     
+     Where implied GST rate is derived from: (netAmount - taxable) / taxable × 100
+  */
+  const rowsWithGstAmount = rows.map((r) => {
+    const netAmount = Number(r.netAmount) || 0;
+    const taxable = Number(r.taxable) || 0;
+    const storedGst = Number(r.gst) || 0;
+    
+    let gstAmount = storedGst;
+    
+    // Calculate GST amount from netAmount and taxable if both are available
+    if (netAmount > 0 && taxable > 0 && taxable < netAmount) {
+      // The GST amount is simply: netAmount - taxable
+      // This works for both tax-inclusive and tax-exclusive cases
+      gstAmount = netAmount - taxable;
+    } else if (storedGst > 0 && storedGst < 100 && netAmount > 0) {
+      // If stored GST looks like a percentage (< 100) and we have netAmount,
+      // calculate using the tax-inclusive formula:
+      // GST Amount = netAmount × gst% / (100 + gst%)
+      gstAmount = netAmount * storedGst / (100 + storedGst);
+    }
+    // Otherwise use the stored value as-is
+    
+    return {
+      ...r,
+      _id: String(r._id),
+      supplierName: labels[String(r.supplierId)] || '',
+      gstAmount: Math.round(gstAmount * 100) / 100,
+    };
+  });
+  
   return json({
-    rows: rows.map((r) => ({ ...r, _id: String(r._id), supplierName: labels[String(r.supplierId)] || '' })),
+    rows: rowsWithGstAmount,
     labels,
     total,
     page,

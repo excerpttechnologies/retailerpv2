@@ -86,7 +86,8 @@ export default function EditTransactionPurchaseGrcPage() {
   const summaryRows = useMemo(() => rows.map((row) => {
     const qty = number(row.qty);
     const beforeGst = number(row.finalNet || row.purRate) * qty;
-    const gstAmount = beforeGst * (number(row.gst) / 100);
+    /* rounded per line, as the save route totals the GRC header */
+    const gstAmount = Math.round(beforeGst * number(row.gst)) / 100;
     return {
       ...row,
       qty,
@@ -126,7 +127,16 @@ export default function EditTransactionPurchaseGrcPage() {
   const openBarcode = () => router.push(`/admin/transaction/purchase/grc/${id}/barcode-generation`);
   const set = (key, value) => setData((current) => ({ ...current, [key]: value }));
   const cell = (value) => value || '-';
-  const totalTaxable = Number(data.taxable) || summary.taxable;
+  /* A GRC with barcode rows is totalled from its rows - taxable = final rate
+     x qty, GST = taxable x GST% / 100 - the same figures the Item Summary tab
+     and Generate Purchase Invoice use. The stored header totals are read only
+     for a GRC with no rows (an imported one, see below): the header the
+     barcode save wrote used to hold a selling-price sum and a sum of GST
+     percentages, so reading it first showed the wrong Taxable and GST. */
+  /* rows count only when at least one carries a purchase price - a GRC whose
+     rows have no price yet keeps showing its header */
+  const hasRows = summaryRows.some((row) => row.beforeGst > 0);
+  const totalTaxable = hasRows ? summary.taxable : Number(data.taxable) || 0;
   /* GST falls back to the header the same way Taxable Value above it does.
      It used to read summary.gst alone, which is derived from the barcode
      rows - and the historical import carried header totals for every GRC but
@@ -137,7 +147,11 @@ export default function EditTransactionPurchaseGrcPage() {
      same place is what keeps the block adding up. Nothing is invented - the
      header value is what the source document was imported with, and `gst` is
      not a form field, so Update never writes over it. */
-  const totalGst = Number(data.gst) || summary.gst;
+  const totalGst = hasRows ? summary.gst : Number(data.gst) || 0;
+  /* the rows' own GST rate for the CGST + SGST line (half each), shown when
+     they all share one */
+  const gstRates = [...new Set(rows.map((row) => number(row.gst)).filter((rate) => rate > 0))];
+  const gstSplit = gstRates.length === 1 ? ` (${(gstRates[0] / 2).toFixed(2)} + ${(gstRates[0] / 2).toFixed(2)}) %` : '';
   const freightBeforeGst = Number(data.freightAmount) || 0;
   const discountAmount = (totalTaxable * (Number(data.discountPercent) || 0)) / 100;
   const roundOffDiscount = Number(data.roundOffDiscount) || 0;
@@ -283,7 +297,7 @@ export default function EditTransactionPurchaseGrcPage() {
                 <td className="py-2 pr-3 text-right text-brand-link">{roundOffDiscount.toFixed(2)}</td>
               </tr>
               <tr className="border-b border-line">
-                <td colSpan={2} className="border-r border-line py-2 pr-3 text-right text-brand-link">CGST + SGST (2.50 + 2.50) %</td>
+                <td colSpan={2} className="border-r border-line py-2 pr-3 text-right text-brand-link">CGST + SGST{gstSplit}</td>
                 <td className="border-r border-line text-center text-brand-link">+</td>
                 <td className="border-r border-line" />
                 <td className="py-2 pr-3 text-right text-brand-link">{totalGst.toFixed(2)}</td>
