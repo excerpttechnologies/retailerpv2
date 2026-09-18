@@ -1,9 +1,148 @@
+// import { isValidObjectId, Types } from 'mongoose';
+// import dbConnect from '@/lib/db';
+// import IcDeliveryChallan from '@/models/IcDeliveryChallan';
+// import { requireSession } from '@/lib/session';
+// import { resolveRefLabels } from '@/lib/refLabels';
+// import { escapeRegex } from '@/lib/validate';
+
+// /* /api/ic-receive-delivery-challan
+
+//    The INBOX of the branch in the top bar: delivery challans somebody else
+//    raised and addressed HERE.
+
+//    Note which way the scope points. Every other list in this module filters on
+//    businessId / locationId - the branch that RAISED the document. This one
+//    filters on toBusinessId / toLocationId, because the question it answers is
+//    "what is on its way to me", not "what did I send". Passing the top bar's
+//    business as `businessId` here would list the branch's own outgoing
+//    challans, which is the opposite of the screen's purpose.
+
+//    GET  - challans addressed here. ?received=yes for ones already accepted.
+//    POST - accept one: { id } stamps receivedAt / receivedBy.
+
+//    Receiving records the ACCEPTANCE only. No stock is moved: this project has
+//    no ledger posting for inter company movement yet, and inventing one here
+//    would put stock in two places at once. */
+
+// const json = (d, s = 200) => Response.json(d, {
+//   status: s,
+//   headers: { 'Cache-Control': 'no-store' },
+// });
+// const PER_PAGE = 10;
+
+// export async function GET(req) {
+//   const session = await requireSession();
+//   if (!session) return json({ error: 'Unauthorized' }, 401);
+
+//   const sp = new URL(req.url).searchParams;
+//   await dbConnect();
+
+//   const page = Math.max(1, Number(sp.get('page') || 1));
+//   const perPage = Math.min(500, Number(sp.get('perPage') || PER_PAGE));
+
+//   const business = sp.get('business');
+//   const location = sp.get('location');
+
+//   /* No branch in the top bar means no inbox - returning everything would show
+//      one branch another's incoming goods. */
+//   if (!business || !isValidObjectId(business)) {
+//     return json({ rows: [], labels: {}, total: 0, page: 1, pages: 1, perPage });
+//   }
+
+//   const filter = { toBusinessId: business };
+//   if (location && isValidObjectId(location)) filter.toLocationId = location;
+
+//   const y = sp.get('finYear'); if (y) filter.finYear = y;
+
+//   filter.receivedAt = sp.get('received') === 'yes' ? { $ne: null } : { $eq: null };
+
+//   const from = sp.get('startDate');
+//   const to = sp.get('endDate');
+//   if (from) filter.dcDate = { ...(filter.dcDate || {}), $gte: new Date(from) };
+//   if (to) filter.dcDate = { ...(filter.dcDate || {}), $lte: new Date(to + 'T23:59:59') };
+
+//   const search = (sp.get('search') || '').trim();
+//   if (search) {
+//     const rx = { $regex: escapeRegex(search), $options: 'i' };
+//     filter.$or = [{ dcNo: rx }, { customerGstn: rx }];
+//   }
+
+//   const total = await IcDeliveryChallan.countDocuments(filter);
+//   const rows = await IcDeliveryChallan.find(filter)
+//     .sort({ dcDate: -1, createdAt: -1 })
+//     .skip((page - 1) * perPage)
+//     .limit(perPage)
+//     .lean();
+
+//   return json({
+//     rows: rows.map((r) => ({ ...r, _id: String(r._id) })),
+//     labels: await resolveRefLabels(rows),
+//     total,
+//     page,
+//     pages: Math.max(1, Math.ceil(total / perPage)),
+//     perPage,
+//   });
+// }
+
+// export async function POST(req) {
+//   const session = await requireSession();
+//   if (!session) return json({ error: 'Unauthorized' }, 401);
+
+//   const body = await req.json();
+//   const id = String(body.id || '');
+//   if (!isValidObjectId(id)) return json({ error: 'A challan id is required.' }, 400);
+
+//   await dbConnect();
+
+//   const challan = await IcDeliveryChallan.findById(id)
+//     .select('toBusinessId toLocationId receivedAt dcNo').lean();
+//   if (!challan) return json({ error: 'Challan not found.' }, 404);
+
+//   /* Only the addressee may receive it, and only once. Checked here and not
+//      just in the screen, because the id arrives in the request body. */
+//   const business = String(body.business || '');
+//   if (!isValidObjectId(business) || String(challan.toBusinessId) !== business) {
+//     return json({ error: 'This challan is not addressed to the selected branch.' }, 403);
+//   }
+//   if (challan.receivedAt) {
+//     return json({ error: 'Challan ' + (challan.dcNo || '') + ' is already received.' }, 409);
+//   }
+
+//   /* Written through the RAW driver, not the Mongoose model.
+
+//      Mongoose caches compiled models on `mongoose.models`, and Next's dev
+//      server hot-reloads route files WITHOUT re-registering them. A process
+//      that started before `receivedAt` joined the schema keeps the old model,
+//      and strict mode then drops the $set silently - the request answers 200
+//      while the document never changes. That is exactly what happened here:
+//      challans saved afterwards still carried the removed viaBusinessId and
+//      had no receivedAt key at all.
+
+//      .collection bypasses the schema, so the write lands whatever the running
+//      process last compiled. Reads are unaffected - strictQuery is off by
+//      default in Mongoose 7+, so the receivedAt filter in GET works either way.
+
+//      _id has to be cast by hand here; that casting is the model's job, and we
+//      have just stepped around the model. */
+//   const res = await IcDeliveryChallan.collection.updateOne(
+//     { _id: new Types.ObjectId(id), receivedAt: { $eq: null } },
+//     { $set: { receivedAt: new Date(), receivedBy: session.name || session.email || '' } }
+//   );
+
+//   /* never report success on a write that did not happen */
+//   if (!res.modifiedCount) {
+//     return json({ error: 'The receipt was not saved. Please try again.', code: 'NOT_PERSISTED' }, 500);
+//   }
+
+//   return json({ ok: true, id });
+// }
 import { isValidObjectId, Types } from 'mongoose';
 import dbConnect from '@/lib/db';
 import IcDeliveryChallan from '@/models/IcDeliveryChallan';
 import { requireSession } from '@/lib/session';
 import { resolveRefLabels } from '@/lib/refLabels';
 import { escapeRegex } from '@/lib/validate';
+import { restoreReturnedStock } from '@/lib/icStock';
 
 /* /api/ic-receive-delivery-challan
 
@@ -17,8 +156,17 @@ import { escapeRegex } from '@/lib/validate';
    business as `businessId` here would list the branch's own outgoing
    challans, which is the opposite of the screen's purpose.
 
-   GET  - challans addressed here. ?received=yes for ones already accepted.
-   POST - accept one: { id } stamps receivedAt / receivedBy.
+   GET  ?view=incoming (default) - challans addressed HERE.
+          &received=yes for ones already accepted.
+        ?view=returns - every challan with a return that THIS branch is part
+          of, whichever end it stands at: ones it sent that have come back, and
+          ones it received and returned from. Both sides need to see a return -
+          the sender to expect the goods, the receiver to confirm what they
+          sent back - so it matches on businessId OR toBusinessId.
+
+   POST { id, business }                    - accept a challan.
+        { id, business, action: 'return',
+          lines: [{ barcodeNo, qty }] }     - return PART of a received one.
 
    Receiving records the ACCEPTANCE only. No stock is moved: this project has
    no ledger posting for inter company movement yet, and inventing one here
@@ -49,12 +197,29 @@ export async function GET(req) {
     return json({ rows: [], labels: {}, total: 0, page: 1, pages: 1, perPage });
   }
 
-  const filter = { toBusinessId: business };
-  if (location && isValidObjectId(location)) filter.toLocationId = location;
+  const view = sp.get('view') === 'returns' ? 'returns' : 'incoming';
+
+  /* Incoming looks at where the goods are GOING; returns looks at where they
+     came FROM, because a return travels back to whoever sent the challan. */
+  const filter = view === 'returns'
+    ? {
+      'returns.0': { $exists: true },
+      $or: [{ businessId: business }, { toBusinessId: business }],
+    }
+    : { toBusinessId: business };
+
+  /* Location narrows the INCOMING list only. On returns the branch may be at
+     either end, and pinning one side would hide the rows where it sits at the
+     other - which is what stopped the receiver seeing its own return. */
+  if (view === 'incoming' && location && isValidObjectId(location)) {
+    filter.toLocationId = location;
+  }
 
   const y = sp.get('finYear'); if (y) filter.finYear = y;
 
-  filter.receivedAt = sp.get('received') === 'yes' ? { $ne: null } : { $eq: null };
+  if (view === 'incoming') {
+    filter.receivedAt = sp.get('received') === 'yes' ? { $ne: null } : { $eq: null };
+  }
 
   const from = sp.get('startDate');
   const to = sp.get('endDate');
@@ -69,7 +234,7 @@ export async function GET(req) {
 
   const total = await IcDeliveryChallan.countDocuments(filter);
   const rows = await IcDeliveryChallan.find(filter)
-    .sort({ dcDate: -1, createdAt: -1 })
+    .sort(view === 'returns' ? { updatedAt: -1 } : { dcDate: -1, createdAt: -1 })
     .skip((page - 1) * perPage)
     .limit(perPage)
     .lean();
@@ -85,6 +250,17 @@ export async function GET(req) {
 }
 
 export async function POST(req) {
+  try {
+    return await handlePost(req);
+  } catch (err) {
+    /* an over-return throws with a status so the message reaches the screen
+       instead of a bare 500 */
+    if (err && err.status) return json({ error: err.message }, err.status);
+    throw err;
+  }
+}
+
+async function handlePost(req) {
   const session = await requireSession();
   if (!session) return json({ error: 'Unauthorized' }, 401);
 
@@ -95,7 +271,7 @@ export async function POST(req) {
   await dbConnect();
 
   const challan = await IcDeliveryChallan.findById(id)
-    .select('toBusinessId toLocationId receivedAt dcNo').lean();
+    .select('businessId locationId toBusinessId toLocationId finYear receivedAt dcNo items returns').lean();
   if (!challan) return json({ error: 'Challan not found.' }, 404);
 
   /* Only the addressee may receive it, and only once. Checked here and not
@@ -104,6 +280,81 @@ export async function POST(req) {
   if (!isValidObjectId(business) || String(challan.toBusinessId) !== business) {
     return json({ error: 'This challan is not addressed to the selected branch.' }, 403);
   }
+  /* ---------------------------------------------------------- RETURN ----
+
+     Part of a received challan going back: the receiver keeps what is sound
+     and sends the damaged quantity back to whoever shipped it.
+
+     Recorded on the CHALLAN, not in a collection of its own. A return only
+     ever means something relative to the challan it came from - which
+     barcode, out of how many, against which document - and splitting that
+     across two collections buys nothing while giving the two a chance to
+     disagree.
+
+     `returnedQty` on each line is the running total, so the remaining
+     returnable quantity is qty - returnedQty and a line cannot be returned
+     twice over. `returns[]` keeps each event, so the sender can see what came
+     back and when rather than just a final number. */
+  if (body.action === 'return') {
+    if (!challan.receivedAt) {
+      return json({ error: 'Receive the challan before returning anything from it.' }, 409);
+    }
+
+    const asked = Array.isArray(body.lines) ? body.lines : [];
+    const wanted = new Map();
+    asked.forEach((l) => {
+      const key = String(l.barcodeNo || '').trim().toLowerCase();
+      const qty = Number(l.qty) || 0;
+      if (key && qty > 0) wanted.set(key, (wanted.get(key) || 0) + qty);
+    });
+    if (!wanted.size) return json({ error: 'Enter a quantity to return.' }, 400);
+
+    const lines = Array.isArray(challan.items) ? challan.items : [];
+    const logged = [];
+    const nextItems = lines.map((line) => {
+      const key = String(line.barcodeNo || '').trim().toLowerCase();
+      const want = wanted.get(key);
+      if (!want) return line;
+
+      const already = Number(line.returnedQty) || 0;
+      const left = (Number(line.qty) || 0) - already;
+      if (want > left) {
+        throw Object.assign(new Error(
+          'Only ' + left + ' left to return on barcode ' + (line.barcodeNo || '') + '.'
+        ), { status: 422 });
+      }
+
+      wanted.delete(key);
+      logged.push({ barcodeNo: line.barcodeNo || '', itemName: line.itemName || '', qty: want });
+      return { ...line, returnedQty: already + want };
+    });
+
+    if (wanted.size) {
+      return json({ error: 'Barcode ' + [...wanted.keys()][0] + ' is not on this challan.' }, 422);
+    }
+
+    await IcDeliveryChallan.collection.updateOne(
+      { _id: new Types.ObjectId(id) },
+      {
+        $set: { items: nextItems },
+        $push: {
+          returns: {
+            at: new Date(),
+            by: session.name || session.email || '',
+            lines: logged,
+          },
+        },
+      }
+    );
+
+    /* The returned quantity goes back into the SENDING branch's stock - it
+       left there when the challan was raised. Done after the document is
+       written so a failure here cannot lose the record of the return. */
+    await restoreReturnedStock({ challan, asked: logged, user: session });
+
+    return json({ ok: true, id, returned: logged });
+  }
+
   if (challan.receivedAt) {
     return json({ error: 'Challan ' + (challan.dcNo || '') + ' is already received.' }, 409);
   }

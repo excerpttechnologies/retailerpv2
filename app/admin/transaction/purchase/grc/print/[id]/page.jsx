@@ -19,6 +19,7 @@
 import { useEffect, useState } from 'react';
 import { useParams } from 'next/navigation';
 import { encodedBarcodeValue } from '@/lib/barcodeValue';
+import { grcTotals, grcMoney, rowTaxable } from '@/lib/grcMoney';
 
 /* Printable GRC receipt: header fields + the complete line-item grid,
    matching what was saved from GCRBarcodeGeneration.jsx. Opens in a normal
@@ -46,21 +47,23 @@ export default function GrcPrintPage() {
 
   const { grc, rows } = data;
 
-  /* Money from the rows, the way every other GRC screen works it out:
-       taxable = final purchase rate (tax-exclusive) x qty
-       GST     = taxable x the row's GST% / 100   - an amount
-       net     = taxable + GST
+  /* Money from the rows, through lib/grcMoney.js - the same arithmetic the
+     save route stores the header with and the GRC list shows, in the same
+     order: net amount, then the GST AMOUNT, then taxable = net - GST, so this
+     sheet prints TAXABLE + GST = NET AMOUNT.
+
      This used to add up the GST PERCENTAGES as a "total" and print the
      taxable value as the net. A GRC with no barcode rows (an imported one)
-     prints the totals stored on its header instead. */
-  const taxableOf = (r) => (parseFloat(r.finalNet || r.purRate) || 0) * (parseFloat(r.qty) || 0);
-  const totalQty = rows.reduce((s, r) => s + (parseFloat(r.qty) || 0), 0);
-  const totalTaxable = rows.reduce((s, r) => s + taxableOf(r), 0);
-  /* each line's GST rounded to the paisa, as the save route totals the header */
-  const totalGst = rows.reduce((s, r) => s + Math.round(taxableOf(r) * (parseFloat(r.gst) || 0)) / 100, 0);
-  const totalNet = totalTaxable + totalGst;
+     prints the totals stored on its header instead - resolved the same way,
+     so an old header's sum of percentages is never printed as an amount. */
+  const totals = grcTotals(rows);
+  const totalQty = totals.totalQuantity;
+  const totalTaxable = totals.taxable;
+  const totalGst = totals.gst;
+  const totalNet = totals.netAmount;
+  const header = grcMoney(grc, rows);
   /* rows count only when at least one carries a purchase price */
-  const hasRows = rows.some((r) => taxableOf(r) > 0);
+  const hasRows = rows.some((r) => rowTaxable(r) > 0);
 
   return (
     <div className="max-w-5xl mx-auto p-6 text-slate-800 text-sm print:p-0">
@@ -93,9 +96,9 @@ export default function GrcPrintPage() {
           <Field label="Vendor Doc Date" value={fmtDate(grc.vendorDocDate)} />
           <Field label="Occasion" value={grc.occasion} />
           <Field label="Total Quantity" value={grc.totalQuantity} />
-          <Field label="Taxable" value={hasRows ? totalTaxable.toFixed(2) : grc.taxable} />
-          <Field label="GST Amount" value={hasRows ? totalGst.toFixed(2) : grc.gst} />
-          <Field label="Net Amount" value={hasRows ? totalNet.toFixed(2) : grc.netAmount} />
+          <Field label="Taxable" value={(hasRows ? totalTaxable : header.taxable).toFixed(2)} />
+          <Field label="GST Amount" value={(hasRows ? totalGst : header.gst).toFixed(2)} />
+          <Field label="Net Amount" value={(hasRows ? totalNet : header.netAmount).toFixed(2)} />
         </div>
 
         <table className="w-full border-collapse text-[11px]">

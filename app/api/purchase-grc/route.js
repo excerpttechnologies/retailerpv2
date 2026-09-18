@@ -2,7 +2,9 @@ import { isValidObjectId } from 'mongoose';
 import dbConnect from '@/lib/db';
 import Grc from '@/models/Grc';
 import Delivery from '@/models/Delivery';
+import { BarcodeLabel } from '@/lib/barcodeLabel';
 import { Supplier } from '@/lib/contacts';
+import { grcMoney, headerGstIsAmount } from '@/lib/grcMoney';
 import { requireSession } from '@/lib/session';
 import { resolveRefLabels } from '@/lib/refLabels';
 import { validate, escapeRegex } from '@/lib/validate';
@@ -129,48 +131,51 @@ export async function GET(req) {
     .lean();
 
   const labels = await resolveRefLabels(rows);
-  
-  /* Calculate GST amount for display.
-     
-     The GRC.gst field should contain the GST amount calculated from items.
-     However, some records may have incorrect data or the field may contain
-     the GST percentage instead of amount.
-     
-     Per requirements: calculate GST amount from netAmount (tax-inclusive):
-     GST Amount = netAmount × implied_gst_rate / (100 + implied_gst_rate)
-     
-     Where implied GST rate is derived from: (netAmount - taxable) / taxable × 100
-  */
-  const rowsWithGstAmount = rows.map((r) => {
-    const netAmount = Number(r.netAmount) || 0;
-    const taxable = Number(r.taxable) || 0;
-    const storedGst = Number(r.gst) || 0;
-    
-    let gstAmount = storedGst;
-    
-    // Calculate GST amount from netAmount and taxable if both are available
-    if (netAmount > 0 && taxable > 0 && taxable < netAmount) {
-      // The GST amount is simply: netAmount - taxable
-      // This works for both tax-inclusive and tax-exclusive cases
-      gstAmount = netAmount - taxable;
-    } else if (storedGst > 0 && storedGst < 100 && netAmount > 0) {
-      // If stored GST looks like a percentage (< 100) and we have netAmount,
-      // calculate using the tax-inclusive formula:
-      // GST Amount = netAmount × gst% / (100 + gst%)
-      gstAmount = netAmount * storedGst / (100 + storedGst);
-    }
-    // Otherwise use the stored value as-is
-    
+
+  /* ---- the money the list shows: TAXABLE + GST = NET AMOUNT -------------
+
+     Worked out in lib/grcMoney.js, the one place the save route, this list,
+     the GRC screen and the print view all read their arithmetic from, in the
+     order the business rule states: the net amount the header stores, then
+     the GST AMOUNT, then taxable = net amount - GST. Nothing is written back:
+     the stored header - its prices, quantities, GST rates and net amount -
+     is left exactly as it is.
+
+     Barcode rows are read only for the headers that need them: one whose GST
+     is already an amount (every header the current save route writes, and
+     every imported one) resolves from itself, so the usual page costs no
+     extra query at all. A pre-2026-09-17 header, which holds a sum of GST
+     PERCENTAGES rather than an amount, has its GST worked out from the GST
+     RATE ITS OWN ROWS CARRY - never a rate assumed here. */
+  const needRows = rows.filter((r) => !headerGstIsAmount(r)).map((r) => String(r._id));
+  const rowsByGrc = new Map();
+  if (needRows.length) {
+    const labelRows = await BarcodeLabel.find({ grcId: { $in: needRows } })
+      .select('grcId gst qty qtyNum finalNet purRate').lean();
+    labelRows.forEach((row) => {
+      const key = String(row.grcId);
+      if (!rowsByGrc.has(key)) rowsByGrc.set(key, []);
+      rowsByGrc.get(key).push(row);
+    });
+  }
+
+  const pricedRows = rows.map((r) => {
+    const money = grcMoney(r, rowsByGrc.get(String(r._id)));
     return {
       ...r,
       _id: String(r._id),
       supplierName: labels[String(r.supplierId)] || '',
-      gstAmount: Math.round(gstAmount * 100) / 100,
+      /* all three from the same resolution, so the columns add up */
+      taxable: money.taxable,
+      netAmount: money.netAmount,
+      gst: money.gst,
+      /* the name the GST column reads; `gst` above carries the same amount */
+      gstAmount: money.gst,
     };
   });
-  
+
   return json({
-    rows: rowsWithGstAmount,
+    rows: pricedRows,
     labels,
     total,
     page,

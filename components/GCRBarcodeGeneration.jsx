@@ -17,6 +17,7 @@ import { encodeRate } from "@/lib/purchaseRateCode";
 import { gstPercentForAmount, slabGstPercent } from "@/lib/hsnGst";
 import { purchasePriceError } from "@/lib/purchasePrice";
 import { toGridRow, pmfOf, PMF_REQUIRED_MESSAGE } from "@/lib/barcodeRowSync";
+import { grcTotals, r2, rowQty, rowTaxable, rowGst, rowNet } from "@/lib/grcMoney";
 import {
   money, finalRateOf, sameValue, sheetColumns, sheetProblems, isLockedRow, lockReason, isBlankRow,
   SHEET_INHERITED_FIELDS,
@@ -3284,18 +3285,33 @@ export default function GCRBarcodeGeneration({ grcId = null, initialRows = NO_RO
   const validRows = useMemo(() => rows.filter((row) => String(row.itemCode || row.itemName || "").trim()), [rows]);
   const additionalFields = useMemo(() => customFieldNames(validRows), [validRows]);
 
-  const totals = useMemo(() => validRows.reduce((acc, row) => {
-    const qty = Number(row.qty || 0);
-    const beforeTax = Number(row.finalPrice || 0) * qty;
-    /* each line's GST rounded to the paisa, as the save route totals the GRC */
-    const gstAmount = Math.round(beforeTax * Number(row.gst || 0)) / 100;
-    acc.taxable += beforeTax;
-    acc.gst += gstAmount;
-    acc.net += beforeTax + gstAmount;
-    acc.pcs += pcRegex.test(String(row.uom || "")) ? qty : 0;
-    acc.mtr += meterRegex.test(String(row.uom || "")) ? qty : 0;
-    return acc;
-  }, { taxable: 0, gst: 0, net: 0, pcs: 0, mtr: 0 }), [validRows]);
+  /* ---- the money on this screen, from lib/grcMoney.js --------------------
+
+     One module for every figure here, the save route, the GRC list and the
+     print sheet, worked out in the order the business rule states:
+
+       1. net amount = line taxable + line GST, summed
+       2. GST amount = line taxable x the row's OWN GST% / 100, summed
+       3. taxable    = net amount - GST amount
+
+     so TAXABLE + GST = NET AMOUNT on the totals bar, in the Item Summary and
+     in what the save stores, to the paisa. The GST rate is each row's own -
+     filled from the item / HSN master, never fixed here.
+
+     This used to set the taxable value to the line's net amount and then add
+     GST on top of it, which put the tax in twice. It is derived from `rows`,
+     so a changed rate, quantity, discount, offer or GST% recalculates all
+     three together: none of them can be left showing the value before the
+     edit. */
+  const totals = useMemo(() => {
+    const money = grcTotals(validRows);
+    return validRows.reduce((acc, row) => {
+      const qty = rowQty(row);
+      acc.pcs += pcRegex.test(String(row.uom || "")) ? qty : 0;
+      acc.mtr += meterRegex.test(String(row.uom || "")) ? qty : 0;
+      return acc;
+    }, { taxable: money.taxable, gst: money.gst, net: money.netAmount, pcs: 0, mtr: 0 });
+  }, [validRows]);
 
   /* ITEM SUMMARY - one line per BILL LINE of the supplier's bill.
 
@@ -3324,13 +3340,11 @@ export default function GCRBarcodeGeneration({ grcId = null, initialRows = NO_RO
         });
       }
       const entry = map.get(key);
-      const qty = Number(row.qty || 0);
-      const beforeTax = Number(row.finalPrice || 0) * qty;
-      entry.qty += qty;
-      entry.beforeTax += beforeTax;
-      const lineGst = Math.round(beforeTax * Number(row.gst || 0)) / 100;
-      entry.gst += lineGst;
-      entry.net += beforeTax + lineGst;
+      /* the same three figures as the totals bar, for this bill line */
+      entry.qty += rowQty(row);
+      entry.beforeTax = r2(entry.beforeTax + rowTaxable(row));
+      entry.gst = r2(entry.gst + rowGst(row));
+      entry.net = r2(entry.beforeTax + entry.gst);
       Object.entries(row.customFields || {}).forEach(([key, value]) => {
         const current = entry.customFields[key];
         entry.customFields[key] = current && current !== value ? `${current}, ${value}` : value;
@@ -3585,14 +3599,10 @@ export default function GCRBarcodeGeneration({ grcId = null, initialRows = NO_RO
          route composes each barcode number, and every row carries its own id,
          so a Submit pressed twice is matched by that id (clientRowId) rather
          than inserted again. */
-      const saveTotals = rowsToSave.reduce((result, row) => {
-        const qty = Number(row.qty || 0);
-        const beforeTax = Number(row.finalPrice || 0) * qty;
-        const gstAmount = beforeTax * (Number(row.gst || 0) / 100);
-        result.count += qty;
-        result.value += beforeTax + gstAmount;
-        return result;
-      }, { count: 0, value: 0 });
+      /* the same arithmetic as the totals bar (lib/grcMoney.js), so what the
+         save is told agrees to the paisa with what the operator confirmed */
+      const sending = grcTotals(rowsToSave);
+      const saveTotals = { count: sending.totalQuantity, value: sending.netAmount };
       const response = await fetch("/api/barcode-generation", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -4033,9 +4043,12 @@ export default function GCRBarcodeGeneration({ grcId = null, initialRows = NO_RO
                     <td className="border border-gray-300 px-2 py-2">{money(row.purchaseRate || 0)}</td>
                     <td className="border border-gray-300 px-2 py-2">{row.discount || 0}</td>
                     <td className="border border-gray-300 px-2 py-2">{money(row.finalPrice || 0)}</td>
-                    <td className="border border-gray-300 px-2 py-2">{money((Number(row.finalPrice || 0) * Number(row.qty || 0)))}</td>
-                    <td className="border border-gray-300 px-2 py-2">{money(((Number(row.finalPrice || 0) * Number(row.qty || 0)) * (Number(row.gst || 0) / 100)))}</td>
-                    <td className="border border-gray-300 px-2 py-2">{money(((Number(row.finalPrice || 0) * Number(row.qty || 0)) + ((Number(row.finalPrice || 0) * Number(row.qty || 0)) * (Number(row.gst || 0) / 100))))}</td>
+                    {/* taxable, GST and net through lib/grcMoney.js - the same
+                        three figures the totals bar and the save add up, so a
+                        line and the total below it can never disagree */}
+                    <td className="border border-gray-300 px-2 py-2">{money(rowTaxable(row))}</td>
+                    <td className="border border-gray-300 px-2 py-2">{money(rowGst(row))}</td>
+                    <td className="border border-gray-300 px-2 py-2">{money(rowNet(row))}</td>
                     <td className="border border-gray-300 px-2 py-2">{money(row.rsp || row.retailPrice || 0)}</td>
                     <td className="border border-gray-300 px-2 py-2">{money(row.wsp || 0)}</td>
                     <td className="border border-gray-300 px-2 py-2">{money(row.dp || 0)}</td>

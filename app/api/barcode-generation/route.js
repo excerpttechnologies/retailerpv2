@@ -19,6 +19,7 @@ import {
 } from '@/lib/barcodeValue';
 import { purchasePriceError, normalisePurchasePrice } from '@/lib/purchasePrice';
 import { saveBatchTypeOf } from '@/lib/barcodeUnits';
+import { grcTotals } from '@/lib/grcMoney';
 
 /* /api/barcode-generation
 
@@ -526,8 +527,10 @@ export const POST = handler(async (req) => {
       vendorDocNo: vendorDocNo || '',
       totalQuantity: totals?.count || totalQuantity,
       gst,
-      /* from the rows (grcTotals), not the screen's own total, which already
-         had GST in it and was then stored as the taxable value too */
+      /* All three from the rows (grcTotals), not the screen's own total,
+         which already had GST in it and was then stored as the taxable value
+         too. taxable is netAmount - gst by construction, so what is stored
+         here reads back as TAXABLE + GST = NET AMOUNT. */
       netAmount,
       taxable,
     };
@@ -975,28 +978,22 @@ function hasMoved(unit) {
 }
 
 /* The GRC header's money, from barcode rows - stored (finalNet / purRate) or
-   submitted (finalPrice / purchaseRate).
+   submitted (finalPrice / purchaseRate) - is worked out in lib/grcMoney.js
+   (grcTotals, imported above), the one place every GRC screen and route reads
+   its arithmetic from:
 
-     taxable    = final purchase rate (already net of discount, tax-exclusive)
-                  x qty, summed
-     gst        = each row's taxable x its GST% / 100, summed - an AMOUNT
-     netAmount  = taxable + gst
+     1. netAmount = sum(line taxable) + sum(line GST)
+     2. gst       = each line's taxable x its own GST% / 100, summed - an AMOUNT
+     3. taxable   = netAmount - gst
+
+   so a stored header always satisfies TAXABLE + GST = NET AMOUNT.
 
    It used to add up selling prices (offerPrice || retailPrice) for the net
    amount, take a discount off a rate that is already net of it, and add up
    the rows' GST PERCENTAGES as the GST - so a GRC of 15 rows at 5% stored a
-   GST of 75. Same arithmetic as every screen (lib/itemsSheet.js gstAmountOf). */
-function grcTotals(rows) {
-  const r2 = (value) => Math.round((value + Number.EPSILON) * 100) / 100;
-  const qtyOf = (row) => parseFloat(row.qty) || 0;
-  const rateOf = (row) => parseFloat(row.finalNet || row.finalPrice || row.purRate || row.purchaseRate) || 0;
-  const totalQuantity = rows.reduce((sum, row) => sum + qtyOf(row), 0);
-  const taxable = rows.reduce((sum, row) => sum + rateOf(row) * qtyOf(row), 0);
-  /* each line's GST rounded to the paisa, then added up - the way the GRC
-     voucher works out its tax and the reference ERP's totals add up */
-  const gst = rows.reduce((sum, row) => sum + Math.round(rateOf(row) * qtyOf(row) * (parseFloat(row.gst) || 0)) / 100, 0);
-  return { totalQuantity, taxable: r2(taxable), gst: r2(gst), netAmount: r2(taxable + gst) };
-}
+   GST of 75, and the same selling-price sum in both taxable and netAmount.
+   Headers written before that was fixed are read back through grcMoney (see
+   /api/purchase-grc), which never trusts such a `gst` as an amount. */
 
 async function resolveItems(rows, businessId) {
   const codes = [...new Set(rows.map((r) => String(r.itemCode || '').trim()).filter(Boolean))];

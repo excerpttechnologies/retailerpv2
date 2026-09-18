@@ -38,6 +38,7 @@ import { FORM } from '../form';
 import { useScope } from '@/components/ScopeContext';
 import PurchaseInvoicePrintView from '@/components/PurchaseInvoicePrintView';
 import { encodedBarcodeValue } from '@/lib/barcodeValue';
+import { grcTotals, grcMoney, rowQty, rowTaxable, rowGst, rowNet } from '@/lib/grcMoney';
 
 const fields = FORM.cards.flatMap((card) => card.fields || []);
 const number = (value) => Number(value) || 0;
@@ -83,27 +84,29 @@ export default function EditTransactionPurchaseGrcPage() {
       .catch((error) => setStatus(error.message || 'Failed to load GRC'));
   }, [id]);
 
-  const summaryRows = useMemo(() => rows.map((row) => {
-    const qty = number(row.qty);
-    const beforeGst = number(row.finalNet || row.purRate) * qty;
-    /* rounded per line, as the save route totals the GRC header */
-    const gstAmount = Math.round(beforeGst * number(row.gst)) / 100;
-    return {
-      ...row,
-      qty,
-      beforeGst,
-      gstAmount,
-      netAmount: beforeGst + gstAmount,
-    };
-  }), [rows]);
+  /* Every line, and the total under them, through lib/grcMoney.js - the same
+     arithmetic the save route stores the header with and the list shows, in
+     the same order: line net, line GST, then the taxable value read back out
+     of the net. Recomputed whenever `rows` change, so an edited quantity,
+     rate, discount or GST rate moves all three together and none of them can
+     be left holding the value before the change. */
+  const summaryRows = useMemo(() => rows.map((row) => ({
+    ...row,
+    qty: rowQty(row),
+    beforeGst: rowTaxable(row),
+    gstAmount: rowGst(row),
+    netAmount: rowNet(row),
+  })), [rows]);
 
-  const summary = useMemo(() => summaryRows.reduce((result, row) => {
-    result.quantity += row.qty;
-    result.taxable += row.beforeGst;
-    result.gst += row.gstAmount;
-    result.net += row.netAmount;
-    return result;
-  }, { quantity: 0, taxable: 0, gst: 0, net: 0 }), [summaryRows]);
+  const summary = useMemo(() => {
+    const totals = grcTotals(rows);
+    return { quantity: totals.totalQuantity, taxable: totals.taxable, gst: totals.gst, net: totals.netAmount };
+  }, [rows]);
+
+  /* The header's own figures, for a GRC whose rows carry no price - resolved
+     the way the list resolves them, so TAXABLE + GST = NET AMOUNT here too
+     and an old header's sum of GST percentages is never read as an amount. */
+  const headerMoney = useMemo(() => grcMoney(data, rows), [data, rows]);
 
   async function submit() {
     setSaving(true);
@@ -136,7 +139,7 @@ export default function EditTransactionPurchaseGrcPage() {
   /* rows count only when at least one carries a purchase price - a GRC whose
      rows have no price yet keeps showing its header */
   const hasRows = summaryRows.some((row) => row.beforeGst > 0);
-  const totalTaxable = hasRows ? summary.taxable : Number(data.taxable) || 0;
+  const totalTaxable = hasRows ? summary.taxable : headerMoney.taxable;
   /* GST falls back to the header the same way Taxable Value above it does.
      It used to read summary.gst alone, which is derived from the barcode
      rows - and the historical import carried header totals for every GRC but
@@ -147,7 +150,7 @@ export default function EditTransactionPurchaseGrcPage() {
      same place is what keeps the block adding up. Nothing is invented - the
      header value is what the source document was imported with, and `gst` is
      not a form field, so Update never writes over it. */
-  const totalGst = hasRows ? summary.gst : Number(data.gst) || 0;
+  const totalGst = hasRows ? summary.gst : headerMoney.gst;
   /* the rows' own GST rate for the CGST + SGST line (half each), shown when
      they all share one */
   const gstRates = [...new Set(rows.map((row) => number(row.gst)).filter((rate) => rate > 0))];

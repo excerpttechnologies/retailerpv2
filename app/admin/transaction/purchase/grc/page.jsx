@@ -45,10 +45,18 @@ const CONFIG = {
        the historical import put the workbook's "Purchase Term". No GRC ever
        had a purchaseTermId, so this column used to be blank on every row. */
     { k: "freightMode", t: "Purchase Term" },
-    { k: "taxable", t: "Taxable", f: "amount" },
+    /* TAXABLE + GST = NET AMOUNT on every row.
+
+       All three come from the one resolution the list API runs through
+       lib/grcMoney.js (grcMoney): the stored net amount, then the GST AMOUNT
+       - never a percentage, and never the sum of percentages a header written
+       before 2026-09-17 holds in that field - and then taxable, read back out
+       of the net amount as net - GST. Nothing is worked out again here, so
+       these columns cannot drift from the screens that open the same GRC. */
+    { k: "taxable", t: "Taxable", f: "amount", value: (r) => r.taxable || 0 },
     { k: "totalQuantity", t: "Total Quantity", f: "amount" },
     { k: "gstAmount", t: "GST", f: "amount", value: (r) => r.gstAmount || 0 },
-    { k: "netAmount", t: "Net Amount", f: "amount" },
+    { k: "netAmount", t: "Net Amount", f: "amount", value: (r) => r.netAmount || 0 },
   ],
 };
 
