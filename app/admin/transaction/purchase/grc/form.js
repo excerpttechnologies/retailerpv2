@@ -37,7 +37,29 @@ export const FORM = {
             "ref": "supplier",
             "req": true,
             "width": "full",
-            "readOnly": true
+            "readOnly": true,
+            /* A supplier carries its own agent - models/contactSchema.js
+               declares `agentId: { ref: 'agent' }` with the comment "a
+               supplier's agent", and the supplier master asks for it under
+               Agent Setup -> Agent Name. So settling the vendor settles the
+               Agent too, and the operator is not asked again for something
+               the database already records.
+
+               `fillFrom` reads it off the supplier record through set(), which
+               already carries the request token that stops a slow lookup for a
+               vendor chosen two changes ago from landing on the current one.
+               A supplier with no agent yields '' (doc.agentId is null), which
+               EMPTIES the box rather than leaving the previous vendor's agent
+               standing - the only two states this field has.
+
+               agentId is the single GRC header field the supplier master also
+               holds; purchase group, occasion, freight and stock point have no
+               supplier-level equivalent, and Vendor GST No already arrives on
+               the LR row as supplierGstNo. */
+            "fillFrom": {
+              "endpoint": "/api/supplier",
+              "map": { "agentId": "agentId" }
+            }
           },
           {
             "k": "vendorGstNo",
@@ -159,6 +181,13 @@ export const FORM = {
           { "k": "taxableValue", "label": "Enter Taxable", "type": "number" },
           { "k": "taxAmount", "label": "Tax Amount", "type": "number" },
           { "k": "freightAmount", "label": "Freight", "type": "number" },
+          /* Round Off - the operator's signed adjustment to the final amount.
+             `header: true` marks it as one of the few Voucher Section columns
+             that is ALSO a GRC header path: the Edit screen's Net Purchases
+             Value reads data.roundOff off the header, so the save routes let
+             it through validate(). Every other column here is stored inside
+             voucherRows and deliberately dropped by them. */
+          { "k": "roundOff", "label": "Round Off", "type": "number", "header": true },
           { "k": "totalAmount", "label": "Enter Total Amount", "type": "number" }
         ]
       }

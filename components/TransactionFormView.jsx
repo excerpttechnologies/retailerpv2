@@ -548,9 +548,17 @@ export default function TransactionFormView({ cfg, id, slug }) {
 
      Tax Amount and Total Amount are derived, never typed:
        Tax Amount   = Taxable x rate / 100      (rate from the HSN master)
-       Total Amount = Taxable + Tax Amount + Freight
+       Total Amount = Taxable + Tax Amount + Freight + Round Off
      Both inputs are read-only in the table, so a hand-typed figure cannot
      drift away from the numbers the rest of the document is built from.
+
+     Round Off is the operator's own SIGNED adjustment to the final amount -
+     it is added, so -0.20 on a 23100.00 total gives 23099.80 and +0.20 gives
+     23100.20. It is an input, not a derived column, and it is added last, on
+     top of the tax the taxable value already carries, so it never disturbs
+     the Taxable/GST pair above it. The Edit screen's Net Purchases Value
+     applies it the same way (grc/[id]/page.jsx), which is where the sign
+     convention comes from.
 
      The rate is resolved the same way the barcode screen does it: /api/hsn to
      find the code, then /api/tax/<id> for the slab. Results are cached per
@@ -628,15 +636,17 @@ export default function TransactionFormView({ cfg, id, slug }) {
           return { ...row, freightAmount: freightValue };
         }
         const tax = rate ? Math.round(taxable * rate) / 100 : 0;
+        /* signed: a negative Round Off subtracts from the total */
+        const roundOff = Number(row.roundOff) || 0;
         const taxAmount = tax.toFixed(2);
-        const totalAmount = (taxable + tax + freight).toFixed(2);
+        const totalAmount = (taxable + tax + freight + roundOff).toFixed(2);
         /* A total the operator typed stands; one the screen filled in follows
            the numbers. It used to keep whatever it was first given (the taxable
            plus the PREVIOUS keystroke's tax, or the taxable alone when the rate
            arrived later) and it never added the freight the formula above
            names. */
         const typedTotal = String(row.totalAmount ?? '').trim();
-        const previousAuto = taxable + (Number(row.taxAmount) || 0) + freight;
+        const previousAuto = taxable + (Number(row.taxAmount) || 0) + freight + roundOff;
         const totalValue = typedTotal && Math.abs(Number(typedTotal) - previousAuto) > 0.005 ? typedTotal : totalAmount;
         if (row.taxAmount === taxAmount && row.totalAmount === totalValue && row.freightAmount === freightValue) return row;
         changed = true;
@@ -724,6 +734,17 @@ export default function TransactionFormView({ cfg, id, slug }) {
     const { endpoint, map } = spec.fillFrom;
     const ticket = ++fillTicket.current;
 
+    /* Whatever these targets were showing described the PREVIOUS record, so
+       the display option goes at the same moment the value does. Without this
+       an Agent picked by hand would keep its label listed against the next
+       vendor's agent id. The ref field resolves the new label from its own
+       options, so nothing has to be put back. */
+    setSelectedOptions((current) => {
+      const next = { ...current };
+      Object.keys(map).forEach((target) => { delete next[target]; });
+      return next;
+    });
+
     /* clearing the vendor clears what it filled in */
     if (!v) {
       setData((d) => Object.keys(map)
@@ -732,24 +753,151 @@ export default function TransactionFormView({ cfg, id, slug }) {
     }
 
     fetch(endpoint + '/' + v)
-      .then((r) => r.json())
+      .then((r) => (r.ok ? r.json() : Promise.reject(new Error('lookup failed'))))
       .then(({ doc }) => {
-        if (ticket !== fillTicket.current || !doc) return;
+        if (ticket !== fillTicket.current) return;
         setData((d) => Object.entries(map)
-          .reduce((next, [target, src]) => ({ ...next, [target]: doc[src] ?? '' }), d));
+          .reduce((next, [target, src]) => ({ ...next, [target]: doc?.[src] ?? '' }), d));
       })
-      .catch(() => { /* leave the filled fields as they are */ });
+      .catch(() => {
+        /* AN UNREADABLE RECORD MEANS "NOTHING", NEVER "WHATEVER WAS THERE".
+           These targets belong to the record just chosen, so keeping the
+           PREVIOUS one's values would quietly pair this vendor with the last
+           vendor's agent - and it would save that way. A 401, a 404, a 500
+           and a dropped connection all land here and all mean the same
+           thing: this vendor has nothing to say about these fields.
+           Guarded by the same ticket, so a failure for a vendor already
+           replaced cannot wipe the current one's values. */
+        if (ticket !== fillTicket.current) return;
+        setData((d) => Object.keys(map)
+          .reduce((next, target) => ({ ...next, [target]: '' }), d));
+      });
   };
 
   const updateVoucherRow = (index, key, value) => {
     setVoucherRows((current) => current.map((row, rowIndex) => {
       if (rowIndex !== index) return row;
       const next = { ...row, [key]: value };
-      if (['invoiceQty', 'taxableValue', 'taxAmount', 'freightAmount'].includes(key)) {
-        next.totalAmount = (Number(next.taxableValue) + Number(next.taxAmount) + (Number(next.freightAmount) || 0)).toFixed(2);
+      if (['invoiceQty', 'taxableValue', 'taxAmount', 'freightAmount', 'roundOff'].includes(key)) {
+        next.totalAmount = (
+          (Number(next.taxableValue) || 0)
+          + (Number(next.taxAmount) || 0)
+          + (Number(next.freightAmount) || 0)
+          + (Number(next.roundOff) || 0)
+        ).toFixed(2);
       }
       return next;
     }));
+  };
+
+  /* ---- LR / Transaction Number -> the vendor it belongs to ---------------
+
+     Vendor Name is a READ-ONLY `ref` field. RefField renders the label of the
+     option it is holding, and a read-only box is never opened, so its own
+     `lastSelectedOption` never gets set and /api/options only ever returns a
+     page of vendors - one that need not contain this LR's. Setting
+     data.supplierId therefore filled the id without ever showing a name,
+     which is why picking an LR populated the GST number and left Vendor Name
+     blank.
+
+     The LR list already carries its vendor, so the name is read straight off
+     the row that was selected - no extra request, and no deriving a vendor
+     from the LR text. The two availableLr endpoints spell that nested vendor
+     differently and BOTH are live, so both spellings are accepted:
+       /api/delivery      supplier: { contactId, businessName, gstNo }   <- GRC
+       /api/purchase-grc  supplier: { vendorNo,  vendorName }
+     GRC's source card points at /api/delivery (see the card's `endpoint`, and
+     its sourceSubLabel of supplier.contactId / supplier.businessName), which
+     is why reading only vendorName left the box empty on the one screen this
+     was meant to fix. The /api/options fallback is for a source row that
+     carries no nested vendor at all.
+
+     There is deliberately NO /api/options fetch here. RefField already issues
+     that exact request for this field (useOptions(f.ref) with an empty query,
+     same business and location), and MultiSelect resolves a label from it by
+     value on its own - so a second copy could never find a vendor the field
+     could not, and would only cost a request. */
+  const applySourceVendor = (row) => {
+    const supplierId = row?.supplierId;
+    if (!supplierId) return;
+    const vendor = row.supplier;
+    /* businessName is already the resolved display name on both routes - each
+       falls back to the personal name for a vendor entered as a person */
+    const vendorName = vendor?.vendorName || vendor?.businessName || '';
+    const vendorCode = vendor?.vendorNo || vendor?.contactId || '';
+    setSelectedOptions((current) => {
+      const next = { ...current };
+      if (vendorName) {
+        next.supplierId = {
+          value: String(supplierId),
+          label: vendorName + (vendorCode ? ' (' + vendorCode + ')' : ''),
+        };
+      } else {
+        /* This LR names a vendor the row could not resolve. Drop whatever was
+           showing rather than leave the PREVIOUS vendor's name standing
+           against the new vendor's id - that is the stale "vendor A after
+           choosing LR B" the flow has to avoid. */
+        delete next.supplierId;
+      }
+      return next;
+    });
+  };
+
+  /* Copies a selected source row onto the form. One function for both the
+     stand-alone source card (GRC's LR) and the inline one, so the two cannot
+     drift apart - the vendor handling below used to exist only on the inline
+     path, which is the half GRC does not use.
+
+     Fields carrying `fillFrom` go through set() so their side-effect fires;
+     the rest are batched into a single setData. */
+  const applySourceRow = (card, row) => {
+    if (!card?.populate || !row) return;
+    const fillFromKeys = new Set(allFields.filter((f) => f.fillFrom).map((f) => f.k));
+    const entries = Object.entries(card.populate);
+    const batchEntries = entries.filter(([target]) => !fillFromKeys.has(target));
+    const fillEntries = entries.filter(([target]) => fillFromKeys.has(target));
+
+    if (batchEntries.length) {
+      setData((current) => batchEntries.reduce(
+        (next, [target, sourceKey]) => ({ ...next, [target]: row[sourceKey] ?? '' }),
+        current
+      ));
+    }
+    fillEntries.forEach(([target, sourceKey]) => { set(target, row[sourceKey] ?? ''); });
+    applySourceVendor(row);
+  };
+
+  /* Clearing the LR must take everything it filled in with it - otherwise
+     vendor A's name, GST number and invoice number sit on a form that no
+     longer names an LR, and the next LR chosen is compared against them.
+     Changing LR A to LR B needs no clear: applySourceRow overwrites every
+     populate target, vendor included. */
+  const clearSourceRow = (card) => {
+    if (!card?.populate) return;
+    const targets = Object.keys(card.populate);
+    /* A cleared field takes its own dependants with it. Vendor Name fills the
+       Agent through fillFrom, so dropping the vendor has to drop the agent -
+       otherwise clearing the LR leaves the last vendor's agent sitting on a
+       form that names no vendor at all. Read off the field specs rather than
+       listed here, so a new fillFrom target is covered by construction. */
+    const dependants = targets.flatMap((target) => {
+      const spec = allFields.find((f) => f.k === target);
+      return spec?.fillFrom?.map ? Object.keys(spec.fillFrom.map) : [];
+    });
+    const all = [...new Set([...targets, ...dependants])];
+    /* Retire any fillFrom lookup still in the air. This is the one clearing
+       path that does not go through set(), so it is the one path that would
+       otherwise leave the ticket untouched - and the reply to the vendor
+       just cleared would then land and write its agent back onto a form that
+       names no vendor at all. Bumping the ticket makes every response older
+       than this moment ignore itself. */
+    fillTicket.current += 1;
+    setData((current) => all.reduce((next, target) => ({ ...next, [target]: '' }), current));
+    setSelectedOptions((current) => {
+      const next = { ...current };
+      all.forEach((target) => { delete next[target]; });
+      return next;
+    });
   };
 
   async function submit() {
@@ -758,7 +906,20 @@ export default function TransactionFormView({ cfg, id, slug }) {
       const payload = {
         data: {
           ...data,
-          ...Object.fromEntries((voucherCard?.fields || []).map((field) => [field.k, voucherRows[0]?.[field.k] ?? ''])),
+          /* The Voucher Section's columns are flattened onto the header.
+             A column marked `header: true` is the only kind the save routes
+             actually store there, and the grid can hold several rows, so a
+             numeric one is SUMMED down every row - the very figure the
+             section's own footer shows the operator. Taking row 0 alone would
+             silently drop a Round Off typed on row 2.
+             Every other column keeps the historical row-0 behaviour: the save
+             routes drop them and they live on inside voucherRows. */
+          ...Object.fromEntries((voucherCard?.fields || []).map((field) => {
+            if (!field.header || field.type !== 'number') return [field.k, voucherRows[0]?.[field.k] ?? ''];
+            const entered = voucherRows.some((row) => String(row?.[field.k] ?? '').trim() !== '');
+            if (!entered) return [field.k, ''];
+            return [field.k, voucherRows.reduce((total, row) => total + (Number(row?.[field.k]) || 0), 0)];
+          })),
           voucherRows,
           items: vendorItems.length ? vendorItems : items,
           sourceIds: source, ...(tab ? { type: tab } : {}),
@@ -865,56 +1026,14 @@ export default function TransactionFormView({ cfg, id, slug }) {
                             supplierId={data.supplierId}
                             value={source}
                             onChange={(next) => {
+                              /* same guard as the stand-alone card below */
+                              const hadSelection = Array.isArray(source) ? source.length > 0 : Boolean(source);
+                              const clearing = !next || (Array.isArray(next) && !next.length);
                               setSource(next);
                               if (inlineSourceCard.sourceKey) set(inlineSourceCard.sourceKey, next);
+                              if (hadSelection && clearing) clearSourceRow(inlineSourceCard);
                             }}
-                            onSelect={(row) => {
-                              if (!row || !inlineSourceCard.populate) return;
-                              const fillFromKeys = new Set(
-                                allFields.filter((f) => f.fillFrom).map((f) => f.k)
-                              );
-                              const batchEntries = Object.entries(inlineSourceCard.populate)
-                                .filter(([target]) => !fillFromKeys.has(target));
-                              const fillEntries = Object.entries(inlineSourceCard.populate)
-                                .filter(([target]) => fillFromKeys.has(target));
-                              if (batchEntries.length) {
-                                setData((current) => batchEntries.reduce(
-                                  (next, [target, sourceKey]) => ({ ...next, [target]: row[sourceKey] ?? '' }),
-                                  current
-                                ));
-                              }
-                              fillEntries.forEach(([target, sourceKey]) => {
-                                set(target, row[sourceKey] ?? '');
-                              });
-                              
-                              // Handle vendor name display - prioritize supplier object from the row
-                              if (row.supplierId) {
-                                // If the row includes supplier details, use them directly
-                                if (row.supplier && row.supplier.vendorName) {
-                                  const vendorName = row.supplier.vendorName;
-                                  const vendorCode = row.supplier.vendorNo ? ` (${row.supplier.vendorNo})` : '';
-                                  setSelectedOptions((prev) => ({ 
-                                    ...prev, 
-                                    supplierId: { 
-                                      value: String(row.supplierId), 
-                                      label: vendorName + vendorCode 
-                                    } 
-                                  }));
-                                } else {
-                                  // Otherwise fetch from options API
-                                  fetch('/api/options?ref=supplier&business=' + (scope.business || '') + '&location=' + (scope.location || ''))
-                                    .then((r) => r.json())
-                                    .then((optionsData) => {
-                                      const options = optionsData.options || [];
-                                      const selectedOption = options.find((opt) => opt.value === String(row.supplierId));
-                                      if (selectedOption) {
-                                        setSelectedOptions((prev) => ({ ...prev, supplierId: selectedOption }));
-                                      }
-                                    })
-                                    .catch(() => {});
-                                }
-                              }
-                            }}
+                            onSelect={(row) => applySourceRow(inlineSourceCard, row)}
                           />
                         </div>
                       )}
@@ -990,8 +1109,16 @@ export default function TransactionFormView({ cfg, id, slug }) {
                         supplierId={data.supplierId}
                         value={source}
                         onChange={(next) => {
+                          /* Only a real de-selection clears. MultiSelect shows
+                             its clear button even when nothing is chosen (the
+                             initial `source` is [], which is truthy), and
+                             pressing it then must not wipe an Invoice Number
+                             the operator has already typed. */
+                          const hadSelection = Array.isArray(source) ? source.length > 0 : Boolean(source);
+                          const clearing = !next || (Array.isArray(next) && !next.length);
                           setSource(next);
                           if (card.sourceKey) set(card.sourceKey, next);
+                          if (hadSelection && clearing) clearSourceRow(card);
                         }}
                         onSelect={(selection) => {
                       const selectedRows = Array.isArray(selection) ? selection : [selection];
@@ -1019,30 +1146,10 @@ export default function TransactionFormView({ cfg, id, slug }) {
                       }));
                       if (sourceItems.length) setItems(sourceItems);
                       const row = Array.isArray(selection) ? selection[0] : selection;
-                      if (!row || !card.populate) return;
-                      /* Populate fields from the selected source row.
-                         Fields that have `fillFrom` must go through set() so that
-                         fillFrom fires (e.g. supplierId → fetch GST No).
-                         All other fields are batched into a single setData call. */
-                      const fillFromKeys = new Set(
-                        allFields.filter((f) => f.fillFrom).map((f) => f.k)
-                      );
-                      const batchEntries = Object.entries(card.populate)
-                        .filter(([target]) => !fillFromKeys.has(target));
-                      const fillEntries = Object.entries(card.populate)
-                        .filter(([target]) => fillFromKeys.has(target));
-
-                      if (batchEntries.length) {
-                        setData((current) => batchEntries.reduce(
-                          (next, [target, sourceKey]) => ({ ...next, [target]: row[sourceKey] ?? '' }),
-                          current
-                        ));
-                      }
-                      /* call set() for each fillFrom field so the side-effect
-                         (API fetch → write dependent field) is triggered */
-                      fillEntries.forEach(([target, sourceKey]) => {
-                        set(target, row[sourceKey] ?? '');
-                      });
+                      /* Everything the LR names - vendor, vendor GST, invoice
+                         number, freight - through the one shared applier, so
+                         this card behaves exactly like the inline one. */
+                      applySourceRow(card, row);
                         }}
                       />
                     </div>

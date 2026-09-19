@@ -2151,6 +2151,8 @@ import Icon from "./Icon";
 import Toolbar from "./Toolbar";
 import ModalForm from "./ModalForm";
 import FilterPanel from "./FilterPanel";
+import AttachmentsDialog from "./AttachmentsDialog";
+import ShareDocDialog from "./ShareDocDialog";
 import { useScope } from "./ScopeContext";
 import { fmt, toCsv, toXlsHtml, download, printTable } from "@/lib/format";
  
@@ -2263,6 +2265,76 @@ export default function ListView({ cfg, slug }) {
     return () => document.removeEventListener("click", close);
   }, [menuFor]);
  
+  /* The row whose Upload button was pressed. Holding the ROW - not just an
+     id - is what lets the dialog caption itself with that record's own
+     number, and makes it impossible for the dialog to be open against one
+     record while showing another's. */
+  const [uploadRow, setUploadRow] = useState(null);
+  /* The row whose Share button was pressed - the row itself, so every message
+     is composed from that record and no id is carried separately. */
+  const [shareRow, setShareRow] = useState(null);
+  /* Set when Share asks for a Download or a Print. window.print() photographs
+     the DOM as it stands at the instant it is called, so it cannot be fired
+     in the same handler that asks for the preview - React has not committed
+     it yet and the paper would come out blank. The effect below prints once
+     the preview it is waiting for is actually on screen. The same staging the
+     barcode print run uses (app/admin/transaction/purchase/barcode-print). */
+  const [pendingPrint, setPendingPrint] = useState(null);
+
+  /* PRINT THE PREVIEW THAT IS ON SCREEN.
+     The browser's print-to-PDF is this application's existing download
+     mechanism - the preview's own "Download / Print" button has always used
+     window.print() - so Download and Print are the same call; they differ
+     only in what the operator does in the browser's dialog.
+     document.title is what every browser offers as the default PDF filename,
+     so it becomes the record's own number for the duration of the print and
+     is put back afterwards. afterprint restores it, with a timer behind that
+     for the browsers that never fire the event. */
+  const printAs = useCallback((name) => {
+    const previous = document.title;
+    if (name) document.title = name;
+    let done = false;
+    const restore = () => {
+      if (done) return;
+      done = true;
+      document.title = previous;
+      window.removeEventListener("afterprint", restore);
+    };
+    window.addEventListener("afterprint", restore);
+    try { window.print(); } finally { setTimeout(restore, 1500); }
+  }, []);
+
+  /* Fires only once the previewed row is the row that was asked for, so the
+     print always photographs a rendered preview rather than an empty page. */
+  useEffect(() => {
+    if (!pendingPrint) return undefined;
+    /* the preview was closed before it could be printed - drop the request
+       rather than let it fire against some later, unrelated preview */
+    if (!viewRow) { setPendingPrint(null); return undefined; }
+    if (String(viewRow._id) !== String(pendingPrint.id)) return undefined;
+    const { name, openedPreview } = pendingPrint;
+    setPendingPrint(null);
+    /* Two animation frames before printing, as the barcode print run does
+       (app/admin/transaction/purchase/barcode-print): window.print()
+       photographs the DOM synchronously, and a commit is not a paint. */
+    let raf2 = 0;
+    const raf1 = window.requestAnimationFrame(() => {
+      raf2 = window.requestAnimationFrame(() => {
+        printAs(name);
+        /* a preview this print opened is put away again afterwards, so the
+           operator is left on the list they started from */
+        if (openedPreview) setViewRow(null);
+      });
+    });
+    return () => { window.cancelAnimationFrame(raf1); if (raf2) window.cancelAnimationFrame(raf2); };
+  }, [pendingPrint, viewRow, printAs]);
+
+  /* "TFJ/26/0131" -> "GRT-TFJ-26-0131": a filename a file system accepts */
+  const docFileName = useCallback((row) => {
+    const base = cfg.share?.fileName?.(row) || cfg.title || "document";
+    return String(base).replace(/[^A-Za-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+  }, [cfg]);
+
   const columns = cfg.columns || [];
   const actionPos = cfg.actionPosition || "right";
   const actionVariant = cfg.actionVariant || "icons";
@@ -2792,6 +2864,42 @@ export default function ListView({ cfg, slug }) {
                                     <Icon name="file" size={12} />
                                   </button>
                                 );
+                              /* Attach a document or a photo to THIS row.
+                                 cfg.attachKind names the collection the
+                                 record lives in (/api/attachments); the id
+                                 comes from the row under the button, so a
+                                 file cannot land on the wrong record. */
+                              if (a === "share")
+                                /* gated on cfg.share for the same reason the
+                                   upload button is gated on cfg.attachKind:
+                                   a list that has not said what to share
+                                   would otherwise show a dead button */
+                                return cfg.share ? (
+                                  <button
+                                    key={a}
+                                    className="act-btn bg-[#6d28d9]"
+                                    title="Share"
+                                    onClick={() => setShareRow(row)}
+                                  >
+                                    <Icon name="share" size={12} />
+                                  </button>
+                                ) : null;
+                              if (a === "upload")
+                                /* gated on the SAME condition as the dialog
+                                   below: a list that asks for the icon but
+                                   never says which record type it is would
+                                   otherwise show a button that does nothing
+                                   at all when pressed */
+                                return cfg.attachKind ? (
+                                  <button
+                                    key={a}
+                                    className="act-btn bg-[#0d9488]"
+                                    title="Upload document / photo"
+                                    onClick={() => setUploadRow(row)}
+                                  >
+                                    <Icon name="upload" size={12} />
+                                  </button>
+                                ) : null;
                               return (
                                 <button
                                   key={a}
@@ -2857,13 +2965,51 @@ export default function ListView({ cfg, slug }) {
         </div>
       </div>
       {viewRow && cfg.viewModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" onMouseDown={() => setViewRow(null)}>
-          <div className="max-h-[90vh] w-full max-w-6xl overflow-auto rounded-lg bg-white shadow-xl" onMouseDown={(event) => event.stopPropagation()}>
-            <div className="flex items-center border-b border-line px-5 py-3"><span className="card-title">Preview {cfg.title}</span><span className="flex-1" /><button type="button" className="btn btn-primary mr-2" onClick={() => window.print()}>Download / Print</button><button type="button" className="btn" onClick={() => setViewRow(null)}>Close</button></div>
+        <div className="preview-backdrop fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" onMouseDown={() => setViewRow(null)}>
+          {/* print-doc: globals.css hides `body *` at print time and shows
+              only .print-doc, so without it this modal's own Download / Print
+              button sent a blank page to the printer. no-print keeps the two
+              buttons themselves off the paper. */}
+          <div className="print-doc preview-doc max-h-[90vh] w-full max-w-6xl overflow-auto rounded-lg bg-white shadow-xl" onMouseDown={(event) => event.stopPropagation()}>
+            <div className="no-print flex items-center border-b border-line px-5 py-3"><span className="card-title">Preview {cfg.title}</span><span className="flex-1" /><button type="button" className="btn btn-primary mr-2" onClick={() => printAs(docFileName(viewRow))}>Download / Print</button><button type="button" className="btn" onClick={() => setViewRow(null)}>Close</button></div>
             <div className="grid grid-cols-1 gap-2 border-b border-line p-5 text-sm md:grid-cols-4"><div><b>Vendor:</b> {state.labels[String(viewRow.supplierId)] || viewRow.supplierName || '-'}</div><div><b>GRT No:</b> {viewRow.grtNo || '-'}</div><div><b>GRT Date:</b> {fmt('date', viewRow.grtDate)}</div><div><b>Total Qty:</b> {viewRow.qty || 0}</div>{['oldStock', 'vendorGstNo', 'grcNumber', 'vendorDocNo', 'vendorDocDate', 'purchaseGroupId', 'occasion', 'purchaseTermId', 'agentId', 'logisticId'].map((key) => <div key={key}><b>{key}:</b> {key.endsWith('Date') ? fmt('date', viewRow[key]) : key.endsWith('Id') ? (state.labels[String(viewRow[key])] || viewRow[key] || '-') : (viewRow[key] || '-')}</div>)}</div>
-            <div className="overflow-x-auto p-5"><table className="dt min-w-[1450px]"><thead><tr><th>SL.No</th><th>Barcode</th><th>Item Code</th><th>Item Name</th><th>HSN</th><th>Pur Rate</th><th>Final NET</th><th>Retail Price</th><th>Qty</th><th>GST %</th><th>Before GST</th><th>IGST Amount</th><th>CGST Amount</th><th>SGST Amount</th><th>Net Amount</th></tr></thead><tbody>{(() => { const items = Array.isArray(viewRow.items) ? viewRow.items : []; const totals = { qty: 0, taxable: 0, igst: 0, cgst: 0, sgst: 0, net: 0 }; const rows = items.map((item, index) => { const qty = Number(item.qty) || 0; const finalNet = Number(item.finalNet || item.purRate) || 0; const taxable = finalNet * qty; const gstAmount = taxable * ((Number(item.gst) || 0) / 100); const amounts = { qty, taxable, igst: 0, cgst: gstAmount / 2, sgst: gstAmount / 2, net: taxable + gstAmount }; Object.keys(totals).forEach((key) => { totals[key] += amounts[key]; }); return <tr key={item._id || index}><td>{index + 1}</td><td>{item.barcodeGenerated || item.barcodeNo || '-'}</td><td>{item.itemCode || '-'}</td><td>{item.supplierDescription || item.itemName || item.printDescription || '-'}</td><td>{item.hsn || '-'}</td><td>{item.purRate || '-'}</td><td>{item.finalNet || '-'}</td><td>{item.retailPrice || item.offerPrice || '-'}</td><td>{qty.toFixed(2)}</td><td>{item.gst || 0}%</td><td>{taxable.toFixed(2)}</td><td>{amounts.igst.toFixed(2)}</td><td>{amounts.cgst.toFixed(2)}</td><td>{amounts.sgst.toFixed(2)}</td><td>{amounts.net.toFixed(2)}</td></tr>; }); if (!items.length) return <tr><td colSpan={15} className="dt-empty">No items selected.</td></tr>; return <>{rows}<tr className="font-semibold"><td colSpan={8}>Total</td><td>{totals.qty.toFixed(2)}</td><td>-</td><td>{totals.taxable.toFixed(2)}</td><td>{totals.igst.toFixed(2)}</td><td>{totals.cgst.toFixed(2)}</td><td>{totals.sgst.toFixed(2)}</td><td>{totals.net.toFixed(2)}</td></tr></>; })()}</tbody></table></div>
+            <div className="overflow-x-auto p-5"><table className="dt min-w-[1450px]"><thead><tr><th>SL.No</th><th>Barcode</th><th>Item Code</th><th>Item Name</th><th>HSN</th><th>Pur Rate</th><th>Final NET</th><th>Retail Price</th><th>Qty</th><th>GST %</th><th>Before GST</th><th>IGST Amount</th><th>CGST Amount</th><th>SGST Amount</th><th>Net Amount</th></tr></thead><tbody>{(() => { const items = Array.isArray(viewRow.items) ? viewRow.items : []; const totals = { qty: 0, taxable: 0, igst: 0, cgst: 0, sgst: 0, net: 0 }; const rows = items.map((item, index) => { const qty = Number(item.qty) || 0; const finalNet = Number(item.finalNet || item.purRate) || 0; const taxable = finalNet * qty; const gstAmount = taxable * ((Number(item.gst) || 0) / 100); const amounts = { qty, taxable, igst: 0, cgst: gstAmount / 2, sgst: gstAmount / 2, net: taxable + gstAmount }; Object.keys(totals).forEach((key) => { totals[key] += amounts[key]; }); return <tr key={item._id || index}><td>{index + 1}</td><td>{/* the returned unit's OWN number (barcodeNo, "9A1165"), never the composed barcodeGenerated ("G513 * 05184 * 1 * 2") - two different things, and this column is the physical sticker's number */}{item.barcodeNo || '-'}</td><td>{item.itemCode || '-'}</td><td>{item.supplierDescription || item.itemName || item.printDescription || '-'}</td><td>{item.hsn || '-'}</td><td>{item.purRate || '-'}</td><td>{item.finalNet || '-'}</td><td>{item.retailPrice || item.offerPrice || '-'}</td><td>{qty.toFixed(2)}</td><td>{item.gst || 0}%</td><td>{taxable.toFixed(2)}</td><td>{amounts.igst.toFixed(2)}</td><td>{amounts.cgst.toFixed(2)}</td><td>{amounts.sgst.toFixed(2)}</td><td>{amounts.net.toFixed(2)}</td></tr>; }); if (!items.length) return <tr><td colSpan={15} className="dt-empty">No items selected.</td></tr>; return <>{rows}<tr className="font-semibold"><td colSpan={8}>Total</td><td>{totals.qty.toFixed(2)}</td><td>-</td><td>{totals.taxable.toFixed(2)}</td><td>{totals.igst.toFixed(2)}</td><td>{totals.cgst.toFixed(2)}</td><td>{totals.sgst.toFixed(2)}</td><td>{totals.net.toFixed(2)}</td></tr></>; })()}</tbody></table></div>
           </div>
         </div>
+      )}
+
+      {/* Upload Document / Photo for ONE record. cfg.attachKind names the
+          collection (/api/attachments); the id is this row's own _id, so a
+          file can only ever be attached to the record its button sits on.
+          Rendered only while a row is selected, so no stale row survives. */}
+      {/* Share ONE record. Download and Print open that record's own preview
+          and print it, which is the existing implementation rather than a
+          second one; the message text is built by the page from the row. */}
+      {shareRow && cfg.share && (
+        <ShareDocDialog
+          open
+          heading={cfg.share.heading || ("Share " + (cfg.title || "document"))}
+          recordLabel={cfg.share.recordLabel?.(shareRow, state.labels) || ""}
+          subject={cfg.share.subject?.(shareRow, state.labels) || ""}
+          lines={cfg.share.lines?.(shareRow, state.labels) || []}
+          /* Both open THIS row's own preview and print it - the existing
+             implementation, not a second one. Download and Print differ only
+             in what the operator chooses in the browser's own dialog. */
+          onDownload={() => { setPendingPrint({ id: String(shareRow._id), name: docFileName(shareRow), openedPreview: !viewRow }); setViewRow(shareRow); }}
+          onPrint={() => { setPendingPrint({ id: String(shareRow._id), name: docFileName(shareRow), openedPreview: !viewRow }); setViewRow(shareRow); }}
+          onClose={() => setShareRow(null)}
+        />
+      )}
+
+      {uploadRow && cfg.attachKind && (
+        <AttachmentsDialog
+          open
+          kind={cfg.attachKind}
+          id={String(uploadRow._id)}
+          title={cfg.attachTitle ? cfg.attachTitle(uploadRow) : (uploadRow[columns[0]?.k] || "")}
+          onClose={() => setUploadRow(null)}
+          onUploaded={() => load()}
+        />
       )}
     </>
   );

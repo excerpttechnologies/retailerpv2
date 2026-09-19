@@ -25,6 +25,15 @@ const P = {
   burger: 'M4 7h16M4 12h16M4 17h16',
   refresh: 'M4 12a8 8 0 0113.7-5.7M20 12a8 8 0 01-13.7 5.7M18 4v4h-4M6 20v-4h4',
   file: 'M6 3h8l4 4v14H6zM14 3v4h4M9 13h6M9 17h6',
+  /* upload: a tray with an arrow rising out of it - the Action column's
+     Upload button. Deliberately NOT a camera or a barcode: it stands for
+     "attach a document or a photo to this record". */
+  upload: 'M12 16V4M8 8l4-4 4 4M4 15v3a2 2 0 002 2h12a2 2 0 002-2v-3',
+  /* the two choices inside that dialog */
+  image: 'M4 5h16v14H4zM8.5 11a1.5 1.5 0 100-3 1.5 1.5 0 000 3zM4 16l4.5-4.5L13 16l3-3 4 4',
+  /* share: three nodes joined by two links - the Action column's Share
+     button, which offers WhatsApp / Email / Download / Print */
+  share: 'M18 8a2.5 2.5 0 100-5 2.5 2.5 0 000 5zM6 14.5a2.5 2.5 0 100-5 2.5 2.5 0 000 5zM18 21a2.5 2.5 0 100-5 2.5 2.5 0 000 5zM8.2 10.8l7.6-3.9M8.2 13.2l7.6 3.9',
   plus: 'M12 5v14M5 12h14',
   cols: 'M4 5h16v14H4zM10 5v14M16 5v14',
   /* keypad: body, display strip, then two rows of keys */

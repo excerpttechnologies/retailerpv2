@@ -5,6 +5,8 @@ import {
   labelGeometry,
   labelsPerRow,
   barsBox,
+  fitType,
+  MONO_CHAR_W,
   SECTION_ORDER,
   PAD_X_MM,
   PAD_Y_MM,
@@ -81,6 +83,22 @@ export { BarcodeSvg };
    case-sensitive (globals.css uppercases body text) and must stay on its own
    single line, cut with an ellipsis rather than pushed onto a second one. */
 const ONE_LINE = { overflow: 'hidden', whiteSpace: 'nowrap', textOverflow: 'ellipsis' };
+/* A field that must print IN FULL or not at all. Its type size is worked out
+   from the width it has (fitType), so there is nothing left to cut - and the
+   ellipsis is dropped, because on these fields an ellipsis is a defect: a
+   barcode number reading "9A10..." cannot be keyed in, and a rate reading
+   "RATE : ₹28..." is not a price. nowrap keeps it on its one line; the
+   hidden overflow stays only as the last resort behind the fitting. */
+const ONE_LINE_FULL = { overflow: 'hidden', whiteSpace: 'nowrap' };
+/* the gutter between the two halves of a footer / identifier row */
+const ROW_GAP_MM = 1;
+/* The fixed wording printed on every sticker. Named rather than written into
+   the markup so the footer's type size can be worked out from the very
+   strings that are about to be drawn - the fit and the text cannot drift
+   apart. Business wording, unchanged. */
+const TAX_NOTE = '(Inclusive all taxes)';
+const WASH_NOTE = 'DRY WASH ONLY';
+const DISCLAIMER = 'No exchange, no guarantee, No Return';
 
 /* -----------------------------------------------------------------------
    Label — one complete printable sticker.
@@ -110,6 +128,9 @@ export function Label({ label, geometry }) {
   const type = (key) => mm(g.type(key));
   /* how big THIS value's bars are drawn inside the barcode band */
   const bars = barsBox(g, label.barcode);
+  /* built once, so the size it is set at is measured from the very string
+     that is drawn - business wording and value unchanged */
+  const rateText = 'RATE : ₹' + (label.sellingPrice ?? '') + '/-';
 
   const detailRow1 = LABEL_FIELDS.detailRow1.map((k) => label[k] ?? '');
   const detailRow2 = [
@@ -143,7 +164,10 @@ export function Label({ label, geometry }) {
         alignItems: 'center',
         columnGap: mm(0.8),
         height: band(key),
-        fontSize: type(key),
+        /* sized so all three values fit the row between them - a long item
+           code now sets the row a shade smaller instead of being cut, and
+           the columns still hold each value in its own fixed position */
+        fontSize: mm(fitType(cells, g.usableW - 1.6, g.type(key))),
         lineHeight: band(key),
         ...style,
       }}
@@ -219,12 +243,22 @@ export function Label({ label, geometry }) {
           text and a barcode value is case-sensitive. */}
       <div
         style={{
-          display: 'grid',
-          gridTemplateColumns: 'minmax(0, auto) minmax(0, 1fr)',
+          display: 'flex',
           alignItems: 'center',
-          columnGap: mm(1),
+          justifyContent: 'space-between',
+          gap: mm(ROW_GAP_MM),
           height: band('identifier'),
-          fontSize: type('identifier'),
+          /* THE BARCODE NUMBER IS NEVER CUT. Both values are measured against
+             the width they have to share and the row is set at the largest
+             size where BOTH fit whole - so a long composed value shrinks the
+             pair rather than eating into the number beside it. Monospace, so
+             the estimate is exact. */
+          fontSize: mm(fitType(
+            [barcodeNo, secondary],
+            g.usableW - ROW_GAP_MM,
+            g.type('identifier'),
+            MONO_CHAR_W,
+          )),
           lineHeight: band('identifier'),
           fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
           fontWeight: 600,
@@ -232,8 +266,8 @@ export function Label({ label, geometry }) {
           textTransform: 'none',
         }}
       >
-        <span style={{ ...ONE_LINE, textAlign: 'left' }}>{barcodeNo}</span>
-        <span style={{ ...ONE_LINE, textAlign: 'right' }}>{secondary}</span>
+        <span style={{ ...ONE_LINE_FULL, textAlign: 'left' }}>{barcodeNo}</span>
+        <span style={{ ...ONE_LINE_FULL, textAlign: 'right' }}>{secondary}</span>
       </div>
 
       {/* 3 — the print description, two lines, left-aligned */}
@@ -248,7 +282,11 @@ export function Label({ label, geometry }) {
           display: '-webkit-box',
           WebkitBoxOrient: 'vertical',
           WebkitLineClamp: 2,
+          /* a long unbroken run - a description with no spaces, a stitched
+             style code - breaks inside the label instead of running past its
+             right edge */
           wordBreak: 'break-word',
+          overflowWrap: 'anywhere',
         }}
       >
         {label.description}
@@ -264,31 +302,59 @@ export function Label({ label, geometry }) {
       <div
         style={{
           height: band('rate'),
-          fontSize: type('rate'),
+          /* a price is never abbreviated: a five-figure amount sets the whole
+             line a shade smaller rather than losing its last digits */
+          fontSize: mm(fitType(rateText, g.usableW, g.type('rate'))),
           lineHeight: band('rate'),
           textAlign: 'center',
           fontWeight: 800,
-          ...ONE_LINE,
+          ...ONE_LINE_FULL,
         }}
       >
-        RATE : ₹{label.sellingPrice}/-
+        {rateText}
       </div>
 
-      {/* 7 — tax note (left) | washing instruction (right) */}
-      {threeUp('taxWash', ['(Inclusive all taxes)', '', 'DRY WASH ONLY'], { color: '#475569' })}
+      {/* 7 — FOOTER: tax note (left) | washing instruction (right).
+
+          Two boxes on one flex row, each as wide as its own words, with the
+          space between them. It used to borrow the three-column grid above,
+          whose outer tracks are 1fr of a 1.5fr centre - 13.0mm on a 50mm
+          sticker. "(Inclusive all taxes)" needs 19.9mm, so it was cut to
+          "(Inclusive all ta…" on every label ever printed, while the unused
+          centre track sat empty between the two. Laid out this way the pair
+          needs 32.1mm of the 45mm available and both print whole. */}
+      <div
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          gap: mm(ROW_GAP_MM),
+          height: band('taxWash'),
+          fontSize: mm(fitType(
+            [TAX_NOTE, WASH_NOTE],
+            g.usableW - ROW_GAP_MM,
+            g.type('taxWash'),
+          )),
+          lineHeight: band('taxWash'),
+          color: '#475569',
+        }}
+      >
+        <span style={{ ...ONE_LINE_FULL, textAlign: 'left' }}>{TAX_NOTE}</span>
+        <span style={{ ...ONE_LINE_FULL, textAlign: 'right' }}>{WASH_NOTE}</span>
+      </div>
 
       {/* 8 — disclaimer */}
       <div
         style={{
           height: band('disclaimer'),
-          fontSize: type('disclaimer'),
+          fontSize: mm(fitType(DISCLAIMER, g.usableW, g.type('disclaimer'))),
           lineHeight: band('disclaimer'),
           textAlign: 'center',
           color: '#475569',
-          ...ONE_LINE,
+          ...ONE_LINE_FULL,
         }}
       >
-        No exchange, no guarantee, No Return
+        {DISCLAIMER}
       </div>
     </div>
   );
@@ -318,8 +384,14 @@ export function Label({ label, geometry }) {
    globals.css overrides .print-doc back into normal flow so the sheet can
    fragment across as many pages as it needs.
 ----------------------------------------------------------------------- */
-export default function GrcBarcodeLabelSheet({ rows, format = null, gap = '1mm' }) {
-  const geometry = labelGeometry(format);
+export default function GrcBarcodeLabelSheet({ rows, format = null, gap = '1mm', page = null }) {
+  /* `page` says which paper this run is going on, so the labels can be fitted
+     inside its printable width (lib/barcodeLabelGeometry.js fittedLabelSize).
+     Defaulted to the A4 run - where a 50mm sticker has 99mm of slack and is
+     not reduced at all - so a caller that does not pass it is unaffected.
+     ONE geometry for the whole sheet, so no label can come out a different
+     size from its neighbour, and the same one on screen as on paper. */
+  const geometry = labelGeometry(format, page || { onStock: false, gapMm: 1 });
   const perRow = labelsPerRow(format);
 
   const labels = (rows || []).flatMap((row, ri) => {

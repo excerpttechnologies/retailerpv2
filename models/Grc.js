@@ -34,6 +34,13 @@ const GrcSchema = new mongoose.Schema(
     totalAmount: { type: Number, default: null },
     freightMode: { type: String, default: 'Before Tax' },
     freightAmount: { type: Number, default: null },
+    /* The operator's own adjustment to the final amount, entered in the
+       Voucher Section. SIGNED: -0.50 takes fifty paise off the total and
+       +0.50 adds it, so it is never clamped to positive. The Edit screen's
+       Net Purchases Value has always added it
+       (app/admin/transaction/purchase/grc/[id]/page.jsx) - it simply had
+       nowhere to be entered and no path to be stored on until now. */
+    roundOff: { type: Number, default: 0 },
     taxable: { type: Number, default: 0 },
     totalQuantity: { type: Number, default: 0 },
     gst: { type: Number, default: 0 },

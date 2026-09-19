@@ -160,9 +160,35 @@ export async function PUT(req, { params }) {
   await dbConnect();
   const { id } = await params;
   const body = await req.json();
-  const fields = (FORM.cards || []).flatMap((card) => card.type === 'fields' ? card.fields || [] : []);
+  /* Header fields, plus the Voucher Section columns marked `header: true`
+     (Round Off). The rest of the Voucher Section lives in voucherRows and is
+     deliberately left out, exactly as it was before. */
+  const fields = (FORM.cards || []).flatMap((card) => {
+    if (card.type === 'fields') return card.fields || [];
+    if (card.type === 'voucher') return (card.fields || []).filter((f) => f.header);
+    return [];
+  });
   const { errors, doc, ok } = validate(fields, body.data || {});
   if (!ok) return json({ errors }, 422);
+
+  /* coerce() spells an empty number as null; Round Off's own default is 0 */
+  if (doc.roundOff == null) doc.roundOff = 0;
+
+  /* Round Off is held twice on a GRC: on the header (what this screen and Net
+     Purchases Value read) and inside the voucherRows the Add screen wrote.
+     This screen has no Voucher Section, so it sends only the flat header
+     value - mirror it back into the rows rather than let the two disagree on
+     one document. The whole amount goes on the first row and the rest are
+     zeroed, which keeps sum(voucherRows.roundOff) === header roundOff, the
+     invariant the Add screen's own submit() maintains. */
+  const current = await Grc.findById(id).select('voucherRows').lean();
+  if (Array.isArray(current?.voucherRows) && current.voucherRows.length) {
+    doc.voucherRows = current.voucherRows.map((row, index) => ({
+      ...row,
+      roundOff: index === 0 ? doc.roundOff : 0,
+    }));
+  }
+
   const updated = await Grc.findByIdAndUpdate(id, doc, { new: true, runValidators: true }).lean();
   if (!updated) return json({ error: 'GRC not found' }, 404);
   return json({ ok: true, id: String(updated._id) });

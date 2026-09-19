@@ -262,6 +262,60 @@ select {
 }
 
 /* ==========================================================================
+   THE LIST PREVIEW MODAL, ON PAPER.
+
+   The generic .print-doc rule above is written for something that is already
+   a page: it pins the box with `position: absolute; inset: 0`, which caps it
+   at exactly one page and stops it fragmenting. The preview is a MODAL, so it
+   brings two more constraints of its own - max-h-[90vh] and overflow-auto on
+   the card, plus overflow-x-auto around a min-w-[1450px] table - and it sits
+   inside a `fixed inset-0` backdrop that confines it to the viewport.
+
+   Printed that way the sheet came out capped at one page, with every money
+   column past the paper's width silently cut off the right-hand edge. So on
+   this one surface all four constraints are lifted and the table is allowed
+   to lay itself out in the page's own width.
+   ========================================================================== */
+@media print {
+  /* the backdrop stops being a fixed viewport-sized layer and becomes
+     ordinary flow, so the card inside it may grow past one page */
+  .preview-backdrop {
+    position: static !important;
+    display: block !important;
+    padding: 0 !important;
+    background: none !important;
+    inset: auto !important;
+  }
+  /* the card stops being pinned and stops clipping itself */
+  .preview-doc {
+    position: static !important;
+    inset: auto !important;
+    max-height: none !important;
+    max-width: none !important;
+    width: 100% !important;
+    overflow: visible !important;
+    box-shadow: none !important;
+    border-radius: 0 !important;
+  }
+  /* the horizontal scroller and the 1450px table: on paper the table takes
+     the page's width and sets smaller, rather than hiding its right-hand
+     columns off the edge */
+  .preview-doc .overflow-x-auto { overflow: visible !important; }
+  .preview-doc table {
+    min-width: 0 !important;
+    width: 100% !important;
+    table-layout: auto;
+    font-size: 8.5px !important;
+  }
+  .preview-doc table th,
+  .preview-doc table td { padding: 2px 3px !important; word-break: break-word; }
+  /* a row may not be split down the middle by a page boundary, and the
+     header repeats on every page the table runs onto */
+  .preview-doc table tr { break-inside: avoid; page-break-inside: avoid; }
+  .preview-doc table thead { display: table-header-group; }
+}
+
+/* ==========================================================================
    BARCODE LABEL SHEET - its own print surface, deliberately not .print-doc.
 
    The rule above hides the application with `visibility`, which is right for

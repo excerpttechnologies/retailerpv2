@@ -1,4 +1,5 @@
 import mongoose from 'mongoose';
+import AttachmentSchema from './attachmentSchema.js';
 
 /* Goods Return Notes
    Collection name pinned lowercase - Mongoose would pluralise it otherwise
@@ -35,6 +36,12 @@ const GrtSchema = new mongoose.Schema(
 
     /* line items are free-form per document type */
     items: { type: mongoose.Schema.Types.Mixed, default: [] },
+    /* Documents and photos attached to this record from the Action column's
+       Upload button (components/AttachmentsDialog.jsx via /api/attachments).
+       An ARRAY, appended to - a second upload never replaces the first. The
+       bytes live in the shared store (lib/uploads.js); what is kept here is
+       the /api/files URL and the file's own details. */
+    attachments: { type: [AttachmentSchema], default: [] },
   },
   { timestamps: true }
 );

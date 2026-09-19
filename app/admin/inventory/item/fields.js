@@ -21,6 +21,12 @@
 /* Form fields for Items. Lives beside its pages, not in a registry. */
 
 export const FIELDS = [
+    /* Item.name is what the list's NAME column reads and what /api/item
+       searches first. It was missing from this array, so FormView never
+       rendered an input for it and validate() never put it in the doc -
+       every item added through the form was saved with name: '' while the
+       code typed into "Item Code" was the only identifier stored. */
+    { k: "name", label: "Item Name", type: "text", req: true },
     { k: "itemCode", label: "Item Code", type: "text", req: true },
     { k: "ecommItemCode", label: "Ecomm Item Code", type: "text", req: true },
     { k: "subGroupId", label: "Group", type: "ref", ref: "product/group", req: true },

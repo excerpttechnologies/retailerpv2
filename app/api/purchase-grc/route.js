@@ -18,6 +18,10 @@ import { FORM } from '@/app/admin/transaction/purchase/grc/form';
 const FIELDS = (FORM.cards || []).flatMap((c) => {
   if (c.type === 'fields') return c.fields || [];
   if (c.type === 'source' && c.sourceKey) return [{ k: c.sourceKey, label: c.label, type: 'ref', req: c.req }];
+  /* The Voucher Section's columns are stored inside voucherRows, so they are
+     NOT header fields - except the ones marked `header: true` (Round Off),
+     which the Edit screen reads off the header for Net Purchases Value. */
+  if (c.type === 'voucher') return (c.fields || []).filter((f) => f.header);
   if (c.type === 'totals') {
     return (c.rows || []).flatMap((r) => [
       ...(r.value ? [{ k: r.value, label: r.label, type: 'number' }] : []),
@@ -193,6 +197,9 @@ export async function POST(req) {
 
   const { errors, doc, ok } = validate(FIELDS, body.data || {});
   if (!ok) return json({ errors }, 422);
+  /* coerce() spells an empty number as null; Round Off's own default is 0, and
+     "no adjustment" is 0, not "unknown". Keeps the stored shape honest. */
+  if (doc.roundOff == null) doc.roundOff = 0;
   if (body.business && isValidObjectId(body.business)) doc.businessId = body.business;
   if (body.location && isValidObjectId(body.location)) doc.locationId = body.location;
   if (body.finYear) doc.finYear = body.finYear;

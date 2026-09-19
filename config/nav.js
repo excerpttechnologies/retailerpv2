@@ -491,6 +491,22 @@ export const NAV = [
     ],
   },
 
+  /* A TOP-LEVEL group of its own, between Inter Company Sell and Reports, so
+     the hierarchy is exactly:  Main Reports > Master Stock Report  - with no
+     intermediate menu. It is deliberately NOT a child of Reports, and the
+     entry is not repeated there, so one route has one place in the nav.
+     components/Sidebar.jsx expands whichever group owns the current path
+     (its useEffect on pathname), so a direct URL or a refresh opens this
+     group and highlights the child without any change to that component. */
+  {
+    label: 'Main Reports',
+    icon: LuChartNoAxesColumn,
+    children: [
+      { label: 'Master Stock Report', icon: LuWarehouse,
+        href: '/admin/report/master-stock-report' },
+    ],
+  },
+
   {
     label: 'Reports',
     icon: LuChartNoAxesColumn,

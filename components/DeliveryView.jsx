@@ -13,6 +13,7 @@ import { FIELDS, freightBreakdown, bookingDelayDays, delayTone } from '@/app/adm
 import { FIELDS as TRANSPORTER_FIELDS } from '@/app/admin/transport/transporter/fields';
 import { AGENT_QUICK_FIELDS, FIELD_LABELS as SUPPLIER_FIELD_LABELS, TABS as SUPPLIER_TABS } from '@/app/admin/contact/supplier/tabs';
 import SupplierImportPanel from './SupplierImportPanel';
+import AttachmentsDialog from './AttachmentsDialog';
 
 /* The LR-page quick-add does not collect a transporter code. The API still
   requires one, so the dialog supplies an internal value when saving. */
@@ -560,6 +561,12 @@ function DeliveryGrid({
   const [hidden, setHidden] = useState([]);
   const [loading, setLoading] = useState(true);
   const [page, setPage] = useState(1);
+  /* The delivery whose Upload button was pressed. The ROW is held, not just
+     an id, so the dialog captions itself with that consignment's own LR
+     number and cannot be open against one record while showing another.
+     It lives HERE, in the grid that owns the Action column - DeliveryDialog
+     is a different component and could not reach it. */
+  const [uploadRow, setUploadRow] = useState(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -679,6 +686,10 @@ function DeliveryGrid({
                       <button className="act-btn bg-warnyellow" title="Edit" onClick={() => onEdit(row)}>
                         <Icon name="pencil" size={12} />
                       </button>
+                      {/* documents and photos attached to THIS consignment */}
+                      <button className="act-btn bg-[#0d9488]" title="Upload document / photo" onClick={() => setUploadRow(row)}>
+                        <Icon name="upload" size={12} />
+                      </button>
                       <button className="act-btn bg-danger" title="Delete" onClick={() => remove(row._id)}>
                         <Icon name="trash" size={12} />
                       </button>
@@ -699,6 +710,21 @@ function DeliveryGrid({
           </span>
         </div>
       </div>
+
+      {/* Upload Document / Photo for ONE consignment. The id is this row's own
+          _id, so a file can only be attached to the delivery whose button was
+          pressed. Rendered only while a row is selected, so nothing stale
+          survives a close. */}
+      {uploadRow && (
+        <AttachmentsDialog
+          open
+          kind="delivery"
+          id={String(uploadRow._id)}
+          title={uploadRow.transactionNo ? 'LR ' + uploadRow.transactionNo : 'this delivery'}
+          onClose={() => setUploadRow(null)}
+          onUploaded={() => load()}
+        />
+      )}
     </div>
   );
 }

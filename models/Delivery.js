@@ -55,6 +55,7 @@
 
 
 import mongoose from 'mongoose';
+import AttachmentSchema from './attachmentSchema.js';
 
 /* Delivery / LR Transaction
 
@@ -101,6 +102,12 @@ const DeliverySchema = new mongoose.Schema(
        available. Same pattern as GRC -> Purchase Invoice elsewhere in the
        app, so the "unassigned" filter reads the same way. */
     dispatchId: { type: mongoose.Schema.Types.ObjectId, ref: 'dispatch', default: null, index: true },
+    /* Documents and photos attached to this record from the Action column's
+       Upload button (components/AttachmentsDialog.jsx via /api/attachments).
+       An ARRAY, appended to - a second upload never replaces the first. The
+       bytes live in the shared store (lib/uploads.js); what is kept here is
+       the /api/files URL and the file's own details. */
+    attachments: { type: [AttachmentSchema], default: [] },
   },
   { timestamps: true }
 );

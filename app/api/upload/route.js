@@ -1,6 +1,7 @@
 import { requireSession } from '@/lib/session';
 import {
-  saveBuffer, extForMime, ALLOWED_MIME, MAX_UPLOAD_BYTES,
+  saveBuffer, extForMime, isAllowedMime, resolveUploadMime,
+  ALLOWED_MIME, MAX_UPLOAD_BYTES,
 } from '@/lib/uploads';
 
 /* POST /api/upload  -  multipart/form-data with one field, `file`.
@@ -32,8 +33,14 @@ export async function POST(req) {
     return json({ error: 'No file received.' }, 400);
   }
 
-  const type = String(file.type || '').toLowerCase();
-  if (!ALLOWED_MIME.includes(type)) {
+  if (!file.size) {
+    return json({ error: 'That file is empty.' }, 400);
+  }
+  /* Resolved the same way /api/attachments resolves it, so the two routes
+     cannot disagree about what a given file is: the browser's type when it is
+     useful, the extension when it says octet-stream or nothing. */
+  const type = resolveUploadMime(file.type, file.name);
+  if (!isAllowedMime(type)) {
     return json({
       error: 'That file type is not allowed. Accepted: '
         + ALLOWED_MIME.map(extForMime).join(', ') + '.',

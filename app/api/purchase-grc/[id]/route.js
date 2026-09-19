@@ -13,6 +13,10 @@ import { itemPriceErrors } from '@/lib/purchasePrice';
    Leaving them out meant validate() silently dropped them on every save. */
 const FIELDS = (FORM.cards || []).flatMap((c) => {
   if (c.type === 'fields') return c.fields || [];
+  /* The Voucher Section's columns are stored inside voucherRows, so they are
+     NOT header fields - except the ones marked `header: true` (Round Off),
+     which the Edit screen reads off the header for Net Purchases Value. */
+  if (c.type === 'voucher') return (c.fields || []).filter((f) => f.header);
   if (c.type === 'totals') {
     return (c.rows || []).flatMap((r) => [
       ...(r.value ? [{ k: r.value, label: r.label, type: 'number' }] : []),
@@ -48,6 +52,9 @@ export async function PUT(req, { params }) {
 
   const { errors, doc, ok } = validate(FIELDS, body.data || {});
   if (!ok) return json({ errors }, 422);
+
+  /* same as the create route: an empty Round Off is 0, not null */
+  if (doc.roundOff == null) doc.roundOff = 0;
 
   if (Array.isArray(body.data?.items)) doc.items = body.data.items;
   if (Array.isArray(body.data?.voucherRows)) doc.voucherRows = body.data.voucherRows;

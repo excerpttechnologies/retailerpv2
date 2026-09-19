@@ -8,7 +8,7 @@ import GrcBarcodeLabelSheet from "./GrcBarcodeLabel";
 /* One geometry module for the sticker stock - the same one the label
    renderer lays a label out with and the GRC Barcode Print page prints
    from, so the preview here cannot be measured differently. */
-import { parseSize, labelsPerRow, stockPageCss, labelPageRule } from "@/lib/barcodeLabelGeometry";
+import { labelRun } from "@/lib/barcodeLabelGeometry";
 import { useOptions } from "./useOptions";
 import { useBarcodeLookup } from "./useScanner";
 import Icon from "./Icon";
@@ -1059,7 +1059,6 @@ function AddItemModal({ open, onClose, onSubmit, onSubmitAndPrint, barcodeFormat
     itemCode: "",
     itemName: "",
     itemId: "",
-    itemLabel: "",
     hsnId: "",
     hsn: "",
     hsn2Id: "",
@@ -1513,7 +1512,7 @@ function AddItemModal({ open, onClose, onSubmit, onSubmitAndPrint, barcodeFormat
     setOfferNote('');
     setForm((current) => withFormPrices(withItemOffers({
       ...current,
-      itemId: "", itemCode: "", itemName: "", itemLabel: "",
+      itemId: "", itemCode: "", itemName: "",
       hsnId: "", hsn: "", hsn2Id: "", hsn2: "", gst: "0",
       printDescription: "", supplierDescription: "", subGroupName: "", groupName: "",
     }, null)));
@@ -1602,7 +1601,13 @@ function AddItemModal({ open, onClose, onSubmit, onSubmitAndPrint, barcodeFormat
 
       /* When a barcode is scanned, populate labels so the SearchSelect
          closed state shows the item code and HSN code correctly. */
-      if (unit.itemCode) setItemLabel(unit.itemCode);
+      /* The SAME fallback the gate and the row use, so the box can never
+         read as empty while submit() thinks an item is selected. A stored
+         label whose itemCode is blank but which carries a name used to leave
+         this label '' - the control then showed its "Search Item Code…"
+         placeholder, looking unselected, while Submit quietly went ahead on
+         the slugified name. */
+      setItemLabel(unit.itemCode || unit.itemName || '');
       if (unit.hsn) setHsnLabel(unit.hsn);
       if (unit.hsn) setHsn2Label(unit.hsn);
 
@@ -1663,12 +1668,30 @@ function AddItemModal({ open, onClose, onSubmit, onSubmitAndPrint, barcodeFormat
   const handleItemSelection = async (opt) => {
     hsnDetailRef.current += 1;
     hsn2DetailRef.current += 1;
+    /* The operator is answering the very complaint the banner makes, so the
+       banner goes now rather than surviving until a submit finally passes.
+       setReserveError("") used to be reached ONLY at the end of submit(),
+       after every gate had cleared - so "Please select an Item Code." stayed
+       on screen while the operator picked the item it asked for, and only a
+       successful Submit could take it down. */
+    setReserveError("");
     if (!opt) {
       itemDetailRef.current += 1;
       setItemLabel('');
       applyHsnSlabs([]);
       applyHsn2Slabs([]);
       setHsn2Label('');
+      /* Clearing the item also forgets the Old Barcode it may have come
+         from. lookupOldBarcode short-circuits on `code === resolvedRef.current`
+         (it will not re-fetch a code it has already resolved), so leaving the
+         ref set stranded the screen: the X emptied the Item Code box while a
+         green "<code> loaded." note still claimed the item was there, and
+         re-visiting the unchanged Old Barcode field would not bring it back.
+         Submit then answered "Please select an Item Code." - the reported
+         symptom again, from the opposite direction. */
+      resolvedRef.current = "";
+      inFlightRef.current = "";
+      setLookup({ status: "idle", message: "" });
       setForm((current) => withFormPrices(withItemOffers({
         ...current,
         itemId: "", itemName: "", itemCode: "", subGroupName: "", groupName: "", printDescription: "",
@@ -1988,7 +2011,27 @@ function AddItemModal({ open, onClose, onSubmit, onSubmitAndPrint, barcodeFormat
         return;
       }
     }
-    if (!form.itemName?.trim()) {
+    /* THE ROW'S OWN ITEM CODE, worked out ONCE - here to check it and below
+       to build the row with it, so the thing validated and the thing saved
+       cannot be two different values.
+
+       A code picked or typed stands as it is; failing that the item's name is
+       slugified into one. That second half is not new - it is the rule the
+       generated row has always used, and it is what lets an item carrying a
+       name but no code of its own (most of the seeded Item master) be
+       labelled at all.
+
+       This used to test form.itemName. That is the item's NAME, not its
+       code, and it is EMPTY for an item entered through Inventory -> Item
+       with a code but no name. Picking such an item filled the Item Code box
+       with, say, "10-PLNBTM", left itemName blank, and Submit then answered
+       "Please select an Item Code." about an item that was plainly selected.
+       The grid and the save route never had this disagreement: both already
+       read `itemCode || itemName` (validRows, and the API's own row checks).
+       Only this one gate looked at the name alone. */
+    const rowItemCode = String(form.itemCode || "").trim()
+      || String(form.itemName || "").trim().replace(/\s+/g, "-").toUpperCase();
+    if (!rowItemCode) {
       setReserveError("Please select an Item Code.");
       return;
     }
@@ -2040,7 +2083,8 @@ function AddItemModal({ open, onClose, onSubmit, onSubmitAndPrint, barcodeFormat
            Empty when none was entered - stored as '' to match the schema
            default, never faked or copied from another barcode. */
         oldBarcode: enteredOldBarcode,
-        itemCode: form.itemCode || form.itemName.replace(/\s+/g, "-").toUpperCase(),
+        /* the very value the check above passed on */
+        itemCode: rowItemCode,
         itemName: form.itemName,
         goodsType: form.goodsType,
         sm: form.sm,
@@ -2072,8 +2116,13 @@ function AddItemModal({ open, onClose, onSubmit, onSubmitAndPrint, barcodeFormat
            stored barcode. (grcHeader is not in scope here either.) */
         barcodeNo: "",
         /* what the operator typed in row 2, falling back to the old behaviour
-           (itemName) so a blank field still saves what it always did */
-        supplierDescription: form.supplierDescription?.trim() || form.itemName,
+           (itemName) so a blank field still saves what it always did - and
+           then to the item code, which only ever comes up for an item that
+           has no name to fall back on. That case could not arise before: such
+           an item was refused by the Item Code check above, so this reaches
+           no label that used to print a description. It is the same
+           code-then-name order the grid and the label sheet already use. */
+        supplierDescription: form.supplierDescription?.trim() || form.itemName?.trim() || rowItemCode,
         printDescription: form.printDescription,
         mode: Boolean(form.uniqueBarcode) ? "unique" : "batch",
         groupId: planItem.groupId || null,
@@ -2743,14 +2792,13 @@ function PrintLabelPicker({ rows, open, onClose }) {
      On sticker stock the sheet IS the page, so a gutter between labels would
      push the last column off the edge of the paper - hence gap 0 there, and
      a 1mm cut line on a sheet of A4 that somebody has to guillotine. */
-  const geometry = parseSize(format?.labelSize);
-  const perRow = labelsPerRow(format);
-  const onStock = paper === 'stock';
-  const gapMm = onStock ? 0 : 1;
-  const stockSize = stockPageCss(format, geometry.w, geometry.h, perRow, gapMm);
-
-  const pageRule = labelPageRule(format, { onStock, gapMm });
-  const gap = gapMm + 'mm';
+  /* ONE call, so this page and the Barcode Generation picker cannot arrive
+     at two different sheets from one format. labelRun fits the labels inside
+     the page's PRINTABLE width - the sheet less the unprintable edge the
+     printer's grippers take - which is what stops the leading sticker's
+     barcode number being clipped on stock. */
+  const run = labelRun(format, paper);
+  const { gap, pageRule, stockSize } = run;
 
   /* ---------------------------------------------------------------- print --
      window.print() photographs the DOM as it stands at the instant it is
@@ -3044,7 +3092,7 @@ function PrintLabelPicker({ rows, open, onClose }) {
                 <div className="overflow-auto rounded border border-gray-300 bg-white p-2">
                   {/* GrcBarcodeLabelSheet is the same component the
                       barcode-print page renders, so Preview = Print exactly. */}
-                  <GrcBarcodeLabelSheet rows={selectedRows} format={format} gap={gap} />
+                  <GrcBarcodeLabelSheet rows={selectedRows} format={format} gap={gap} page={run.page} />
                 </div>
               </>
             )}
@@ -3110,7 +3158,7 @@ function PrintLabelPicker({ rows, open, onClose }) {
           <style>{pageRule}</style>
           {/* GrcBarcodeLabelSheet matches the print page exactly — same
               component, same 2-column grid, same Label, same data contract. */}
-          <GrcBarcodeLabelSheet rows={selectedRows} format={format} gap={gap} />
+          <GrcBarcodeLabelSheet rows={selectedRows} format={format} gap={gap} page={run.page} />
         </div>,
         document.body
       )}
