@@ -122,7 +122,6 @@ export const REPORT = {
     { k: 'itemCode', label: 'Item', type: 'text', placeholder: 'Item / style code' },
     { k: 'itemName', label: 'Item Name', type: 'text', placeholder: 'Item name' },
     { k: 'supplierId', label: 'Supplier', type: 'ref', ref: 'supplier', all: 'All Suppliers' },
-    { k: 'supplierCode', label: 'Supplier Code', type: 'text', placeholder: 'Supplier code' },
     { k: 'hsn', label: 'HSN', type: 'text', placeholder: 'HSN code' },
     /* GST % is typed, not picked from the Tax master. That master
        (models/Tax.js, the ref: 'tax' option list) keys on its own _id and
@@ -182,6 +181,10 @@ export const REPORT = {
       { k: 'wsp', t: 'WSP', f: 'amount' },
       { k: 'ecom', t: 'E COM', f: 'amount' },
       { k: 'uom', t: 'UOM' },
+      /* not part of the reference workbook - added after E COM/UOM so the
+         printed barcode thumbnail (barcodeLabel.imageUrl) shows alongside
+         the rest of the label's own data */
+      { k: 'imageUrl', t: 'Image', f: 'image' },
     ],
   }],
 };

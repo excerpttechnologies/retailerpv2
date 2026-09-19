@@ -109,6 +109,43 @@ function Filter({ f, value, onChange }) {
   );
 }
 
+/* A thumbnail that pops up a larger preview, centred on screen, on hover. The
+   table body scrolls with `overflow-x-auto` (Section, below), and the Image
+   column sits at its right edge - an absolutely positioned popup would be
+   clipped by that scroll container the moment it crossed its edge. Fixed
+   positioning with a dimmed backdrop escapes that clipping and keeps the
+   preview in the same, predictable spot regardless of which row or how far
+   the table is scrolled. */
+const PREVIEW = 320;
+function HoverImage({ src, alt }) {
+  const [hover, setHover] = useState(false);
+
+  if (!src) return <span className="text-cell">—</span>;
+
+  return (
+    <>
+      <img
+        src={src}
+        alt={alt || ''}
+        className="h-10 w-10 cursor-zoom-in rounded border border-line object-cover"
+        onError={(e) => { e.currentTarget.style.display = 'none'; }}
+        onMouseEnter={() => setHover(true)}
+        onMouseLeave={() => setHover(false)}
+      />
+      {hover && (
+        <div className="pointer-events-none fixed inset-0 z-50 flex items-center justify-center bg-black/40">
+          <img
+            src={src}
+            alt={alt || ''}
+            style={{ width: PREVIEW, height: PREVIEW }}
+            className="rounded-lg border border-line bg-white object-cover shadow-xl"
+          />
+        </div>
+      )}
+    </>
+  );
+}
+
 /* One result table. `columns[].total` marks a column the totals row sums; the
    server sends its own totals so the figure covers the whole result set
    rather than just the visible page. */
@@ -155,7 +192,7 @@ function Section({ section, data, tone }) {
                 <tr key={row._id || i}>
                   {columns.map((c) => (
                     <td key={c.t} className={isNumeric(c) ? 'text-right' : ''}>
-                      {cellOf(row, c)}
+                      {c.f === 'image' ? <HoverImage src={row[c.k]} /> : cellOf(row, c)}
                     </td>
                   ))}
                 </tr>

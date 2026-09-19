@@ -1,8 +1,3 @@
-// 
-
-
-//sagar
-
 'use client';
 import { use } from 'react';
 import IcChallanForm from '@/components/IcChallanForm';
@@ -36,6 +31,9 @@ export default function EditIcDeliveryChallanPage({ params }) {
         compactGrid: true,
         /* totals panel hidden - still computed and still saved */
         showTotals: false,
+        /* Submit lands on the print preview; Print is pressed there */
+        afterSaveHref: (savedId) =>
+          '/admin/transaction/intercompanysell/deliverychallan/print/' + savedId,
       }}
     />
   );

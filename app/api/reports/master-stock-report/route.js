@@ -306,6 +306,7 @@ export async function GET(req) {
       wsp: num(r.wspPrice),
       ecom: num(r.dpPrice),
       uom: s(r.uom) || EMPTY,
+      imageUrl: s(r.imageUrl),
     };
   };
   const mapped = rows.map(mapRow);
