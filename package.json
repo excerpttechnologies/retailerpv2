@@ -76,6 +76,8 @@
     "fix:docsetup:apply": "node --env-file=.env scripts/fixDocSetupLabelKeys.mjs --apply",
     "seed:barcode-images": "node --env-file=.env scripts/seedBarcodeImages.mjs",
     "seed:barcode-images:apply": "node --env-file=.env scripts/seedBarcodeImages.mjs --apply",
+    "seed:barcode-images-folder": "node --env-file=.env scripts/seedBarcodeImagesFromFolder.mjs",
+    "seed:barcode-images-folder:apply": "node --env-file=.env scripts/seedBarcodeImagesFromFolder.mjs --apply",
     "delete:suppliers": "node --env-file=.env seeddelete.js",
     "delete:suppliers:force": "node --env-file=.env seeddelete.js --force",
     "seed:suppliers": "node --env-file=.env scripts/seedSuppliersNew.mjs",
